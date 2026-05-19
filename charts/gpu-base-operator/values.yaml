@@ -5,7 +5,7 @@ nfd:
 
 operator:
   image:
-    repository: intel/intel-gpu-base-operator:devel
+    repository: ghcr.io/intel/intel-gpu-base-operator:devel
     pullPolicy: IfNotPresent
   verbosity: 2
   resources:

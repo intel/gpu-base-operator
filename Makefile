@@ -24,12 +24,9 @@ BUNDLE_DEFAULT_CHANNEL := --default-channel=$(DEFAULT_CHANNEL)
 endif
 BUNDLE_METADATA_OPTS ?= $(BUNDLE_CHANNELS) $(BUNDLE_DEFAULT_CHANNEL)
 
-# IMAGE_TAG_BASE defines the docker.io namespace and part of the image name for remote images.
+# IMAGE_TAG_BASE defines the ghcr.io namespace and part of the image name for remote images.
 # This variable is used to construct full image tags for bundle and catalog images.
-#
-# For example, running 'make bundle-build bundle-push catalog-build catalog-push' will build and push both
-# intel/intel-gpu-base-operator-bundle:$VERSION and intel.com/intel-gpu-base-operator-catalog:$VERSION.
-IMAGE_TAG_BASE ?= intel/intel-gpu-base-operator
+IMAGE_TAG_BASE ?= ghcr.io/intel/intel-gpu-base-operator
 
 # BUNDLE_IMG defines the image:tag used for the bundle.
 # You can use it as an arg. (E.g make bundle-build BUNDLE_IMG=<some-registry>/<project-name-bundle>:<tag>)
@@ -54,11 +51,11 @@ OPERATOR_SDK_VERSION ?= v1.41.1
 TAG ?= devel
 
 # Image URL to use all building/pushing image targets
-IMG ?= intel/intel-gpu-base-operator:$(TAG)
+IMG ?= ghcr.io/intel/intel-gpu-base-operator:$(TAG)
 
-FWFILES_IMG ?= intel/gpu-firmware-update-files:$(TAG)
-FWUPDATER_IMG ?= intel/gpu-fwupdater:$(TAG)
-FWUPDATER_MOCK_IMG ?= intel/gpu-fwupdater-mock:$(TAG)
+FWFILES_IMG ?= ghcr.io/intel/gpu-firmware-update-files:$(TAG)
+FWUPDATER_IMG ?= ghcr.io/intel/gpu-fwupdater:$(TAG)
+FWUPDATER_MOCK_IMG ?= ghcr.io/intel/gpu-fwupdater-mock:$(TAG)
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -441,6 +438,7 @@ helm-package-policy-chart: helm-update-dependencies
 	echo "Packaging 'gpu-base-operator-policy' chart with version $${chart_version} and application version $${release_version}"; \
 	helm package charts/gpu-base-operator-policy --destination .charts
 
+# RELEASE_REGISTRY is defined in the workflow file
 helm-push-chart: helm-package-chart
 	helm push .charts/intel-gpu-base-operator-*.tgz oci://${RELEASE_REGISTRY}
 

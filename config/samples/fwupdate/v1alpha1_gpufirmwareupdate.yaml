@@ -13,7 +13,7 @@ spec:
 
   holdAfterCanary: true
 
-  updaterImage: "docker.io/intel/gpu-fwupdater:devel"
+  updaterImage: "ghcr.io/intel/gpu-fwupdater:devel"
 
   updateMethod: "canary"
   updateTaint:  "gpu-update-in-progress"
@@ -23,7 +23,7 @@ spec:
       effect: "NoSchedule"
 
   content:
-    containerImage: docker.io/intel/gpu-firmware-update-files:devel
+    containerImage: ghcr.io/intel/gpu-firmware-update-files:devel
 
     files:
       - filename: "bmg_OpromCode_golden.bin"

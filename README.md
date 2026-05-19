@@ -277,7 +277,7 @@ kubectl apply -k config/kueue
 
 To store the operator container image in the container-runtime image cache:
 ```
-docker save docker.io/intel/intel-gpu-base-operator:devel | sudo ctr -n k8s.io image import -
+docker save ghcr.io/intel/intel-gpu-base-operator:devel | sudo ctr -n k8s.io image import -
 ```
 
 To deploy the operator:

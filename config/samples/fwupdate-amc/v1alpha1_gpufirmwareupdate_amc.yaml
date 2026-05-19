@@ -12,7 +12,7 @@ spec:
   nodeSelector:
     gpu.intel.com/device-id.0300-e20b.present: "true"
 
-  updaterImage: "docker.io/intel/gpu-fwupdater:devel"
+  updaterImage: "ghcr.io/intel/gpu-fwupdater:devel"
   updateMethod: "direct"
   updateTaint:  "gpu-update-in-progress"
 
@@ -21,7 +21,7 @@ spec:
   amcCredentialsSecret: amc-credentials
 
   content:
-    containerImage: docker.io/intel/gpu-firmware-update-files:devel
+    containerImage: ghcr.io/intel/gpu-firmware-update-files:devel
 
     files:
     - type: "AMC"

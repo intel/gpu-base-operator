@@ -36,7 +36,7 @@ See [Customizing the Chart Before Installing](https://helm.sh/docs/intro/using_h
 |---|---|---|
 | `kueue.install`| false | Have operator install kueue when installing this Helm chart |
 | `nfd.install`| false | Have operator install NFD when installing this Helm chart |
-| `operator.image.repository`| intel/intel-gpu-base-operator:devel | Operator container image (repository and tag) |
+| `operator.image.repository`| ghcr.io/intel/intel-gpu-base-operator:devel | Operator container image (repository and tag) |
 | `operator.image.pullPolicy` | IfNotPresent| Image pull policy |
 | `operator.verbosity` | 2 | Operator logging verbosity level |
 | `operator.resources.limits.cpu` | 500m | CPU limit for operator pod |

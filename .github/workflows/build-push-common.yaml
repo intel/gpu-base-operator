@@ -33,7 +33,8 @@ jobs:
         run: |
           TAG=$(sed -n 's/^TAG ?= \(.*\)/\1/p' Makefile)
           echo "TAG=$TAG" >> $GITHUB_OUTPUT
-      - run: make operator-build
+      - name: Build operator image
+        run: IMG=${REGISTRY}/${PROJECT}/intel-gpu-base-operator:${{ steps.gentag.outputs.TAG }} make operator-build
       - name: Log in to GitHub Container Registry
         if: inputs.runner != 'self-hosted'
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
@@ -43,7 +44,6 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Push to GitHub Container Registry
         run: |
-          docker tag intel/intel-gpu-base-operator:${{ steps.gentag.outputs.TAG }} ${REGISTRY}/${PROJECT}/intel-gpu-base-operator:${{ steps.gentag.outputs.TAG }}
           docker push ${REGISTRY}/${PROJECT}/intel-gpu-base-operator:${{ steps.gentag.outputs.TAG }}
       - name: Get image digest
         if: ${{ steps.gentag.outputs.TAG != 'devel' }}

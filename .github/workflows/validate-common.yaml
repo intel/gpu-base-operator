@@ -60,7 +60,7 @@ jobs:
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
         with:
           scan-type: image
-          scan-ref: intel/intel-gpu-base-operator:devel
+          scan-ref: ghcr.io/intel/intel-gpu-base-operator:devel
           format: json
           trivy-config: trivy.yaml
           exit-code: 1

@@ -14,6 +14,7 @@ permissions:
 env:
   REGISTRY: ${{ vars.REGISTRY }}
   PROJECT: ${{ vars.PROJECT }}
+  # Used by the Makefile
   RELEASE_REGISTRY: ${{ vars.REGISTRY }}/${{ vars.PROJECT }}
 
 jobs:
