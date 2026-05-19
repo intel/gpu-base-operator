@@ -50,12 +50,11 @@ jobs:
         id: digest
         run: |
           echo "image_sha=$(docker inspect --format='{{index .RepoDigests 0}}' ${REGISTRY}/${PROJECT}/intel-gpu-base-operator:${{ steps.gentag.outputs.TAG }})" >> $GITHUB_OUTPUT
-      # TODO: remove "false &&" when the repository is made public
       - name: Install cosign
-        if: ${{ false && steps.gentag.outputs.TAG != 'devel' }}
+        if: ${{ steps.gentag.outputs.TAG != 'devel' }}
         uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 #v4.1.1
       - name: Keyless image sign
-        if: ${{ false && steps.gentag.outputs.TAG != 'devel' }}
+        if: ${{ steps.gentag.outputs.TAG != 'devel' }}
         run: |
           cosign sign --yes ${{ steps.digest.outputs.image_sha }}
 
