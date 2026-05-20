@@ -20,7 +20,7 @@ sed -i "s/^version: .*/version: $VERSION/" $ROOT/charts/gpu-base-operator/Chart.
 sed -i "s/^appVersion: .*/appVersion: \"$VERSION\"/" $ROOT/charts/gpu-base-operator/Chart.yaml
 sed -i "s/^version: .*/version: $VERSION/" $ROOT/charts/gpu-base-operator-policy/Chart.yaml
 sed -i "s/^appVersion: .*/appVersion: \"$VERSION\"/" $ROOT/charts/gpu-base-operator-policy/Chart.yaml
-sed -i "s/tag: .*/tag: \"$VERSION\"/" $ROOT/charts/gpu-base-operator/values.yaml
+sed -i "s|intel/intel-gpu-base-operator:.*|intel/intel-gpu-base-operator:$VERSION|" $ROOT/charts/gpu-base-operator/values.yaml
 
 # Manager yaml
 sed -i "s|intel/intel-gpu-base-operator:.*|intel/intel-gpu-base-operator:$VERSION|" $ROOT/config/manager/manager.yaml
