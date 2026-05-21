@@ -16,5 +16,5 @@ jobs:
     name: Publish Operator image
     uses: "./.github/workflows/build-push-common.yaml"
     with:
-      runner: ubuntu-latest
+      runner: ubuntu-24.04
     secrets: inherit
