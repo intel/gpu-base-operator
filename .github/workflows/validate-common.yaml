@@ -55,12 +55,12 @@ jobs:
           check-latest: true
           cache: false
       - run: make build
-      - run: make docker-build
+      - run: IMG=ghcr.io/intel/intel-gpu-base-operator:trivy make operator-build
       - name: Run Trivy for operator image (json)
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
         with:
           scan-type: image
-          scan-ref: ghcr.io/intel/intel-gpu-base-operator:devel
+          scan-ref: ghcr.io/intel/intel-gpu-base-operator:trivy
           format: json
           trivy-config: trivy.yaml
           exit-code: 1
