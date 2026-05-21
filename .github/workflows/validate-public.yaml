@@ -16,4 +16,4 @@ jobs:
   validate:
     uses: "./.github/workflows/validate-common.yaml"
     with:
-      runner: ubuntu-latest
+      runner: ubuntu-24.04
