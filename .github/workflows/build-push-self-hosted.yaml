@@ -8,14 +8,15 @@ on:
 
   workflow_dispatch:
 
-permissions:
-  pull-requests: read # for golangci/golangci-lint-action to fetch pull requests
-  contents: read
-  packages: write
+permissions: {}
 
 jobs:
   push:
     name: Publish Operator image
+    permissions:
+      pull-requests: read # for golangci/golangci-lint-action to fetch pull requests
+      contents: read
+      packages: write
     uses: "./.github/workflows/build-push-common.yaml"
     with:
       runner: self-hosted

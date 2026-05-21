@@ -8,8 +8,7 @@ on:
         required: false
         type: string
 
-permissions:
-  contents: read
+permissions: {}
 
 env:
   REGISTRY: ${{ vars.REGISTRY }}

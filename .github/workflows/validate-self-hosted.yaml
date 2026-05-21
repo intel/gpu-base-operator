@@ -9,21 +9,25 @@ on:
       - 'main'
   workflow_dispatch:
 
-permissions:
-  pull-requests: read # for golangci/golangci-lint-action to fetch pull requests
-  contents: read
+permissions: {}
 
 env:
   LOCALBIN: /runners/tools/bin
 
 jobs:
   validate:
+    permissions:
+      pull-requests: read # for golangci/golangci-lint-action to fetch pull requests
+      contents: read
     uses: "./.github/workflows/validate-common.yaml"
     with:
       runner: self-hosted
 
   e2e:
     needs: validate
+    permissions:
+      pull-requests: read
+      contents: read
     uses: "./.github/workflows/validate-e2e.yaml"
     with:
       runner: kubernetes-gpu-ci

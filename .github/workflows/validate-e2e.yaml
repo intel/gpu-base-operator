@@ -11,14 +11,15 @@ on:
         type: string
         default: test-e2e
 
-permissions:
-  pull-requests: read
-  contents: read
+permissions: {}
 
 jobs:
   e2e:
     name: Run e2e with GPU HW
     runs-on: ${{ inputs.runner }}
+    permissions:
+      pull-requests: read
+      contents: read
     steps:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v4
         with:

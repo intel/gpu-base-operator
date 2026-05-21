@@ -6,9 +6,7 @@ on:
         required: true
         type: string
 
-permissions:
-  pull-requests: read # for golangci/golangci-lint-action to fetch pull requests
-  contents: read
+permissions: {}
 
 env:
   isubuntu: ${{ startsWith (inputs.runner, 'ubuntu') }}
@@ -17,6 +15,8 @@ jobs:
   generated:
     name: Check generated files are in sync
     runs-on: ${{ inputs.runner }}
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
@@ -31,6 +31,9 @@ jobs:
   golangci:
     name: Run lint
     runs-on: ${{ inputs.runner }}
+    permissions:
+      pull-requests: read # for golangci/golangci-lint-action to fetch pull requests
+      contents: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
@@ -45,6 +48,8 @@ jobs:
   build:
     name: Build all
     runs-on: ${{ inputs.runner }}
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
@@ -90,6 +95,8 @@ jobs:
   tests:
     name: Run tests
     runs-on: ${{ inputs.runner }}
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
@@ -106,6 +113,8 @@ jobs:
   goverify:
     name: Run golang verify
     runs-on: ${{ inputs.runner }}
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
@@ -122,6 +131,8 @@ jobs:
   trivy_dockerfiles:
     name: Run trivy dockerfile
     runs-on: ${{ inputs.runner }}
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
@@ -162,6 +173,8 @@ jobs:
   trivy_deployments:
     name: Run trivy deployments
     runs-on: ${{ inputs.runner }}
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
