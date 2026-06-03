@@ -24,12 +24,13 @@ import (
 	. "github.com/onsi/gomega"
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
+	rbac "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha "github.com/intel/gpu-base-operator/api/v1alpha1"
 	"github.com/intel/gpu-base-operator/config/deployments"
@@ -353,6 +354,116 @@ var _ = Describe("ClusterPolicy Controller for Device Plugin", func() {
 					Fail("Unexpected DaemonSet found: " + ds.Name)
 				}
 			}
+		})
+	})
+
+	Context("When reconciling Device Plugin and XPUM on OpenShift", func() {
+		defaultNamespace := "foobar-openshift"
+		const resourceName = "test-resource-ocp"
+
+		ctx := context.Background()
+
+		typeNamespacedName := types.NamespacedName{Name: resourceName}
+
+		BeforeEach(func() {
+			Expect(k8sClient.Create(ctx, &v1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: defaultNamespace},
+			})).To(Succeed())
+		})
+
+		AfterEach(func() {
+			resource := &v1alpha.ClusterPolicy{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, resource)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+
+			// Clean up cluster-scoped OpenShift resources created by the reconciler.
+			deleteOpenShiftSCCResources(ctx, k8sClient,
+				resourceName+"-gpu-dp-scc",
+				resourceName+"-gpu-dp-scc-role",
+				resourceName+"-gpu-dp-scc-binding",
+				resourceName+"-gpu-dp",
+				defaultNamespace)
+			deleteOpenShiftSCCResources(ctx, k8sClient,
+				resourceName+"-xpu-manager-scc",
+				resourceName+"-xpu-manager-scc-role",
+				resourceName+"-xpu-manager-scc-binding",
+				resourceName+"-xpu-manager",
+				defaultNamespace)
+		})
+
+		It("creates SCC resources for DP and XPUM and sets ServiceAccountName on DaemonSets", func() {
+			By("creating the ClusterPolicy")
+			Expect(k8sClient.Create(ctx, &v1alpha.ClusterPolicy{
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName},
+				Spec: v1alpha.ClusterPolicySpec{
+					ResourceRegistration: "dp",
+					ResourceMonitoring:   true,
+					DevicePluginSpec: v1alpha.DevicePluginSpec{
+						PluginImage: "intel/intel-gpu-plugin:test",
+					},
+					XpuManagerSpec: v1alpha.XpuManagerSpec{
+						Image: "intel/xpumanager:test",
+					},
+				},
+			})).To(Succeed())
+
+			reconciler := &ClusterPolicyReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Opts: ControllerOpts{
+					Namespace:    defaultNamespace,
+					OpenShift:    true,
+					RequeueDelay: time.Millisecond * 50,
+				},
+			}
+
+			By("first reconcile creates SCC resources")
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("DP ServiceAccount is created")
+			dpSA := &v1.ServiceAccount{}
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: resourceName + "-gpu-dp-sa", Namespace: defaultNamespace}, dpSA)).To(Succeed())
+
+			By("DP SCC is created")
+			dpSCC := &unstructured.Unstructured{}
+			dpSCC.SetAPIVersion(sccAPIVersion)
+			dpSCC.SetKind(sccKind)
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: resourceName + "-gpu-dp-scc"}, dpSCC)).To(Succeed())
+
+			By("DP ClusterRole is created")
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: resourceName + "-gpu-dp-scc-role"}, &rbac.ClusterRole{})).To(Succeed())
+
+			By("DP ClusterRoleBinding is created")
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: resourceName + "-gpu-dp-scc-binding"}, &rbac.ClusterRoleBinding{})).To(Succeed())
+
+			By("XPUM ServiceAccount is created")
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: resourceName + "-xpu-manager-sa", Namespace: defaultNamespace}, &v1.ServiceAccount{})).To(Succeed())
+
+			By("XPUM SCC is created")
+			xpumSCC := &unstructured.Unstructured{}
+			xpumSCC.SetAPIVersion(sccAPIVersion)
+			xpumSCC.SetKind(sccKind)
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: resourceName + "-xpu-manager-scc"}, xpumSCC)).To(Succeed())
+
+			By("DaemonSets have correct ServiceAccountNames")
+			dsList := &apps.DaemonSetList{}
+			Expect(k8sClient.List(ctx, dsList, client.InNamespace(defaultNamespace))).To(Succeed())
+			Expect(dsList.Items).To(HaveLen(2))
+			for _, ds := range dsList.Items {
+				switch ds.Name {
+				case resourceName + "-device-plugin":
+					Expect(ds.Spec.Template.Spec.ServiceAccountName).To(Equal(resourceName + "-gpu-dp-sa"))
+				case resourceName + "-xpu-manager":
+					Expect(ds.Spec.Template.Spec.ServiceAccountName).To(Equal(resourceName + "-xpu-manager-sa"))
+				default:
+					Fail("Unexpected DaemonSet: " + ds.Name)
+				}
+			}
+
+			By("second reconcile is idempotent")
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
 		})
 	})
 

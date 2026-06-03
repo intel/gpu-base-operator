@@ -593,6 +593,33 @@ var _ = Describe("Misc Prometheus", func() {
 			err = r.Get(ctx, types.NamespacedName{Name: "intel-xpumanager", Namespace: r.Opts.Namespace}, service)
 			Expect(err).To(HaveOccurred())
 		})
+
+		It("nil ClusterPolicy returns immediately", func() {
+			s := runtime.NewScheme()
+			Expect(core.AddToScheme(s)).To(Succeed())
+			Expect(prometheusv1.AddToScheme(s)).To(Succeed())
+
+			r := MiscReconciler{}
+			r.Client = fake.NewClientBuilder().WithScheme(s).Build()
+			r.Opts = ControllerOpts{ReqName: "test-cluster-policy", Namespace: "default"}
+
+			err := r.reconcilePrometheusComponents(context.Background(), nil)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("removes prometheus resources when they are already absent", func() {
+			s := runtime.NewScheme()
+			Expect(core.AddToScheme(s)).To(Succeed())
+			Expect(apiextensionsv1.AddToScheme(s)).To(Succeed())
+			Expect(prometheusv1.AddToScheme(s)).To(Succeed())
+
+			r := MiscReconciler{}
+			r.Client = fake.NewClientBuilder().WithScheme(s).WithObjects(prometheusCRDObject()).Build()
+			r.Opts = ControllerOpts{ReqName: "test-cluster-policy", Namespace: "default"}
+
+			err := r.removePrometheusComponents(context.Background(), "test-cluster-policy")
+			Expect(err).NotTo(HaveOccurred())
+		})
 	})
 })
 

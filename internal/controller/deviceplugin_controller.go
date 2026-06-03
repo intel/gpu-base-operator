@@ -46,6 +46,8 @@ type DevicePluginReconciler struct {
 const (
 	dpValue         = "intel-gpu-plugin"
 	xpumdVolumeName = "runxpumd"
+
+	dpResourcePart = "gpu-dp"
 )
 
 func logLevelForDp(spec *v1alpha.ClusterPolicy) int32 {
@@ -196,6 +198,39 @@ func (r *DevicePluginReconciler) updateDaemonSetObject(ds *apps.DaemonSet, spec 
 	} else {
 		removeXpumdMounts(cspec)
 	}
+
+	if r.Opts.OpenShift {
+		_, _, _, saName := buildOpenShiftNames(spec.Name, dpResourcePart)
+		cspec.ServiceAccountName = saName
+	}
+}
+
+func (r *DevicePluginReconciler) createOpenShiftResourcesIfNotExists(ctx context.Context, cpName string) error {
+	sccName, roleName, bindingName, saName := buildOpenShiftNames(cpName, dpResourcePart)
+
+	if err := createServiceAccount(ctx, r.Client, saName, r.Opts.Namespace); err != nil {
+		return fmt.Errorf("failed to ensure DP ServiceAccount: %w", err)
+	}
+
+	if err := ensureSCC(ctx, r.Client, buildDevicePluginSCC(sccName)); err != nil {
+		return fmt.Errorf("failed to ensure DP SCC: %w", err)
+	}
+
+	if err := createSCCRole(ctx, r.Client, roleName, sccName); err != nil {
+		return fmt.Errorf("failed to ensure DP SCC ClusterRole: %w", err)
+	}
+
+	if err := createSCCRoleBinding(ctx, r.Client, bindingName, roleName, saName, r.Opts.Namespace); err != nil {
+		return fmt.Errorf("failed to ensure DP SCC ClusterRoleBinding: %w", err)
+	}
+
+	return nil
+}
+
+func (r *DevicePluginReconciler) cleanupOpenShiftResources(ctx context.Context, cpName string) {
+	sccName, roleName, bindingName, saName := buildOpenShiftNames(cpName, dpResourcePart)
+
+	deleteOpenShiftSCCResources(ctx, r.Client, sccName, roleName, bindingName, saName, r.Opts.Namespace)
 }
 
 func (r *DevicePluginReconciler) createDaemonSet(ctx context.Context, obj client.Object) (ctrl.Result, error) {
@@ -224,6 +259,10 @@ func (r *DevicePluginReconciler) removeDeploymentIfExists(ctx context.Context) (
 	klog.V(4).Info("Removing Device Plugin deployment")
 
 	crName := r.Opts.ReqName
+
+	if r.Opts.OpenShift {
+		r.cleanupOpenShiftResources(ctx, crName)
+	}
 
 	dss := &apps.DaemonSetList{}
 	labels := client.MatchingLabels{
@@ -270,6 +309,14 @@ func (r *DevicePluginReconciler) Reconcile(ctx context.Context, cp *v1alpha.Clus
 		klog.Error(err, "unable to list child DaemonSets")
 
 		return ctrl.Result{}, err
+	}
+
+	if r.Opts.OpenShift {
+		if err := r.createOpenShiftResourcesIfNotExists(ctx, cp.Name); err != nil {
+			klog.Error(err, "unable to ensure OpenShift resources for DP")
+
+			return ctrl.Result{}, err
+		}
 	}
 
 	if len(olderDs.Items) == 0 {

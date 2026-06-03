@@ -30,6 +30,7 @@ import (
 	resv1 "k8s.io/api/resource/v1"
 
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -52,6 +53,8 @@ const (
 	healthCheckPort    = 51516
 	gpuDeviceClass     = "gpu.intel.com"
 	vfioGpuDeviceClass = "gpu-vfio.intel.com"
+
+	draResourcePart = "gpu-dra"
 )
 
 func (r *DRAReconciler) createAll(ctx context.Context, cp *v1alpha.ClusterPolicy) error {
@@ -201,6 +204,21 @@ func (r *DRAReconciler) deleteAll(ctx context.Context, crName string) error {
 		},
 	}
 
+	if r.Opts.OpenShift {
+		sccName, roleName, bindingName, _ := buildOpenShiftNames(crName, draResourcePart)
+
+		scc := &unstructured.Unstructured{}
+		scc.SetAPIVersion(sccAPIVersion)
+		scc.SetKind(sccKind)
+		scc.SetName(sccName)
+
+		objects = append(objects,
+			scc,
+			&rbac.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: roleName}},
+			&rbac.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: bindingName}},
+		)
+	}
+
 	for _, o := range objects {
 		if err := r.Delete(ctx, o); err != nil {
 			if errors.IsNotFound(err) {
@@ -216,6 +234,32 @@ func (r *DRAReconciler) deleteAll(ctx context.Context, crName string) error {
 	}
 
 	klog.Info("Objects deleted")
+
+	return nil
+}
+
+func (r *DRAReconciler) createOpenShiftResourcesIfNotExists(ctx context.Context, crName string) error {
+	sccName, roleName, bindingName, _ := buildOpenShiftNames(crName, draResourcePart)
+	// Use the same service account name as the DaemonSet, which is based on the CR name.
+	saName := fmt.Sprintf("%s-gpu-dra", crName)
+
+	if err := ensureSCC(ctx, r.Client, buildDRASCC(sccName)); err != nil {
+		klog.Error(err, "unable to ensure DRA SCC")
+
+		return err
+	}
+
+	if err := createSCCRole(ctx, r.Client, roleName, sccName); err != nil {
+		klog.Error(err, "unable to ensure DRA SCC ClusterRole")
+
+		return err
+	}
+
+	if err := createSCCRoleBinding(ctx, r.Client, bindingName, roleName, saName, r.Opts.Namespace); err != nil {
+		klog.Error(err, "unable to ensure DRA SCC ClusterRoleBinding")
+
+		return err
+	}
 
 	return nil
 }
@@ -369,6 +413,19 @@ func (r *DRAReconciler) updateDaemonSetObject(ds *apps.DaemonSet, spec *v1alpha.
 	} else {
 		cspec.ImagePullSecrets = nil
 	}
+
+	if r.Opts.OpenShift {
+		// On OpenShift, SELinux labels the container process as container_t which cannot
+		// write to host directories (e.g. /etc/cdi labeled etc_t). spc_t bypasses SELinux
+		// confinement for the container so it can write CDI specs to the host filesystem.
+		if cspec.Containers[0].SecurityContext == nil {
+			cspec.Containers[0].SecurityContext = &core.SecurityContext{}
+		}
+
+		cspec.Containers[0].SecurityContext.SELinuxOptions = &core.SELinuxOptions{
+			Type: "spc_t",
+		}
+	}
 }
 
 func (r *DRAReconciler) createDaemonSet(ctx context.Context, spec *v1alpha.ClusterPolicy) error {
@@ -482,6 +539,14 @@ func (r *DRAReconciler) Reconcile(ctx context.Context, cp *v1alpha.ClusterPolicy
 		klog.Error(err, "unable to list child DaemonSets")
 
 		return ctrl.Result{}, err
+	}
+
+	if r.Opts.OpenShift {
+		if err := r.createOpenShiftResourcesIfNotExists(ctx, cp.Name); err != nil {
+			klog.Error(err, "unable to ensure OpenShift resources for DRA")
+
+			return ctrl.Result{}, err
+		}
 	}
 
 	if len(olderDs.Items) == 0 {

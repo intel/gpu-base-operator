@@ -105,8 +105,8 @@ func addIfMissing(slice *[]string, s string) {
 
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
 
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=get;list;create;delete
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=get;list;create;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=get;list;create;delete;watch;update
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=get;list;create;delete;watch
 // +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=validatingadmissionpolicies,verbs=get;list;create;delete
 // +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=validatingadmissionpolicybindings,verbs=get;list;create;delete
 // +kubebuilder:rbac:groups=resource.k8s.io,resources=deviceclasses,verbs=get;list;create;delete;watch;update
@@ -118,6 +118,8 @@ func addIfMissing(slice *[]string, s string) {
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=watch;list
 
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch;patch;update
+
+// +kubebuilder:rbac:groups=security.openshift.io,resources=securitycontextconstraints,verbs=create;delete;get;list;watch;use;update
 
 // Main Reconcile function for ClusterPolicy. Individual sub-controllers will be called from here to handle their
 // respective resources, and any errors they return will be aggregated into the ClusterPolicy status.

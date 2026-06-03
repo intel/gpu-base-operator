@@ -24,13 +24,14 @@ import (
 	. "github.com/onsi/gomega"
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
+	rbac "k8s.io/api/rbac/v1"
 	resv1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha "github.com/intel/gpu-base-operator/api/v1alpha1"
 	"github.com/intel/gpu-base-operator/config/deployments"
@@ -252,6 +253,112 @@ var _ = Describe("ClusterPolicy Controller for DRA", func() {
 					Fail("Unexpected DeviceClass found: " + dc.Name)
 				}
 			}
+		})
+	})
+
+	Context("When reconciling DRA on OpenShift", func() {
+		defaultNamespace := "foobar-dra-ocp"
+		const resourceName = "test-resource-dra-ocp"
+
+		ctx := context.Background()
+
+		typeNamespacedName := types.NamespacedName{Name: resourceName}
+
+		BeforeEach(func() {
+			Expect(k8sClient.Create(ctx, &v1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: defaultNamespace},
+			})).To(Succeed())
+		})
+
+		AfterEach(func() {
+			resource := &v1alpha.ClusterPolicy{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, resource)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+
+			deleteOpenShiftSCCResources(ctx, k8sClient,
+				resourceName+"-gpu-dra-scc",
+				resourceName+"-gpu-dra-scc-role",
+				resourceName+"-gpu-dra-scc-binding",
+				"", "")
+		})
+
+		It("creates DRA SCC resources and cleans them up on DRA removal", func() {
+			By("creating the ClusterPolicy with DRA mode")
+			Expect(k8sClient.Create(ctx, &v1alpha.ClusterPolicy{
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName},
+				Spec: v1alpha.ClusterPolicySpec{
+					ResourceRegistration: "dra",
+					DynamicResourceAllocationSpec: v1alpha.DynamicResourceAllocationSpec{
+						Image: "intel/gpu-dra-driver:test",
+					},
+				},
+			})).To(Succeed())
+
+			reconciler := &ClusterPolicyReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Opts: ControllerOpts{
+					Namespace:    defaultNamespace,
+					DRAEnable:    true,
+					OpenShift:    true,
+					RequeueDelay: time.Millisecond * 50,
+				},
+			}
+
+			By("reconcile creates DRA SCC resources")
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("DRA SCC is created")
+			draSCC := &unstructured.Unstructured{}
+			draSCC.SetAPIVersion(sccAPIVersion)
+			draSCC.SetKind(sccKind)
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: resourceName + "-gpu-dra-scc"}, draSCC)).To(Succeed())
+
+			By("DRA SCC ClusterRole is created")
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: resourceName + "-gpu-dra-scc-role"}, &rbac.ClusterRole{})).To(Succeed())
+
+			By("DRA SCC ClusterRoleBinding is created")
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: resourceName + "-gpu-dra-scc-binding"}, &rbac.ClusterRoleBinding{})).To(Succeed())
+
+			By("second reconcile is idempotent")
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating a ResourceClaim exercises anyAllocatedResourceClaims loop")
+			resourceClaim := &resv1.ResourceClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-rc-coverage",
+					Namespace: defaultNamespace,
+				},
+				Spec: resv1.ResourceClaimSpec{
+					Devices: resv1.DeviceClaim{
+						Requests: []resv1.DeviceRequest{
+							{Name: "gpu", Exactly: &resv1.ExactDeviceRequest{DeviceClassName: gpuDeviceClass}},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, resourceClaim)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, resourceClaim) })
+
+			By("switching to DP mode removes DRA SCC resources")
+			cp := &v1alpha.ClusterPolicy{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, cp)).To(Succeed())
+			cp.Spec.ResourceRegistration = "dp"
+			cp.Spec.DevicePluginSpec = v1alpha.DevicePluginSpec{
+				PluginImage: "intel/intel-gpu-plugin:test",
+			}
+			Expect(k8sClient.Update(ctx, cp)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			draSCCCheck := &unstructured.Unstructured{}
+			draSCCCheck.SetAPIVersion(sccAPIVersion)
+			draSCCCheck.SetKind(sccKind)
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: resourceName + "-gpu-dra-scc"}, draSCCCheck)).
+				To(Satisfy(errors.IsNotFound))
 		})
 	})
 

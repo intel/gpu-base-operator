@@ -56,6 +56,8 @@ const (
 	otelConfigMountDir  = "/etc/xpumd"
 	otelConfigMountPath = otelConfigMountDir + "/otel-config.yaml"
 	otelConfigHashKey   = "gpu.intel.com/xpum-otel-config-hash"
+
+	xpumResourcePart = "xpu-manager"
 )
 
 type XpuManagerReconciler struct {
@@ -459,6 +461,50 @@ func (r *XpuManagerReconciler) updateDaemonSetObject(ds *apps.DaemonSet, spec *v
 	} else {
 		cspec.ImagePullSecrets = nil
 	}
+
+	if r.Opts.OpenShift {
+		_, _, _, saName := buildOpenShiftNames(spec.Name, xpumResourcePart)
+		cspec.ServiceAccountName = saName
+
+		if cspec.Containers[0].SecurityContext == nil {
+			cspec.Containers[0].SecurityContext = &core.SecurityContext{}
+		}
+
+		// On OpenShift, SELinux labels the container process as container_t which cannot
+		// write to host directories or sysfs GPU PMU control files. spc_t bypasses SELinux
+		// confinement so xpumd can write to /sys/.../control and /run/xpumd.
+		cspec.Containers[0].SecurityContext.SELinuxOptions = &core.SELinuxOptions{
+			Type: "spc_t",
+		}
+	}
+}
+
+func (r *XpuManagerReconciler) createOpenShiftResourcesIfNotExists(ctx context.Context, cpName string) error {
+	sccName, roleName, bindingName, saName := buildOpenShiftNames(cpName, xpumResourcePart)
+
+	if err := createServiceAccount(ctx, r.Client, saName, r.Opts.Namespace); err != nil {
+		return fmt.Errorf("failed to ensure XPUM ServiceAccount: %w", err)
+	}
+
+	if err := ensureSCC(ctx, r.Client, buildXpuManagerSCC(sccName)); err != nil {
+		return fmt.Errorf("failed to ensure XPUM SCC: %w", err)
+	}
+
+	if err := createSCCRole(ctx, r.Client, roleName, sccName); err != nil {
+		return fmt.Errorf("failed to ensure XPUM SCC ClusterRole: %w", err)
+	}
+
+	if err := createSCCRoleBinding(ctx, r.Client, bindingName, roleName, saName, r.Opts.Namespace); err != nil {
+		return fmt.Errorf("failed to ensure XPUM SCC ClusterRoleBinding: %w", err)
+	}
+
+	return nil
+}
+
+func (r *XpuManagerReconciler) cleanupOpenShiftResources(ctx context.Context, cpName string) {
+	sccName, roleName, bindingName, saName := buildOpenShiftNames(cpName, xpumResourcePart)
+
+	deleteOpenShiftSCCResources(ctx, r.Client, sccName, roleName, bindingName, saName, r.Opts.Namespace)
 }
 
 func (r *XpuManagerReconciler) createDaemonSet(ctx context.Context, obj client.Object) (ctrl.Result, error) {
@@ -504,6 +550,10 @@ func (r *XpuManagerReconciler) createDaemonSet(ctx context.Context, obj client.O
 }
 
 func (r *XpuManagerReconciler) removeDeploymentIfExists(ctx context.Context) (ctrl.Result, error) {
+	if r.Opts.OpenShift {
+		r.cleanupOpenShiftResources(ctx, r.Opts.ReqName)
+	}
+
 	dss := &apps.DaemonSetList{}
 
 	matching := client.MatchingLabels{
@@ -549,6 +599,14 @@ func (r *XpuManagerReconciler) Reconcile(ctx context.Context, cp *v1alpha.Cluste
 		klog.Error(err, "unable to list child DaemonSets")
 
 		return ctrl.Result{}, err
+	}
+
+	if r.Opts.OpenShift {
+		if err := r.createOpenShiftResourcesIfNotExists(ctx, cp.Name); err != nil {
+			klog.Error(err, "unable to ensure OpenShift resources for XPU Manager")
+
+			return ctrl.Result{}, err
+		}
 	}
 
 	if len(olderDs.Items) == 0 {
