@@ -77,6 +77,8 @@ const (
 
 	withError   = true
 	withSuccess = false
+
+	gpuFwUpdateResourcePart = "gpu-fwupdate"
 )
 
 var (
@@ -430,6 +432,21 @@ func (r *GPUFirmwareUpdateReconciler) beginUpdate(ctx context.Context, fu *intel
 		return ctrl.Result{}, err
 	}
 
+	if r.Opts.OpenShift {
+		if err := r.ensureOpenShiftResources(ctx, fu.Name); err != nil {
+			klog.Errorf("Failed to ensure OpenShift SCC resources for firmware update %s: %v", fu.Name, err)
+
+			fu.Status.State = stateError
+			fu.Status.Messages = append(fu.Status.Messages, fmt.Sprintf("failed to ensure OpenShift SCC resources: %v", err))
+			if statusErr := r.Status().Update(ctx, fu); statusErr != nil {
+				klog.Error(statusErr, "unable to update GPUFirmwareUpdate status")
+				return ctrl.Result{}, statusErr
+			}
+
+			return ctrl.Result{}, err
+		}
+	}
+
 	if err := r.verifyContentImage(ctx, fu); err != nil {
 		klog.Errorf("Content image verification failed for firmware update %s: %v", fu.Name, err)
 
@@ -540,6 +557,33 @@ func (r *GPUFirmwareUpdateReconciler) checkForNodeDrainStatus(ctx context.Contex
 	return ctrl.Result{RequeueAfter: retryDuration}, nil
 }
 
+func (r *GPUFirmwareUpdateReconciler) ensureOpenShiftResources(ctx context.Context, fuName string) error {
+	sccName, roleName, bindingName, saName := buildOpenShiftNames(fuName, gpuFwUpdateResourcePart)
+
+	if err := createServiceAccount(ctx, r.Client, saName, r.Opts.Namespace); err != nil {
+		return fmt.Errorf("failed to ensure FW update ServiceAccount: %w", err)
+	}
+
+	if err := ensureSCC(ctx, r.Client, buildFWUpdateSCC(sccName)); err != nil {
+		return fmt.Errorf("failed to ensure FW update SCC: %w", err)
+	}
+
+	if err := createSCCRole(ctx, r.Client, roleName, sccName); err != nil {
+		return fmt.Errorf("failed to ensure FW update SCC ClusterRole: %w", err)
+	}
+
+	if err := createSCCRoleBinding(ctx, r.Client, bindingName, roleName, saName, r.Opts.Namespace); err != nil {
+		return fmt.Errorf("failed to ensure FW update SCC ClusterRoleBinding: %w", err)
+	}
+
+	return nil
+}
+
+func (r *GPUFirmwareUpdateReconciler) cleanupOpenShiftResources(ctx context.Context, fuName string) {
+	sccName, roleName, bindingName, saName := buildOpenShiftNames(fuName, gpuFwUpdateResourcePart)
+	deleteOpenShiftSCCResources(ctx, r.Client, sccName, roleName, bindingName, saName, r.Opts.Namespace)
+}
+
 func (r *GPUFirmwareUpdateReconciler) createUpdateJobObjForNode(nodeName string, fu *intelcomv1alpha1.GPUFirmwareUpdate) *batch.Job {
 	job := deployments.XpuManagerFWUpdateJob()
 	job.Namespace = r.Opts.Namespace
@@ -573,6 +617,11 @@ func (r *GPUFirmwareUpdateReconciler) createUpdateJobObjForNode(nodeName string,
 	}
 	job.Spec.BackoffLimit = ptr.To(int32(0))
 	job.Spec.Completions = ptr.To(int32(1))
+
+	if r.Opts.OpenShift {
+		_, _, _, saName := buildOpenShiftNames(fu.Name, gpuFwUpdateResourcePart)
+		job.Spec.Template.Spec.ServiceAccountName = saName
+	}
 
 	job.Spec.Template.Spec.InitContainers[0].Image = fu.Spec.Content.ContainerImage
 
@@ -909,6 +958,10 @@ func (r *GPUFirmwareUpdateReconciler) finalCleanup(ctx context.Context, fu *inte
 
 				return ctrl.Result{}, err
 			}
+		}
+
+		if r.Opts.OpenShift {
+			r.cleanupOpenShiftResources(ctx, fu.Name)
 		}
 
 		if controllerutil.ContainsFinalizer(fu, gpuFwUpdateFinalizer) {

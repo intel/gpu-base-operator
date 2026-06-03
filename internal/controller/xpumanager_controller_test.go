@@ -179,4 +179,20 @@ var _ = Describe("XPU manager daemonset", func() {
 			Expect(*ds.Spec.Template.Spec.AutomountServiceAccountToken).To(BeFalse())
 		})
 	})
+
+	Context("Log level mapping", func() {
+		It("maps LogLevel 1 to warn", func() {
+			cp := &v1alpha.ClusterPolicy{
+				Spec: v1alpha.ClusterPolicySpec{LogLevel: 1},
+			}
+			Expect(logLevelForXpum(cp)).To(Equal("warn"))
+		})
+
+		It("maps LogLevel 2 to info", func() {
+			cp := &v1alpha.ClusterPolicy{
+				Spec: v1alpha.ClusterPolicySpec{LogLevel: 2},
+			}
+			Expect(logLevelForXpum(cp)).To(Equal("info"))
+		})
+	})
 })

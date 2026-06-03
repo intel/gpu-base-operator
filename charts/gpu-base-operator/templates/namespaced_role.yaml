@@ -43,6 +43,7 @@ rules:
   - get
   - list
   - update
+  - watch
 - apiGroups:
   - apps
   resources:

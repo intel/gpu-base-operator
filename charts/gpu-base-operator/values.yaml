@@ -12,11 +12,11 @@ operator:
   verbosity: 2
   resources:
     limits:
-      cpu: 500m
-      memory: 128Mi
+      cpu: 200m
+      memory: 386Mi
     requests:
-      cpu: 10m
-      memory: 64Mi
+      cpu: 100m
+      memory: 256Mi
 
 privateRegistry:
   url: ""
