@@ -82,60 +82,61 @@ node1                               node1           gpu.intel.com   node1       
 
 ## Getting Started
 
+The latest release version is [0.2.1](https://github.com/intel/gpu-base-operator/releases/tag/v0.2.1). Instructions for deploying the operator via Helm are described below.
+
 ### Helm deployment
 
 The _preferred_ installation method to the cluster via our Helm charts.
 
 Helm deployment is split into two charts: operator and policy. The reason for this split is to allow the operator to run cleanup before it is removed from the cluster. DRA especially is problematic as Pods using its resources (e.g. XPU Manager) will get stuck at `Terminating` if the DRA plugin is removed from the cluster.
 
-The basic installation is as follows. The operator:
+The basic installation is as follows:
 ```
 kubectl create ns intel-gpu-operator
 # Required by DRA's admin access
 kubectl label ns intel-gpu-operator resource.kubernetes.io/admin-access=true
 
-helm install --namespace "intel-gpu-operator" --version 0.0.1 \
-  gpu-operator oci://ghcr.io/intel/gpu-base-operator/intel-gpu-base-operator-chart
-helm install --namespace "intel-gpu-operator" --version 0.0.1 \
-  gpu-policy oci://ghcr.io/intel/gpu-base-operator/intel-gpu-base-operator-policy-chart
+helm install --namespace "intel-gpu-operator" --version 0.2.1 gpu-operator \
+  oci://ghcr.io/intel/intel-gpu-base-operator-chart --wait
+helm install --namespace "intel-gpu-operator" --version 0.2.1 gpu-policy \
+  oci://ghcr.io/intel/intel-gpu-base-operator-policy-chart --set resourceRegistration=dra
 ```
 
-By default it installs the operator and a basic Device Plugin enabled deployment with Intel XPU Manager. Node Feature Discovery and Kueue may be installed with the operator chart. The installation depends on `kueue.install` and `nfd.install` parameters.
+This installs the operator and a DRA-enabled deployment with Intel XPU Manager. Node Feature Discovery and Kueue may be installed with the operator chart; this depends on the `kueue.install` and `nfd.install` parameters.
 
 #### Example: DRA without NFD
 
 ```
-helm install --namespace "intel-gpu-operator" --version 0.0.1 \
-  gpu-operator oci://ghcr.io/intel/gpu-base-operator/intel-gpu-base-operator-chart
-helm install --namespace "intel-gpu-operator" --version 0.0.1 \
-  --set resourceRegistration=dra \
-  gpu-policy oci://ghcr.io/intel/gpu-base-operator/intel-gpu-base-operator-policy-chart
+helm install --namespace "intel-gpu-operator" --version 0.2.1 gpu-operator \
+  oci://ghcr.io/intel/intel-gpu-base-operator-chart --wait
+helm install --namespace "intel-gpu-operator" --version 0.2.1 gpu-policy \
+  oci://ghcr.io/intel/intel-gpu-base-operator-policy-chart --set resourceRegistration=dra
 ```
 
 #### Example: DRA with NFD and Kueue
 
 ```
-helm install --namespace "intel-gpu-operator" --version 0.0.1 \
+helm install --namespace "intel-gpu-operator" --version 0.2.1 gpu-operator \
+  oci://ghcr.io/intel/intel-gpu-base-operator-chart --wait \
   --set nfd.install=true \
-  --set kueue.install=true \
-  gpu-operator oci://ghcr.io/intel/gpu-base-operator/intel-gpu-base-operator-chart
-helm install --namespace "intel-gpu-operator" --version 0.0.1 \
+  --set kueue.install=true
+helm install --namespace "intel-gpu-operator" --version 0.2.1 gpu-policy \
+  oci://ghcr.io/intel/intel-gpu-base-operator-policy-chart \
   --set resourceRegistration=dra \
   --set useNFDLabeling=true \
-  --set enableKueue=true \
-  gpu-policy oci://ghcr.io/intel/gpu-base-operator/intel-gpu-base-operator-policy-chart
+  --set enableKueue=true
 ```
 
 #### Example: Device Plugin with NFD
 
 ```
-helm install --namespace "intel-gpu-operator" --version 0.0.1 \
-  --set nfd.install=true \
-  gpu-operator oci://ghcr.io/intel/gpu-base-operator/intel-gpu-base-operator-chart
-helm install --namespace "intel-gpu-operator" --version 0.0.1 \
+helm install --namespace "intel-gpu-operator" --version 0.2.1 gpu-operator \
+  oci://ghcr.io/intel/intel-gpu-base-operator-chart --wait \
+  --set nfd.install=true
+helm install --namespace "intel-gpu-operator" --version 0.2.1 gpu-policy \
+  oci://ghcr.io/intel/intel-gpu-base-operator-policy-chart \
   --set resourceRegistration=dp \
-  --set useNFDLabeling=true \
-  gpu-policy oci://ghcr.io/intel/gpu-base-operator/intel-gpu-base-operator-policy-chart
+  --set useNFDLabeling=true
 ```
 
 Uninstalling the charts:

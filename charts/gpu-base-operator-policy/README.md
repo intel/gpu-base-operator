@@ -5,19 +5,19 @@ Helm chart is for installing the Intel GPU base operator policy. The operator ha
 
 ## Helm install
 ```
-helm install --namespace "intel-gpu-operator" --version 0.0.1 \
-  gpu-policy oci://ghcr.io/intel/gpu-base-operator/intel-gpu-base-operator-policy-chart
+helm install --namespace "intel-gpu-operator" --version 0.2.1 gpu-policy \
+  oci://ghcr.io/intel/intel-gpu-base-operator-policy-chart
 ```
 
 ## Helm upgrade
 ```
-helm upgrade --namespace "intel-gpu-operator" --create-namespace --version 0.0.2 \
-  gpu-policy oci://ghcr.io/intel/gpu-base-operator/intel-gpu-base-operator-policy-chart
+helm upgrade --namespace "intel-gpu-operator" --version 0.2.1 gpu-policy \
+  oci://ghcr.io/intel/intel-gpu-base-operator-policy-chart
 ```
 
 ## Helm uninstall
 ```
-helm uninstall --namespace "intel-gpu-operator" gpu-policy
+helm uninstall --namespace "intel-gpu-operator" gpu-policy --wait
 ```
 
 ## Configuration
