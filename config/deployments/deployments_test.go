@@ -159,23 +159,6 @@ func TestDevicePluginDaemonset_AutomountServiceAccountToken(t *testing.T) {
 	}
 }
 
-func TestDevicePluginDaemonset_LevelzeroContainerSeccompProfile(t *testing.T) {
-	ds := DevicePluginDaemonset()
-	c := findContainer(ds.Spec.Template.Spec.Containers, "intel-gpu-levelzero")
-	if c == nil {
-		t.Fatal("intel-gpu-levelzero container not found")
-	}
-	if c.SecurityContext == nil {
-		t.Fatal("SecurityContext must be set on intel-gpu-levelzero")
-	}
-	if c.SecurityContext.SeccompProfile == nil {
-		t.Fatal("SeccompProfile must be set on intel-gpu-levelzero")
-	}
-	if c.SecurityContext.SeccompProfile.Type != core.SeccompProfileTypeRuntimeDefault {
-		t.Errorf("SeccompProfile.Type: got %v, want RuntimeDefault", c.SecurityContext.SeccompProfile.Type)
-	}
-}
-
 func TestDynamicResourceAllocationDaemonset_KubeletPluginAllowPrivilegeEscalation(t *testing.T) {
 	ds := DynamicResourceAllocationDaemonset()
 	c := findContainer(ds.Spec.Template.Spec.Containers, "kubelet-plugin")
@@ -325,36 +308,6 @@ func TestDevicePluginDaemonset_PluginContainerSecurityContext(t *testing.T) {
 	if c.SecurityContext.SeccompProfile.Type != core.SeccompProfileTypeRuntimeDefault {
 		t.Errorf("SeccompProfile.Type: got %v, want RuntimeDefault on intel-gpu-plugin",
 			c.SecurityContext.SeccompProfile.Type)
-	}
-}
-
-func TestDevicePluginDaemonset_LevelzeroContainerReadOnlyAndCapabilities(t *testing.T) {
-	ds := DevicePluginDaemonset()
-	c := findContainer(ds.Spec.Template.Spec.Containers, "intel-gpu-levelzero")
-	if c == nil {
-		t.Fatal("intel-gpu-levelzero container not found")
-	}
-	if c.SecurityContext == nil {
-		t.Fatal("SecurityContext must be set on intel-gpu-levelzero")
-	}
-	if c.SecurityContext.ReadOnlyRootFilesystem == nil {
-		t.Fatal("ReadOnlyRootFilesystem must be set (non-nil) on intel-gpu-levelzero")
-	}
-	if !*c.SecurityContext.ReadOnlyRootFilesystem {
-		t.Error("ReadOnlyRootFilesystem must be true on intel-gpu-levelzero")
-	}
-	if c.SecurityContext.Capabilities == nil {
-		t.Fatal("Capabilities must be set on intel-gpu-levelzero")
-	}
-	found := false
-	for _, cap := range c.SecurityContext.Capabilities.Drop {
-		if cap == allCaps {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("capabilities.drop must contain ALL on intel-gpu-levelzero")
 	}
 }
 

@@ -75,7 +75,9 @@ spec:
                       type: string
                     type: array
                   levelzero:
-                    description: Container image for the Level Zero companion container
+                    description: |-
+                      Container image for the Level Zero companion container
+                      Deprecated: LevelzeroImage is no longer used and this configuration item will be removed in the future.
                     type: string
                   logLevel:
                     format: int32
@@ -265,7 +267,7 @@ spec:
                   monitoringResource:
                     description: |-
                       Set monitoring resource name for Device Plugin use. If not set, the default resource
-                      name "gpu.intel.com/xe_monitoring" will be used.
+                      name "gpu.intel.com/monitoring" will be used.
                     enum:
                     - i915_monitoring
                     - xe_monitoring

@@ -296,7 +296,7 @@ var _ = Describe("Kubectl apply", Ordered, func() {
 			cp := devicePluginClusterPolicy()
 
 			cp.Spec.UseNFDLabeling = false
-			cp.Spec.XpuManagerSpec.MonitoringResource = "xe_monitoring"
+			cp.Spec.XpuManagerSpec.MonitoringResource = "monitoring"
 
 			err = applyClusterPolicyToCluster(&cp, filepath.Join(tmpDir, "clusterpolicy.yaml"))
 			Expect(err).NotTo(HaveOccurred(), "Failed to apply ClusterPolicy")
@@ -699,7 +699,7 @@ var _ = Describe("Helm", Ordered, Label("helm"), func() {
 			Expect(err).NotTo(HaveOccurred(), "Failed to deploy operator helm chart")
 
 			cmd = exec.Command("helm", "install", "-n", namespace, helmPolicyName, "charts/gpu-base-operator-policy",
-				"--wait", "--set", "resourceRegistration=dp", "--set", "useNFDLabeling=false", "--set", "xpu.monitoringResource=xe_monitoring")
+				"--wait", "--set", "resourceRegistration=dp", "--set", "useNFDLabeling=false", "--set", "xpu.monitoringResource=monitoring")
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to deploy operator policy helm chart")
 

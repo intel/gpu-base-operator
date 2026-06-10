@@ -39,7 +39,6 @@ func ListCollateralImages() map[string]struct{} {
 	images := make(map[string]struct{})
 
 	images[dpcp.Spec.DevicePluginSpec.PluginImage] = struct{}{}
-	images[dpcp.Spec.DevicePluginSpec.LevelzeroImage] = struct{}{}
 	images[dracp.Spec.DynamicResourceAllocationSpec.Image] = struct{}{}
 	images[basecp.Spec.XpuManagerSpec.Image] = struct{}{}
 

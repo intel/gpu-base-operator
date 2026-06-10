@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	apps "k8s.io/api/apps/v1"
@@ -43,7 +44,8 @@ type DevicePluginReconciler struct {
 }
 
 const (
-	dpValue = "intel-gpu-plugin"
+	dpValue         = "intel-gpu-plugin"
+	xpumdVolumeName = "runxpumd"
 )
 
 func logLevelForDp(spec *v1alpha.ClusterPolicy) int32 {
@@ -66,28 +68,63 @@ func hexArgStr(s []string) string {
 	return strings.Join(a, ",")
 }
 
+func addXpumdMounts(spec *core.PodSpec) {
+	for _, v := range spec.Volumes {
+		if v.Name == xpumdVolumeName {
+			return
+		}
+	}
+
+	dirOrCreate := core.HostPathDirectoryOrCreate
+
+	spec.Volumes = append(spec.Volumes, core.Volume{
+		Name: xpumdVolumeName,
+		VolumeSource: core.VolumeSource{
+			HostPath: &core.HostPathVolumeSource{
+				Path: "/run/xpumd",
+				Type: &dirOrCreate,
+			},
+		},
+	})
+
+	spec.Containers[0].VolumeMounts = append(spec.Containers[0].VolumeMounts,
+		core.VolumeMount{
+			Name:      xpumdVolumeName,
+			MountPath: "/run/xpumd",
+		},
+	)
+}
+
+func removeXpumdMounts(spec *core.PodSpec) {
+	for i, v := range spec.Volumes {
+		if v.Name == xpumdVolumeName {
+			spec.Volumes = slices.Delete(spec.Volumes, i, i+1)
+			break
+		}
+	}
+
+	for i, vm := range spec.Containers[0].VolumeMounts {
+		if vm.Name == xpumdVolumeName {
+			spec.Containers[0].VolumeMounts = slices.Delete(spec.Containers[0].VolumeMounts, i, i+1)
+			break
+		}
+	}
+}
+
 func dpArgs(spec *v1alpha.ClusterPolicy) []string {
 	args := []string{}
 
 	dpspec := spec.Spec.DevicePluginSpec
 
 	if spec.Spec.ResourceMonitoring {
-		args = append(args, "-enable-monitoring")
+		args = append(args,
+			"-enable-monitoring",
+			"-xpumd-endpoint=/run/xpumd/intelxpuinfo.sock")
 	}
 
 	logLevel := logLevelForDp(spec)
 	if logLevel > 0 {
 		args = append(args, fmt.Sprintf("-v=%d", logLevel))
-	}
-
-	if spec.Spec.HealthinessSpec != nil {
-		args = append(args, "-health-management")
-		if spec.Spec.HealthinessSpec.CoreTemperatureThreshold > 0 {
-			args = append(args, fmt.Sprintf("-gpu-temp-limit=%d", spec.Spec.HealthinessSpec.CoreTemperatureThreshold))
-		}
-		if spec.Spec.HealthinessSpec.MemoryTemperatureThreshold > 0 {
-			args = append(args, fmt.Sprintf("-memory-temp-limit=%d", spec.Spec.HealthinessSpec.MemoryTemperatureThreshold))
-		}
 	}
 
 	if len(dpspec.ByPathMode) > 0 {
@@ -105,16 +142,6 @@ func dpArgs(spec *v1alpha.ClusterPolicy) []string {
 	return args
 }
 
-func l0Args(spec *v1alpha.ClusterPolicy) (args []string) {
-	v := logLevelForDp(spec)
-
-	if v > 0 {
-		args = append(args, fmt.Sprintf("-v=%d", v))
-	}
-
-	return args
-}
-
 func (r *DevicePluginReconciler) updateDaemonSetObject(ds *apps.DaemonSet, spec *v1alpha.ClusterPolicy) {
 	name := fmt.Sprintf("%s-device-plugin", spec.Name)
 
@@ -125,10 +152,8 @@ func (r *DevicePluginReconciler) updateDaemonSetObject(ds *apps.DaemonSet, spec 
 	dspec := &spec.Spec.DevicePluginSpec
 
 	ds.Spec.Template.Spec.Containers[0].Image = dspec.PluginImage
-	ds.Spec.Template.Spec.Containers[1].Image = dspec.LevelzeroImage
 
 	ds.Spec.Template.Spec.Containers[0].Args = dpArgs(spec)
-	ds.Spec.Template.Spec.Containers[1].Args = l0Args(spec)
 
 	ds.Spec.Template.Spec.NodeSelector = map[string]string{
 		"kubernetes.io/arch": "amd64",
@@ -164,6 +189,12 @@ func (r *DevicePluginReconciler) updateDaemonSetObject(ds *apps.DaemonSet, spec 
 		cspec.ImagePullSecrets = secrets
 	} else {
 		cspec.ImagePullSecrets = nil
+	}
+
+	if spec.Spec.ResourceMonitoring {
+		addXpumdMounts(cspec)
+	} else {
+		removeXpumdMounts(cspec)
 	}
 }
 

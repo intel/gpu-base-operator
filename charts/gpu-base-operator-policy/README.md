@@ -34,8 +34,7 @@ See [Customizing the Chart Before Installing](https://helm.sh/docs/intro/using_h
 | health.coreTemperatureThreshold | 88 | Core temperature threshold for health checks (°C). |
 | health.memoryTemperatureThreshold | 99 | Memory temperature threshold for health checks (°C). |
 | health.checkIntervalSeconds | 12 | Interval for health checks (seconds). |
-| dp.plugin | intel/intel-gpu-plugin:0.35.0 | DP plugin image. |
-| dp.levelzero | intel/intel-gpu-levelzero:0.35.0 | DP Level Zero image. |
+| dp.plugin | intel/intel-gpu-plugin:0.36.0 | DP plugin image. |
 | dp.logLevel | 2 | DP log level. |
 | dp.byPathMode | single | DP by-path mounting mode |
 | dp.allowIDs | [] | Allowed PCI Device IDs |

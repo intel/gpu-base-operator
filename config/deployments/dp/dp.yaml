@@ -57,31 +57,6 @@ spec:
           name: kubeletsockets
         - mountPath: /var/run/cdi
           name: cdipath
-        - mountPath: /var/lib/levelzero
-          name: levelzerosocket
-      - args:
-        - -v=2
-        image: intel/intel-gpu-levelzero:devel
-        imagePullPolicy: IfNotPresent
-        name: intel-gpu-levelzero
-        resources:
-          limits:
-            cpu: 50m
-            memory: 100Mi
-          requests:
-            cpu: 25m
-            memory: 50Mi
-        securityContext:
-          capabilities:
-            drop:
-            - ALL
-          privileged: true
-          readOnlyRootFilesystem: true
-          seccompProfile:
-            type: RuntimeDefault
-        volumeMounts:
-        - mountPath: /var/lib/levelzero
-          name: levelzerosocket
       nodeSelector:
         kubernetes.io/arch: amd64
       volumes:
@@ -98,8 +73,6 @@ spec:
           path: /var/run/cdi
           type: DirectoryOrCreate
         name: cdipath
-      - emptyDir: {}
-        name: levelzerosocket
   updateStrategy:
     rollingUpdate:
       maxSurge: 0

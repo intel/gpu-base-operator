@@ -9,7 +9,7 @@ spec:
     coreTemperatureThreshold: 88
 
   dp:
-    plugin: docker.io/intel/intel-gpu-plugin:0.35.0@sha256:34697f9c286857da986381595ac2a693524a83c831955247dae47dfda4d2f526
-    levelzero: docker.io/intel/intel-gpu-levelzero:0.35.0@sha256:a8a0729f253de6e8e117a7ef621883a1228f7304747076dcd1446c3e18804021
+    plugin: docker.io/intel/intel-gpu-plugin:0.36.0@sha256:2db679be62b52ac985169084ca711cab6e6c59fe543ab2ddee58163d6f8d29e0
     byPathMode: single
+
     logLevel: 4

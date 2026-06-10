@@ -1,11 +1,10 @@
 misconfigurations:
   - id: AVD-KSV-0001
     statement: |
-      GPU FW Update and GPU device plugin Level-Zero sidecar require
+      GPU FW Update requires
       privileged:true / allowPrivilegeEscalation:true securityContext settings.
       NOTE: FW update could also use monitoring/admin access from GPU DP or DRA, and then drop privileged access.
     paths:
-      - dp/dp.yaml
       - xpum/xpum-fwupdate-job.yaml
 
   - id: AVD-KSV-0005
@@ -24,7 +23,6 @@ misconfigurations:
   - id: AVD-KSV-0017
     statement: "DP levelzero & fwupdate requires privileged access / allowPrivilegeEscalation"
     paths:
-      - dp/dp.yaml
       - xpum/xpum-fwupdate-job.yaml
 
   - id: AVD-KSV-0022

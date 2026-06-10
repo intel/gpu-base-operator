@@ -32,7 +32,6 @@ spec:
 {{- if eq .Values.resourceRegistration "dp" }}
   dp:
     plugin: {{ .Values.dp.plugin }}
-    levelzero: {{ .Values.dp.levelzero }}
     logLevel: {{ .Values.dp.logLevel }}
     byPathMode: {{ .Values.dp.byPathMode }}
 {{- if .Values.dp.allowIDs }}

@@ -33,10 +33,9 @@ import (
 // Default images used when no image is specified in the ClusterPolicy spec.
 // These match the pinned images shipped in the Helm chart values.
 const (
-	DefaultDPPluginImage    = "docker.io/intel/intel-gpu-plugin:0.35.0@sha256:34697f9c286857da986381595ac2a693524a83c831955247dae47dfda4d2f526"
-	DefaultDPLevelzeroImage = "docker.io/intel/intel-gpu-levelzero:0.35.0@sha256:a8a0729f253de6e8e117a7ef621883a1228f7304747076dcd1446c3e18804021"
-	DefaultDRAImage         = "ghcr.io/intel/intel-resource-drivers-for-kubernetes/intel-gpu-resource-driver:v0.10.0@sha256:746150e64010881dbfdaeb74771703b13cac365a89ee47c4d7499d686ea4163f"
-	DefaultXPUImage         = "ghcr.io/intel/xpumanager/xpumd:v2.0.0-rc.0@sha256:8f020012f68888314402c0332a53718ace4ade9913476bbd125af89edb760a8b"
+	DefaultDPImage  = "docker.io/intel/intel-gpu-plugin:0.36.0@sha256:2db679be62b52ac985169084ca711cab6e6c59fe543ab2ddee58163d6f8d29e0"
+	DefaultDRAImage = "ghcr.io/intel/intel-resource-drivers-for-kubernetes/intel-gpu-resource-driver:v0.10.0@sha256:746150e64010881dbfdaeb74771703b13cac365a89ee47c4d7499d686ea4163f"
+	DefaultXPUImage = "ghcr.io/intel/xpumanager/xpumd:v2.0.0-rc.0@sha256:8f020012f68888314402c0332a53718ace4ade9913476bbd125af89edb760a8b"
 )
 
 // SetupClusterPolicyWebhookWithManager registers the webhook for ClusterPolicy in the manager.
@@ -60,11 +59,7 @@ func (d *ClusterPolicyCustomDefaulter) Default(_ context.Context, cp *ClusterPol
 	spec := &cp.Spec
 
 	if spec.DevicePluginSpec.PluginImage == "" {
-		spec.DevicePluginSpec.PluginImage = DefaultDPPluginImage
-	}
-
-	if spec.DevicePluginSpec.LevelzeroImage == "" {
-		spec.DevicePluginSpec.LevelzeroImage = DefaultDPLevelzeroImage
+		spec.DevicePluginSpec.PluginImage = DefaultDPImage
 	}
 
 	if spec.DynamicResourceAllocationSpec.Image == "" {
@@ -73,6 +68,10 @@ func (d *ClusterPolicyCustomDefaulter) Default(_ context.Context, cp *ClusterPol
 
 	if spec.XpuManagerSpec.Image == "" {
 		spec.XpuManagerSpec.Image = DefaultXPUImage
+	}
+
+	if spec.XpuManagerSpec.MonitoringResource == "" {
+		spec.XpuManagerSpec.MonitoringResource = "monitoring"
 	}
 
 	return nil
@@ -97,7 +96,7 @@ func validateClusterPolicySpec(spec *ClusterPolicySpec) (admission.Warnings, err
 	errs = append(errs, validateConfigMapOverride(spec)...)
 	errs = append(errs, validateKueueSpec(spec)...)
 
-	if w := warnHealthSpec(spec); w != "" {
+	if w := warnForSpecProblems(spec); w != "" {
 		warnings = append(warnings, w)
 	}
 
@@ -224,13 +223,10 @@ func validateKueueSpec(spec *ClusterPolicySpec) []error {
 	return errs
 }
 
-// warnHealthSpec returns a warning message when checkIntervalSeconds is set
-// for Device Plugin mode, where it has no effect.
-func warnHealthSpec(spec *ClusterPolicySpec) string {
-	if spec.ResourceRegistration == "dp" &&
-		spec.HealthinessSpec != nil &&
-		spec.HealthinessSpec.CheckIntervalSeconds > 0 {
-		return "health.checkIntervalSeconds is not supported by Device Plugin and will be ignored"
+// warnForSpecProblems returns a warning message if some old or deprecated option is set.
+func warnForSpecProblems(spec *ClusterPolicySpec) string {
+	if spec.ResourceRegistration == "dp" && spec.DevicePluginSpec.LevelzeroImage != "" {
+		return "dp.levelzero is no longer used and will be ignored."
 	}
 
 	return ""

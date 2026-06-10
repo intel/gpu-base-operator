@@ -164,12 +164,12 @@ func processContainerResources(ds *apps.DaemonSet, spec *v1alpha.ClusterPolicy, 
 			removePrevMonitoring(cont.Resources.Requests)
 
 			if draClaim == "" {
-				selectedResource := fmt.Sprintf("%s/%s", monResourcePrefix, "xe_monitoring")
+				selectedResource := "monitoring"
 				if xspec.MonitoringResource != "" {
-					selectedResource = fmt.Sprintf("%s/%s", monResourcePrefix, xspec.MonitoringResource)
+					selectedResource = xspec.MonitoringResource
 				}
 
-				resName := core.ResourceName(selectedResource)
+				resName := core.ResourceName(fmt.Sprintf("%s/%s", monResourcePrefix, selectedResource))
 
 				if cont.Resources.Limits == nil {
 					cont.Resources.Limits = core.ResourceList{

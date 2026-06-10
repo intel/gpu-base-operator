@@ -110,6 +110,7 @@ type DevicePluginSpec struct {
 	// Container image for the GPU plugin
 	PluginImage string `json:"plugin,omitempty"`
 	// Container image for the Level Zero companion container
+	// Deprecated: LevelzeroImage is no longer used and this configuration item will be removed in the future.
 	LevelzeroImage string `json:"levelzero,omitempty"`
 
 	// AllowIDs and DenyIDs are used to control which devices are registered as resources.
@@ -140,7 +141,7 @@ type XpuManagerSpec struct {
 	ConfigMapOverride string `json:"configMapOverride,omitempty"`
 
 	// Set monitoring resource name for Device Plugin use. If not set, the default resource
-	// name "gpu.intel.com/xe_monitoring" will be used.
+	// name "gpu.intel.com/monitoring" will be used.
 	// +kubebuilder:validation:Enum=i915_monitoring;xe_monitoring;monitoring
 	MonitoringResource string `json:"monitoringResource,omitempty"`
 }

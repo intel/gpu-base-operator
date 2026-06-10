@@ -80,11 +80,11 @@ var _ = Describe("ClusterPolicy Controller for Device Plugin", func() {
 						ResourceMonitoring:   true,
 						UseNFDLabeling:       true,
 						DevicePluginSpec: v1alpha.DevicePluginSpec{
-							PluginImage:    "intel/intel-gpu-plugin:0.32.0",
-							LevelzeroImage: "intel/intel-gpu-levelzero:0.32.0",
+							PluginImage: "intel/intel-gpu-plugin:0.32.0",
 						},
 						XpuManagerSpec: v1alpha.XpuManagerSpec{
-							Image: "intel/xpumanager:v1.2.27",
+							Image:              "intel/xpumanager:v1.2.27",
+							MonitoringResource: "monitoring",
 						},
 					},
 				}
@@ -180,12 +180,12 @@ var _ = Describe("ClusterPolicy Controller for Device Plugin", func() {
 				ResourceRegistration: "dp",
 				ResourceMonitoring:   true,
 				DevicePluginSpec: v1alpha.DevicePluginSpec{
-					PluginImage:    "intel/intel-gpu-plugin:0.32.0",
-					LevelzeroImage: "intel/intel-gpu-levelzero:0.32.0",
+					PluginImage: "intel/intel-gpu-plugin:0.32.0",
 				},
 				XpuManagerSpec: v1alpha.XpuManagerSpec{
-					Image:    "xpum-image:v1.2.3",
-					LogLevel: 3,
+					Image:              "xpum-image:v1.2.3",
+					LogLevel:           3,
+					MonitoringResource: "monitoring",
 				},
 			},
 		}
@@ -266,8 +266,7 @@ var _ = Describe("ClusterPolicy Controller for Device Plugin", func() {
 				ResourceRegistration: "dp",
 				ResourceMonitoring:   false,
 				DevicePluginSpec: v1alpha.DevicePluginSpec{
-					PluginImage:    "intel/intel-gpu-plugin:0.32.0",
-					LevelzeroImage: "intel/intel-gpu-levelzero:0.32.0",
+					PluginImage: "intel/intel-gpu-plugin:0.32.0",
 				},
 				DynamicResourceAllocationSpec: v1alpha.DynamicResourceAllocationSpec{
 					Image: "intel/gpu-dra-driver:1.2.3",
@@ -381,6 +380,7 @@ var _ = Describe("Device Plugin", func() {
 			}
 			args := dpArgs(spec)
 			Expect(args).To(ContainElement("-enable-monitoring"))
+			Expect(args).To(ContainElement("-xpumd-endpoint=/run/xpumd/intelxpuinfo.sock"))
 		})
 
 		It("Log level set", func() {
@@ -394,22 +394,6 @@ var _ = Describe("Device Plugin", func() {
 			}
 			args := dpArgs(spec)
 			Expect(args).To(ContainElement("-v=3"))
-		})
-
-		It("Healthiness enabled", func() {
-			spec := &v1alpha.ClusterPolicy{
-				Spec: v1alpha.ClusterPolicySpec{
-					HealthinessSpec: &v1alpha.HealthinessSpec{
-						CoreTemperatureThreshold:   85,
-						MemoryTemperatureThreshold: 67,
-					},
-					DevicePluginSpec: v1alpha.DevicePluginSpec{},
-				},
-			}
-			args := dpArgs(spec)
-			Expect(args).To(ContainElement("-health-management"))
-			Expect(args).To(ContainElement("-gpu-temp-limit=85"))
-			Expect(args).To(ContainElement("-memory-temp-limit=67"))
 		})
 
 		It("ByPath set", func() {
@@ -453,9 +437,6 @@ var _ = Describe("Device Plugin", func() {
 				Spec: v1alpha.ClusterPolicySpec{
 					ResourceMonitoring: true,
 					LogLevel:           1,
-					HealthinessSpec: &v1alpha.HealthinessSpec{
-						CoreTemperatureThreshold: 70,
-					},
 					DevicePluginSpec: v1alpha.DevicePluginSpec{
 						LogLevel: 3,
 						AllowIDs: []string{"0x1id1"},
@@ -464,12 +445,10 @@ var _ = Describe("Device Plugin", func() {
 				},
 			}
 			args := dpArgs(spec)
-			Expect(args).To(HaveLen(6))
+			Expect(args).To(HaveLen(5))
 			Expect(args).To(ContainElement("-enable-monitoring"))
 			Expect(args).To(ContainElement("-v=3"))
-			Expect(args).To(ContainElement("-health-management"))
-			Expect(args).To(ContainElement("-gpu-temp-limit=70"))
-			Expect(args).NotTo(ContainElement("-memory-temp-limit=0"))
+			Expect(args).To(ContainElement("-xpumd-endpoint=/run/xpumd/intelxpuinfo.sock"))
 			Expect(args).To(ContainElement("-allow-ids=0x1id1"))
 			Expect(args).To(ContainElement("-deny-ids=0x2id2"))
 		})
@@ -518,8 +497,7 @@ var _ = Describe("Device Plugin", func() {
 			cp := &v1alpha.ClusterPolicy{
 				Spec: v1alpha.ClusterPolicySpec{
 					DevicePluginSpec: v1alpha.DevicePluginSpec{
-						PluginImage:    "intel/intel-gpu-plugin:test",
-						LevelzeroImage: "intel/intel-gpu-levelzero:test",
+						PluginImage: "intel/intel-gpu-plugin:test",
 					},
 				},
 			}
@@ -531,19 +509,102 @@ var _ = Describe("Device Plugin", func() {
 			By("automountServiceAccountToken is false")
 			Expect(ds.Spec.Template.Spec.AutomountServiceAccountToken).NotTo(BeNil())
 			Expect(*ds.Spec.Template.Spec.AutomountServiceAccountToken).To(BeFalse())
+		})
 
-			By("intel-gpu-levelzero container has RuntimeDefault seccomp profile")
-			var l0Container *v1.Container
-			for i := range ds.Spec.Template.Spec.Containers {
-				if ds.Spec.Template.Spec.Containers[i].Name == "intel-gpu-levelzero" {
-					l0Container = &ds.Spec.Template.Spec.Containers[i]
-					break
+		It("adds runxpumd volume and mount when ResourceMonitoring is true", func() {
+			cp := &v1alpha.ClusterPolicy{
+				Spec: v1alpha.ClusterPolicySpec{
+					ResourceMonitoring: true,
+					DevicePluginSpec: v1alpha.DevicePluginSpec{
+						PluginImage: "intel/intel-gpu-plugin:test",
+					},
+				},
+			}
+			controller := &DevicePluginReconciler{}
+
+			ds := deployments.DevicePluginDaemonset()
+			controller.updateDaemonSetObject(ds, cp)
+
+			volNames := []string{}
+			for _, v := range ds.Spec.Template.Spec.Volumes {
+				volNames = append(volNames, v.Name)
+			}
+			Expect(volNames).To(ContainElement(xpumdVolumeName))
+
+			mountNames := []string{}
+			for _, vm := range ds.Spec.Template.Spec.Containers[0].VolumeMounts {
+				mountNames = append(mountNames, vm.Name)
+			}
+			Expect(mountNames).To(ContainElement(xpumdVolumeName))
+		})
+
+		It("does not duplicate runxpumd volume when updateDaemonSetObject is called twice", func() {
+			cp := &v1alpha.ClusterPolicy{
+				Spec: v1alpha.ClusterPolicySpec{
+					ResourceMonitoring: true,
+					DevicePluginSpec: v1alpha.DevicePluginSpec{
+						PluginImage: "intel/intel-gpu-plugin:test",
+					},
+				},
+			}
+			controller := &DevicePluginReconciler{}
+
+			ds := deployments.DevicePluginDaemonset()
+			controller.updateDaemonSetObject(ds, cp)
+			controller.updateDaemonSetObject(ds, cp)
+
+			count := 0
+			for _, v := range ds.Spec.Template.Spec.Volumes {
+				if v.Name == xpumdVolumeName {
+					count++
 				}
 			}
-			Expect(l0Container).NotTo(BeNil())
-			Expect(l0Container.SecurityContext).NotTo(BeNil())
-			Expect(l0Container.SecurityContext.SeccompProfile).NotTo(BeNil())
-			Expect(l0Container.SecurityContext.SeccompProfile.Type).To(Equal(v1.SeccompProfileTypeRuntimeDefault))
+			Expect(count).To(Equal(1))
+		})
+
+		It("removes runxpumd volume and mount when ResourceMonitoring is disabled", func() {
+			cp := &v1alpha.ClusterPolicy{
+				Spec: v1alpha.ClusterPolicySpec{
+					ResourceMonitoring: true,
+					DevicePluginSpec: v1alpha.DevicePluginSpec{
+						PluginImage: "intel/intel-gpu-plugin:test",
+					},
+				},
+			}
+			controller := &DevicePluginReconciler{}
+
+			ds := deployments.DevicePluginDaemonset()
+			controller.updateDaemonSetObject(ds, cp)
+
+			cp.Spec.ResourceMonitoring = false
+			controller.updateDaemonSetObject(ds, cp)
+
+			for _, v := range ds.Spec.Template.Spec.Volumes {
+				Expect(v.Name).NotTo(Equal(xpumdVolumeName))
+			}
+			for _, vm := range ds.Spec.Template.Spec.Containers[0].VolumeMounts {
+				Expect(vm.Name).NotTo(Equal(xpumdVolumeName))
+			}
+		})
+
+		It("removeXpumdMounts is a no-op when runxpumd is not present", func() {
+			cp := &v1alpha.ClusterPolicy{
+				Spec: v1alpha.ClusterPolicySpec{
+					ResourceMonitoring: false,
+					DevicePluginSpec: v1alpha.DevicePluginSpec{
+						PluginImage: "intel/intel-gpu-plugin:test",
+					},
+				},
+			}
+			controller := &DevicePluginReconciler{}
+
+			ds := deployments.DevicePluginDaemonset()
+			initialVolCount := len(ds.Spec.Template.Spec.Volumes)
+			initialMountCount := len(ds.Spec.Template.Spec.Containers[0].VolumeMounts)
+
+			Expect(func() { controller.updateDaemonSetObject(ds, cp) }).NotTo(Panic())
+			Expect(ds.Spec.Template.Spec.Volumes).To(HaveLen(initialVolCount))
+			Expect(ds.Spec.Template.Spec.Containers[0].VolumeMounts).To(HaveLen(initialMountCount))
 		})
 	})
 })

@@ -55,10 +55,10 @@ var _ = Describe("ClusterPolicy Defaulter Webhook", func() {
 	Context("Default", func() {
 		It("sets all default images when none are specified", func() {
 			Expect(defaulter.Default(ctx, obj)).To(Succeed())
-			Expect(obj.Spec.DevicePluginSpec.PluginImage).To(Equal(DefaultDPPluginImage))
-			Expect(obj.Spec.DevicePluginSpec.LevelzeroImage).To(Equal(DefaultDPLevelzeroImage))
+			Expect(obj.Spec.DevicePluginSpec.PluginImage).To(Equal(DefaultDPImage))
 			Expect(obj.Spec.DynamicResourceAllocationSpec.Image).To(Equal(DefaultDRAImage))
 			Expect(obj.Spec.XpuManagerSpec.Image).To(Equal(DefaultXPUImage))
+			Expect(obj.Spec.XpuManagerSpec.MonitoringResource).To(Equal("monitoring"))
 		})
 
 		It("does not overwrite dp.plugin when already set", func() {
@@ -66,15 +66,6 @@ var _ = Describe("ClusterPolicy Defaulter Webhook", func() {
 			obj.Spec.DevicePluginSpec.PluginImage = custom
 			Expect(defaulter.Default(ctx, obj)).To(Succeed())
 			Expect(obj.Spec.DevicePluginSpec.PluginImage).To(Equal(custom))
-			// other fields still get defaults
-			Expect(obj.Spec.DevicePluginSpec.LevelzeroImage).To(Equal(DefaultDPLevelzeroImage))
-		})
-
-		It("does not overwrite dp.levelzero when already set", func() {
-			custom := "my.registry/levelzero:v1"
-			obj.Spec.DevicePluginSpec.LevelzeroImage = custom
-			Expect(defaulter.Default(ctx, obj)).To(Succeed())
-			Expect(obj.Spec.DevicePluginSpec.LevelzeroImage).To(Equal(custom))
 		})
 
 		It("does not overwrite dra.image when already set", func() {
@@ -91,10 +82,22 @@ var _ = Describe("ClusterPolicy Defaulter Webhook", func() {
 			Expect(obj.Spec.XpuManagerSpec.Image).To(Equal(custom))
 		})
 
+		It("sets xpu.monitoringResource to 'monitoring' when not specified", func() {
+			Expect(defaulter.Default(ctx, obj)).To(Succeed())
+			Expect(obj.Spec.XpuManagerSpec.MonitoringResource).To(Equal("monitoring"))
+		})
+
+		It("does not overwrite xpu.monitoringResource when already set", func() {
+			custom := "i915_monitoring"
+			obj.Spec.XpuManagerSpec.MonitoringResource = custom
+			Expect(defaulter.Default(ctx, obj)).To(Succeed())
+			Expect(obj.Spec.XpuManagerSpec.MonitoringResource).To(Equal(custom))
+		})
+
 		It("sets defaults idempotently when called twice", func() {
 			Expect(defaulter.Default(ctx, obj)).To(Succeed())
 			Expect(defaulter.Default(ctx, obj)).To(Succeed())
-			Expect(obj.Spec.DevicePluginSpec.PluginImage).To(Equal(DefaultDPPluginImage))
+			Expect(obj.Spec.DevicePluginSpec.PluginImage).To(Equal(DefaultDPImage))
 			Expect(obj.Spec.XpuManagerSpec.Image).To(Equal(DefaultXPUImage))
 		})
 
@@ -102,7 +105,6 @@ var _ = Describe("ClusterPolicy Defaulter Webhook", func() {
 			Expect(defaulter.Default(ctx, obj)).To(Succeed())
 			for _, img := range []string{
 				obj.Spec.DevicePluginSpec.PluginImage,
-				obj.Spec.DevicePluginSpec.LevelzeroImage,
 				obj.Spec.DynamicResourceAllocationSpec.Image,
 				obj.Spec.XpuManagerSpec.Image,
 			} {
@@ -180,7 +182,6 @@ var _ = Describe("ClusterPolicy Webhook", func() {
 			It("accepts valid image references", func() {
 				obj.Spec.DynamicResourceAllocationSpec.Image = "registry.example.com/intel/gpu-dra:latest"
 				obj.Spec.DevicePluginSpec.PluginImage = "intel/gpu-plugin:v1.0"
-				obj.Spec.DevicePluginSpec.LevelzeroImage = "intel/levelzero@sha256:dc3ffc4fae44e7fa710ac0c9f6e1531ccd9dba3bc21551feaf23efee0b0bba2f"
 				obj.Spec.XpuManagerSpec.Image = "intel/xpumanager:latest"
 				_, err := validator.ValidateCreate(ctx, obj)
 				Expect(err).NotTo(HaveOccurred())
@@ -203,13 +204,6 @@ var _ = Describe("ClusterPolicy Webhook", func() {
 				_, err := validator.ValidateCreate(ctx, obj)
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("dp.plugin"))
-			})
-
-			It("rejects invalid dp.levelzero", func() {
-				obj.Spec.DevicePluginSpec.LevelzeroImage = invalidImageRef
-				_, err := validator.ValidateCreate(ctx, obj)
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("dp.levelzero"))
 			})
 
 			It("rejects invalid xpu.image", func() {
@@ -393,26 +387,20 @@ var _ = Describe("ClusterPolicy Webhook", func() {
 			})
 		})
 
-		Context("health spec warning for Device Plugin", func() {
-			It("emits a warning when checkIntervalSeconds is set with dp mode", func() {
+		Context("spec warning for Levelzero", func() {
+			It("emits a warning when levelzero image is set in DP mode", func() {
 				obj.Spec.ResourceRegistration = dpName
-				obj.Spec.HealthinessSpec = &HealthinessSpec{CheckIntervalSeconds: 10}
+				obj.Spec.DevicePluginSpec.PluginImage = "some-plugin:latest"
+				obj.Spec.DevicePluginSpec.LevelzeroImage = "some-image:latest"
 				warnings, err := validator.ValidateCreate(ctx, obj)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(warnings).To(ContainElement(ContainSubstring("checkIntervalSeconds")))
+				Expect(warnings).To(Not(BeEmpty()))
 			})
 
-			It("emits no warning when checkIntervalSeconds is set with dra mode", func() {
-				obj.Spec.ResourceRegistration = draName
-				obj.Spec.HealthinessSpec = &HealthinessSpec{CheckIntervalSeconds: 10}
-				warnings, err := validator.ValidateCreate(ctx, obj)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(warnings).To(BeEmpty())
-			})
-
-			It("emits no warning when healthinessSpec is nil", func() {
+			It("does not emit a warning when levelzero image is empty in DP mode", func() {
 				obj.Spec.ResourceRegistration = dpName
-				obj.Spec.HealthinessSpec = nil
+				obj.Spec.DevicePluginSpec.PluginImage = "some-plugin:latest"
+				obj.Spec.DevicePluginSpec.LevelzeroImage = ""
 				warnings, err := validator.ValidateCreate(ctx, obj)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(warnings).To(BeEmpty())
