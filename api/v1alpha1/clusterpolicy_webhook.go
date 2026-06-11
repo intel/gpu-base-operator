@@ -23,10 +23,8 @@ import (
 	"regexp"
 	"strings"
 
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"github.com/distribution/reference"
@@ -43,7 +41,7 @@ const (
 
 // SetupClusterPolicyWebhookWithManager registers the webhook for ClusterPolicy in the manager.
 func SetupClusterPolicyWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).For(&ClusterPolicy{}).
+	return ctrl.NewWebhookManagedBy(mgr, &ClusterPolicy{}).
 		WithDefaulter(&ClusterPolicyCustomDefaulter{}).
 		WithValidator(&ClusterPolicyCustomValidator{}).
 		Complete()
@@ -54,16 +52,11 @@ func SetupClusterPolicyWebhookWithManager(mgr ctrl.Manager) error {
 // ClusterPolicyCustomDefaulter sets default image values on ClusterPolicy resources.
 type ClusterPolicyCustomDefaulter struct{}
 
-var _ webhook.CustomDefaulter = &ClusterPolicyCustomDefaulter{}
+var _ admission.Defaulter[*ClusterPolicy] = &ClusterPolicyCustomDefaulter{}
 
 // Default implements webhook.CustomDefaulter. It fills in missing image references
 // with the pinned known-good images shipped with this version of the operator.
-func (d *ClusterPolicyCustomDefaulter) Default(_ context.Context, obj runtime.Object) error {
-	cp, ok := obj.(*ClusterPolicy)
-	if !ok {
-		return fmt.Errorf("expected a ClusterPolicy object")
-	}
-
+func (d *ClusterPolicyCustomDefaulter) Default(_ context.Context, cp *ClusterPolicy) error {
 	spec := &cp.Spec
 
 	if spec.DevicePluginSpec.PluginImage == "" {
@@ -90,7 +83,7 @@ func (d *ClusterPolicyCustomDefaulter) Default(_ context.Context, obj runtime.Ob
 // ClusterPolicyCustomValidator validates ClusterPolicy resources on create and update.
 type ClusterPolicyCustomValidator struct{}
 
-var _ webhook.CustomValidator = &ClusterPolicyCustomValidator{}
+var _ admission.Validator[*ClusterPolicy] = &ClusterPolicyCustomValidator{}
 
 var pciIDRegexp = regexp.MustCompile(`^0x[0-9a-f]{4}$`)
 
@@ -244,26 +237,16 @@ func warnHealthSpec(spec *ClusterPolicySpec) string {
 }
 
 // ValidateCreate implements webhook.CustomValidator.
-func (v *ClusterPolicyCustomValidator) ValidateCreate(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
-	cp, ok := obj.(*ClusterPolicy)
-	if !ok {
-		return nil, fmt.Errorf("expected a ClusterPolicy object")
-	}
-
+func (v *ClusterPolicyCustomValidator) ValidateCreate(_ context.Context, cp *ClusterPolicy) (admission.Warnings, error) {
 	return validateClusterPolicySpec(&cp.Spec)
 }
 
 // ValidateUpdate implements webhook.CustomValidator.
-func (v *ClusterPolicyCustomValidator) ValidateUpdate(_ context.Context, _, newObj runtime.Object) (admission.Warnings, error) {
-	cp, ok := newObj.(*ClusterPolicy)
-	if !ok {
-		return nil, fmt.Errorf("expected a ClusterPolicy object")
-	}
-
+func (v *ClusterPolicyCustomValidator) ValidateUpdate(_ context.Context, _ *ClusterPolicy, cp *ClusterPolicy) (admission.Warnings, error) {
 	return validateClusterPolicySpec(&cp.Spec)
 }
 
 // ValidateDelete implements webhook.CustomValidator.
-func (v *ClusterPolicyCustomValidator) ValidateDelete(_ context.Context, _ runtime.Object) (admission.Warnings, error) {
+func (v *ClusterPolicyCustomValidator) ValidateDelete(_ context.Context, _ *ClusterPolicy) (admission.Warnings, error) {
 	return nil, nil
 }

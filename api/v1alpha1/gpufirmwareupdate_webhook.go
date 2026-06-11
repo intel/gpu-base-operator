@@ -24,9 +24,7 @@ import (
 	"regexp"
 	"strings"
 
-	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"github.com/distribution/reference"
@@ -34,7 +32,7 @@ import (
 
 // SetupGPUFirmwareUpdateWebhookWithManager registers the webhook for GPUFirmwareUpdate in the manager.
 func SetupGPUFirmwareUpdateWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).For(&GPUFirmwareUpdate{}).
+	return ctrl.NewWebhookManagedBy(mgr, &GPUFirmwareUpdate{}).
 		WithValidator(&GPUFirmwareUpdateCustomValidator{}).
 		Complete()
 }
@@ -59,7 +57,7 @@ var inProgressStates = map[string]bool{
 	"error_cleanup": true,
 }
 
-var _ webhook.CustomValidator = &GPUFirmwareUpdateCustomValidator{}
+var _ admission.Validator[*GPUFirmwareUpdate] = &GPUFirmwareUpdateCustomValidator{}
 
 func validateInputs(spec *GPUFirmwareUpdateSpec) error {
 	fileNameReg := regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
@@ -125,27 +123,12 @@ func validateInputs(spec *GPUFirmwareUpdateSpec) error {
 }
 
 // ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type GPUFirmwareUpdate.
-func (v *GPUFirmwareUpdateCustomValidator) ValidateCreate(newObj context.Context, obj runtime.Object) (admission.Warnings, error) {
-	newFU, ok := obj.(*GPUFirmwareUpdate)
-	if !ok {
-		return nil, fmt.Errorf("expected a GPUFirmwareUpdate object")
-	}
-
+func (v *GPUFirmwareUpdateCustomValidator) ValidateCreate(newObj context.Context, newFU *GPUFirmwareUpdate) (admission.Warnings, error) {
 	return nil, validateInputs(&newFU.Spec)
 }
 
 // ValidateUpdate rejects changes to fields that are immutable once an update is in progress.
-func (v *GPUFirmwareUpdateCustomValidator) ValidateUpdate(_ context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	oldFU, ok := oldObj.(*GPUFirmwareUpdate)
-	if !ok {
-		return nil, fmt.Errorf("expected a GPUFirmwareUpdate object for old object")
-	}
-
-	newFU, ok := newObj.(*GPUFirmwareUpdate)
-	if !ok {
-		return nil, fmt.Errorf("expected a GPUFirmwareUpdate object for new object")
-	}
-
+func (v *GPUFirmwareUpdateCustomValidator) ValidateUpdate(_ context.Context, oldFU, newFU *GPUFirmwareUpdate) (admission.Warnings, error) {
 	if !inProgressStates[oldFU.Status.State] {
 		return nil, nil
 	}
@@ -176,6 +159,6 @@ func (v *GPUFirmwareUpdateCustomValidator) ValidateUpdate(_ context.Context, old
 }
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type GPUFirmwareUpdate.
-func (v *GPUFirmwareUpdateCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+func (v *GPUFirmwareUpdateCustomValidator) ValidateDelete(ctx context.Context, obj *GPUFirmwareUpdate) (admission.Warnings, error) {
 	return nil, nil
 }
