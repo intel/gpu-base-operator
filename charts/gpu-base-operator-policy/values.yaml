@@ -24,7 +24,7 @@ dra:
   manageBinding: false
 
 xpu:
-  image: ghcr.io/intel/xpumanager/xpumd:v2.0.0-rc.0@sha256:8f020012f68888314402c0332a53718ace4ade9913476bbd125af89edb760a8b
+  image: ghcr.io/intel/xpumanager/xpumd:v2.0.0@sha256:bd6bad4f95274832ce6863c6f7744fc73a610903617d9def2932588138be0b85
   logLevel: 2
   monitoringResource: monitoring
   configMapOverride: ""

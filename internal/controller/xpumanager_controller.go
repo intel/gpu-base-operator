@@ -234,7 +234,7 @@ func logLevelForXpum(cp *v1alpha.ClusterPolicy) string {
 func (r *XpuManagerReconciler) buildOTelConfigData(cp *v1alpha.ClusterPolicy) (string, error) {
 	cfg := deployments.XpuManagerOTelConfig()
 
-	cfg.Receivers.IntelXPU.LogLevel = logLevelForXpum(cp)
+	cfg.Service.Telemetry.Logs.Level = logLevelForXpum(cp)
 
 	if health := cp.Spec.HealthinessSpec; health != nil {
 		cfg.Receivers.IntelXPU.CollectionInterval = fmt.Sprintf("%ds", health.CheckIntervalSeconds)
@@ -266,11 +266,14 @@ func (r *XpuManagerReconciler) buildOTelConfigData(cp *v1alpha.ClusterPolicy) (s
 	return string(out), nil
 }
 
-// setWarningThreshold updates the first condition value on the "warning" state of a rule.
+// setWarningThreshold updates the condition values on the "warning" state of a rule.
+// All conditions are set to the same threshold, overriding any device-specific defaults.
 func setWarningThreshold(rule *deployments.StatusRule, threshold float64) {
 	for i := range rule.States {
-		if rule.States[i].StateName == "warning" && len(rule.States[i].Conditions) > 0 {
-			rule.States[i].Conditions[0].Value = threshold
+		if rule.States[i].StateName == "warning" {
+			for j := range rule.States[i].Conditions {
+				rule.States[i].Conditions[j].Value = threshold
+			}
 
 			return
 		}
