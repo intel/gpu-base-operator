@@ -100,6 +100,12 @@ spec:
                   logLevel:
                     format: int32
                     type: integer
+                  manageBinding:
+                    description: |-
+                      Allow DRA plugin to bind/unbind devices from xe/i915 driver to vfio/xe-vfio driver and back.
+                      Needed if cluster is supposed to support dynamic switching from drivers. Not needed, if hosts are
+                      preconfigured to either target KubeVirt or normal workloads.
+                    type: boolean
                   podHealthCheck:
                     default: true
                     description: Enable DRA Pod's health check.

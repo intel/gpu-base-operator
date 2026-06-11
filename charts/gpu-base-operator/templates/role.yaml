@@ -123,6 +123,8 @@ rules:
   - delete
   - get
   - list
+  - update
+  - watch
 - apiGroups:
   - resource.k8s.io
   resources:

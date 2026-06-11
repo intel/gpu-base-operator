@@ -24,6 +24,7 @@ import (
 	. "github.com/onsi/gomega"
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
+	resv1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -213,6 +214,44 @@ var _ = Describe("ClusterPolicy Controller for DRA", func() {
 					Fail("Unexpected DaemonSet found: " + ds.Name)
 				}
 			}
+
+			dcList := &resv1.DeviceClassList{}
+			err = k8sClient.List(ctx, dcList)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(dcList.Items).To(HaveLen(2))
+			for _, dc := range dcList.Items {
+				switch dc.Name {
+				case "gpu.intel.com":
+				case "gpu-vfio.intel.com":
+					Expect(dc.Spec.Selectors).To(HaveLen(2))
+				default:
+					Fail("Unexpected DeviceClass found: " + dc.Name)
+				}
+			}
+
+			Expect(k8sClient.Get(ctx, typeNamespacedName, clusterpolicy)).To(Succeed(), "Failed to get ClusterPolicy after reconciliation")
+
+			clusterpolicy.Spec.DynamicResourceAllocationSpec.ManageBinding = true
+			Expect(k8sClient.Update(ctx, clusterpolicy)).To(Succeed(), "Failed to update ClusterPolicy with ManageBinding change")
+
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			err = k8sClient.List(ctx, dcList)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(dcList.Items).To(HaveLen(2))
+
+			for _, dc := range dcList.Items {
+				switch dc.Name {
+				case "gpu.intel.com":
+				case "gpu-vfio.intel.com":
+					Expect(dc.Spec.Selectors).To(HaveLen(1))
+				default:
+					Fail("Unexpected DeviceClass found: " + dc.Name)
+				}
+			}
 		})
 	})
 
@@ -312,25 +351,7 @@ var _ = Describe("ClusterPolicy Controller for DRA", func() {
 	})
 
 	Context("DRA arguments handling", func() {
-		It("without health limits", func() {
-			cp := &v1alpha.ClusterPolicy{
-				Spec: v1alpha.ClusterPolicySpec{
-					LogLevel: 2,
-					DynamicResourceAllocationSpec: v1alpha.DynamicResourceAllocationSpec{
-						LogLevel: 1,
-					},
-				},
-			}
-			controller := &DRAReconciler{}
-
-			args := controller.generateArgs(cp)
-
-			Expect(args).To(HaveLen(2))
-			Expect(args).To(ContainElement("-v=2"))
-			Expect(args).To(ContainElement("--healthcheck-port=-1"))
-		})
-
-		It("with health limits", func() {
+		It("with health monitoring", func() {
 			cp := &v1alpha.ClusterPolicy{
 				Spec: v1alpha.ClusterPolicySpec{
 					LogLevel: 2,
@@ -349,10 +370,60 @@ var _ = Describe("ClusterPolicy Controller for DRA", func() {
 
 			args := controller.generateArgs(cp)
 
-			Expect(args).To(HaveLen(3))
+			Expect(args).To(HaveLen(4))
 			Expect(args).To(ContainElement("-v=3"))
 			Expect(args).To(ContainElement("--health-monitoring=true"))
 			Expect(args).To(ContainElement("--healthcheck-port=-1"))
+			Expect(args).To(ContainElement("--manage-binding=false"))
+		})
+
+		It("with device taint", func() {
+			cp := &v1alpha.ClusterPolicy{
+				Spec: v1alpha.ClusterPolicySpec{
+					LogLevel: 2,
+					DynamicResourceAllocationSpec: v1alpha.DynamicResourceAllocationSpec{
+						LogLevel:       3,
+						PodHealthCheck: true,
+						DeviceTaints:   true,
+					},
+					HealthinessSpec: &v1alpha.HealthinessSpec{
+						CheckIntervalSeconds:       67,
+						CoreTemperatureThreshold:   42,
+						MemoryTemperatureThreshold: 45,
+					},
+				},
+			}
+			controller := &DRAReconciler{}
+
+			args := controller.generateArgs(cp)
+
+			Expect(args).To(HaveLen(5))
+			Expect(args).To(ContainElement("-v=3"))
+			Expect(args).To(ContainElement("--health-monitoring=true"))
+			Expect(args).To(ContainElement("--healthcheck-port=51516"))
+			Expect(args).To(ContainElement("--ignore-health-warning=false"))
+			Expect(args).To(ContainElement("--manage-binding=false"))
+		})
+
+		It("with driver bind management", func() {
+			cp := &v1alpha.ClusterPolicy{
+				Spec: v1alpha.ClusterPolicySpec{
+					LogLevel: 2,
+					DynamicResourceAllocationSpec: v1alpha.DynamicResourceAllocationSpec{
+						LogLevel:       3,
+						PodHealthCheck: true,
+						ManageBinding:  true,
+					},
+				},
+			}
+			controller := &DRAReconciler{}
+
+			args := controller.generateArgs(cp)
+
+			Expect(args).To(HaveLen(3))
+			Expect(args).To(ContainElement("-v=3"))
+			Expect(args).To(ContainElement("--healthcheck-port=51516"))
+			Expect(args).To(ContainElement("--manage-binding=true"))
 		})
 	})
 })

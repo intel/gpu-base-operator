@@ -93,6 +93,13 @@ func TestDynamicResourceAllocationDeviceClass(t *testing.T) {
 	}
 }
 
+func TestDynamicResourceAllocationDeviceClassVfio(t *testing.T) {
+	dc := DynamicResourceAllocationDeviceClassVfio(false)
+	if dc == nil {
+		t.Error("DynamicResourceAllocationDeviceClassVfio returned nil")
+	}
+}
+
 func TestDynamicResourceAllocationValidatingAdmissionPolicy(t *testing.T) {
 	ap := DynamicResourceAllocationValidatingAdmissionPolicy()
 	if ap == nil {

@@ -84,6 +84,11 @@ type DynamicResourceAllocationSpec struct {
 	// Enable DRA Pod's health check.
 	// +kubebuilder:default=true
 	PodHealthCheck bool `json:"podHealthCheck,omitempty"`
+
+	// Allow DRA plugin to bind/unbind devices from xe/i915 driver to vfio/xe-vfio driver and back.
+	// Needed if cluster is supposed to support dynamic switching from drivers. Not needed, if hosts are
+	// preconfigured to either target KubeVirt or normal workloads.
+	ManageBinding bool `json:"manageBinding,omitempty"`
 }
 
 // HealthinessSpec defines the thresholds for health monitoring.

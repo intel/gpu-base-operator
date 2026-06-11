@@ -48,15 +48,16 @@ type DRAReconciler struct {
 }
 
 const (
-	draValue        = "intel-gpu-resource-driver-kubelet-plugin"
-	healthCheckPort = 51516
-	gpuDeviceClass  = "gpu.intel.com"
+	draValue           = "intel-gpu-resource-driver-kubelet-plugin"
+	healthCheckPort    = 51516
+	gpuDeviceClass     = "gpu.intel.com"
+	vfioGpuDeviceClass = "gpu-vfio.intel.com"
 )
 
-func (r *DRAReconciler) createAll(ctx context.Context, obj client.Object) error {
+func (r *DRAReconciler) createAll(ctx context.Context, cp *v1alpha.ClusterPolicy) error {
 	objects := []client.Object{}
 
-	objName := fmt.Sprintf("%s-gpu-dra", obj.GetName())
+	objName := fmt.Sprintf("%s-gpu-dra", cp.Name)
 
 	// Service account
 	sa := deployments.DynamicResourceAllocationServiceAccount()
@@ -81,8 +82,12 @@ func (r *DRAReconciler) createAll(ctx context.Context, obj client.Object) error 
 	crb.RoleRef.Name = objName
 	objects = append(objects, crb)
 
-	// Device class
+	// Device classes
 	objects = append(objects, deployments.DynamicResourceAllocationDeviceClass())
+
+	// Device Class for VFIO and configure it based on the ManageBinding setting in the CR.
+	mb := cp.Spec.DynamicResourceAllocationSpec.ManageBinding
+	objects = append(objects, deployments.DynamicResourceAllocationDeviceClassVfio(!mb))
 
 	// Validating admission policy
 	ap := deployments.DynamicResourceAllocationValidatingAdmissionPolicy()
@@ -110,7 +115,39 @@ func (r *DRAReconciler) createAll(ctx context.Context, obj client.Object) error 
 		}
 	}
 
-	return r.createDaemonSet(ctx, obj)
+	return r.createDaemonSet(ctx, cp)
+}
+
+func (r *DRAReconciler) ensureVfioDeviceClass(ctx context.Context, manageBinding bool) {
+	existing := deployments.DynamicResourceAllocationDeviceClassVfio(!manageBinding)
+
+	if err := r.Get(ctx, client.ObjectKey{Name: existing.Name}, existing); err != nil {
+		if errors.IsNotFound(err) {
+			klog.Info("VFIO device class not found, creating")
+
+			if err := r.Create(ctx, existing); err != nil {
+				klog.Error(err, "unable to create VFIO device class")
+			}
+
+			return
+		}
+
+		klog.Error(err, "unable to get VFIO device class")
+		return
+	}
+
+	desired := deployments.DynamicResourceAllocationDeviceClassVfio(!manageBinding)
+
+	diff := cmp.Diff(existing.Spec.Selectors, desired.Spec.Selectors, cmpopts.EquateEmpty())
+	if len(diff) > 0 {
+		klog.V(2).Info("Updating VFIO device class due to ManageBinding change", "diff", diff)
+
+		existing.Spec.Selectors = desired.Spec.Selectors
+
+		if err := r.Update(ctx, existing); err != nil {
+			klog.Error(err, "unable to update VFIO device class")
+		}
+	}
 }
 
 func (r *DRAReconciler) deleteAll(ctx context.Context, crName string) error {
@@ -139,6 +176,11 @@ func (r *DRAReconciler) deleteAll(ctx context.Context, crName string) error {
 		&resv1.DeviceClass{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: gpuDeviceClass,
+			},
+		},
+		&resv1.DeviceClass{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: vfioGpuDeviceClass,
 			},
 		},
 		&adreg.ValidatingAdmissionPolicy{
@@ -329,8 +371,7 @@ func (r *DRAReconciler) updateDaemonSetObject(ds *apps.DaemonSet, spec *v1alpha.
 	}
 }
 
-func (r *DRAReconciler) createDaemonSet(ctx context.Context, obj client.Object) error {
-	spec := obj.(*v1alpha.ClusterPolicy)
+func (r *DRAReconciler) createDaemonSet(ctx context.Context, spec *v1alpha.ClusterPolicy) error {
 	ds := deployments.DynamicResourceAllocationDaemonset()
 
 	r.updateDaemonSetObject(ds, spec)
@@ -401,6 +442,13 @@ func (r *DRAReconciler) generateArgs(spec *v1alpha.ClusterPolicy) []string {
 		args = append(args, "--healthcheck-port=-1")
 	}
 
+	manageBinding := "false"
+	if spec.Spec.DynamicResourceAllocationSpec.ManageBinding {
+		manageBinding = "true"
+	}
+
+	args = append(args, fmt.Sprintf("--manage-binding=%s", manageBinding))
+
 	return args
 }
 
@@ -457,6 +505,8 @@ func (r *DRAReconciler) Reconcile(ctx context.Context, cp *v1alpha.ClusterPolicy
 			return ctrl.Result{}, err
 		}
 	}
+
+	r.ensureVfioDeviceClass(ctx, cp.Spec.DynamicResourceAllocationSpec.ManageBinding)
 
 	if err := r.List(ctx, &olderDs, client.InNamespace(r.Opts.Namespace), labels); err != nil {
 		klog.Error(err, "unable to list child DaemonSets")

@@ -16,6 +16,7 @@ package deployments
 
 import (
 	_ "embed"
+	"fmt"
 
 	adreg "k8s.io/api/admissionregistration/v1"
 	apps "k8s.io/api/apps/v1"
@@ -28,6 +29,11 @@ import (
 	nfdcrd "sigs.k8s.io/node-feature-discovery/api/nfd/v1alpha1"
 
 	"sigs.k8s.io/yaml"
+)
+
+const (
+	vfioExpression   = `device.attributes["gpu.intel.com"].driver == 'vfio-pci'`
+	xeVfioExpression = `device.attributes["gpu.intel.com"].driver == 'xe-vfio-pci'`
 )
 
 // XPU Manager
@@ -90,6 +96,24 @@ var contentDRADC []byte
 
 func DynamicResourceAllocationDeviceClass() *resv1.DeviceClass {
 	return getDeviceClass(contentDRADC).DeepCopy()
+}
+
+//go:embed dra/device-class-vfio.yaml
+var contentDRADCVfio []byte
+
+func DynamicResourceAllocationDeviceClassVfio(limitToVfio bool) *resv1.DeviceClass {
+	dc := getDeviceClass(contentDRADCVfio).DeepCopy()
+
+	// Limit VFIO device class to only VFIO-bound devices.
+	if limitToVfio {
+		dc.Spec.Selectors = append(dc.Spec.Selectors, resv1.DeviceSelector{
+			CEL: &resv1.CELDeviceSelector{
+				Expression: fmt.Sprintf("%s || %s", vfioExpression, xeVfioExpression),
+			},
+		})
+	}
+
+	return dc
 }
 
 //go:embed dra/admissionpolicy.yaml

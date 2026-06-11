@@ -48,6 +48,7 @@ spec:
     logLevel: {{ .Values.dra.logLevel }}
     deviceTaints: {{ .Values.dra.deviceTaints | default false }}
     podHealthCheck: {{ .Values.dra.podHealthCheck | default true }}
+    manageBinding: {{ .Values.dra.manageBinding | default false }}
 {{- else }}
     {{- fail "Please select either dp or dra" }}
 {{- end }}
