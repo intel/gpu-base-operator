@@ -34,8 +34,8 @@ import (
 
 // SetupGPUFirmwareUpdateWebhookWithManager registers the webhook for GPUFirmwareUpdate in the manager.
 func SetupGPUFirmwareUpdateWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).For(&GPUFirmwareUpdate{}).
-		WithValidator(&GPUFirmwareUpdateCustomValidator{}).
+	return ctrl.NewWebhookManagedBy(mgr, &GPUFirmwareUpdate{}).
+		WithCustomValidator(&GPUFirmwareUpdateCustomValidator{}).
 		Complete()
 }
 

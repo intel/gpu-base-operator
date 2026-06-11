@@ -43,9 +43,9 @@ const (
 
 // SetupClusterPolicyWebhookWithManager registers the webhook for ClusterPolicy in the manager.
 func SetupClusterPolicyWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).For(&ClusterPolicy{}).
-		WithDefaulter(&ClusterPolicyCustomDefaulter{}).
-		WithValidator(&ClusterPolicyCustomValidator{}).
+	return ctrl.NewWebhookManagedBy(mgr, &ClusterPolicy{}).
+		WithCustomDefaulter(&ClusterPolicyCustomDefaulter{}).
+		WithCustomValidator(&ClusterPolicyCustomValidator{}).
 		Complete()
 }
 
