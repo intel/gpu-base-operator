@@ -132,7 +132,3 @@ type GPUFirmwareUpdateSubsetStatus struct {
 	Error     []string `json:"errorNodes,omitempty"`
 	Jobs      []string `json:"jobs,omitempty"`
 }
-
-func init() {
-	SchemeBuilder.Register(&GPUFirmwareUpdate{}, &GPUFirmwareUpdateList{})
-}

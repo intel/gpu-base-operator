@@ -202,7 +202,3 @@ type ClusterPolicyList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []ClusterPolicy `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&ClusterPolicy{}, &ClusterPolicyList{})
-}
