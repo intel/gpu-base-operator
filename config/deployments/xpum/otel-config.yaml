@@ -1,8 +1,6 @@
 receivers:
   # The Intel XPU receiver.
   intelxpu:
-    # Log level (debug, info, warn, error)
-    log_level: info
     # Metrics data collection interval.
     # Must be at least twice the sampling_interval.
     collection_interval: 5s
@@ -13,7 +11,7 @@ receivers:
     # Sampling interval for the high-frequency metrics.
     sampling_interval: 1s
     # Configuration for enabling/disabling individual metrics.
-    # See receiver/intelxpu/documentation.md for list of available metrics.
+    # See receiver/intelxpu/sysman/documentation.md for list of available metrics.
     metrics:
 #      hw.memory.size:
 #        enabled: false
@@ -31,7 +29,7 @@ processors:
         component_filters:
           - key: "hw.sensor_location"
             values: ["gpu"]
-        copy_attributes: ["hw.id", "hw.name", "pci.bdf", "hw.sensor_location"]
+        copy_attributes: ["hw.id", "hw.name", "pci.bdf", "hw.sensor_location", "com.intel.subdevice_id"]
         add_attributes:
           hw.type: "temperature"
         # Ordered list of state rules. The rules should be ordered by increasing severity.
@@ -52,7 +50,7 @@ processors:
         component_filters:
           - key: "hw.sensor_location"
             values: ["memory"]
-        copy_attributes: ["hw.id", "hw.name", "pci.bdf", "hw.sensor_location"]
+        copy_attributes: ["hw.id", "hw.name", "pci.bdf", "hw.sensor_location", "com.intel.subdevice_id"]
         add_attributes:
           hw.type: "temperature"
         # Ordered list of state rules. The rules should be ordered by increasing severity.
@@ -89,6 +87,39 @@ processors:
 exporters:
   intelxpuinfo:
     endpoint: "/run/xpumd/intelxpuinfo.sock"
+    hw_status_mappings:
+      - health_domain: "memory"
+        filters:
+          - key: hw.type
+            values: [memory]
+        state_mapping:
+          unknown:
+            severity: unknown
+          ok:
+            severity: ok
+          degraded:
+            severity: warning
+          critical:
+            severity: critical
+          replace:
+            severity: critical
+          "*":
+            severity: warning
+            message: "Unexpected memory health state, mapped to warning"
+      - health_domain: "{{ .hw_type }}"
+        state_mapping:
+          unknown:
+            severity: unknown
+          ok:
+            severity: ok
+          warning:
+            severity: warning
+          critical:
+            severity: critical
+          failed:
+            severity: failed
+          "*":
+            severity: warning
   prometheus:
     endpoint: "0.0.0.0:8080"
 
@@ -98,9 +129,11 @@ service:
   telemetry:
     logs:
       level: info
-      disable_stacktrace: true
   pipelines:
     metrics:
       receivers: [intelxpu]
       processors: [intelxpustatus]
       exporters: [intelxpuinfo,prometheus]
+    logs:
+      receivers: [intelxpu]
+      exporters: [intelxpuinfo]

@@ -43,7 +43,7 @@ See [Customizing the Chart Before Installing](https://helm.sh/docs/intro/using_h
 | dra.logLevel | 2 | DRA log level. |
 | dra.deviceTaints | false | Enable device taints. |
 | dra.podHealthCheck | true | Health check for DRA Pod. |
-| xpu.image | ghcr.io/intel/xpumanager/xpumd:v2.0.0-rc.0 | XPU manager image. |
+| xpu.image | ghcr.io/intel/xpumanager/xpumd:v2.0.0 | XPU manager image. |
 | xpu.logLevel | 2 | XPU manager log level. |
 | xpu.monitoringResource | xe_monitoring | Monitoring resource for XPUMD with device plugin. |
 | xpu.configMapOverride | "" | Override the default XPUM configuration ConfigMap name. |
