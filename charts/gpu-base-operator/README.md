@@ -34,6 +34,7 @@ See [Customizing the Chart Before Installing](https://helm.sh/docs/intro/using_h
 
 | Value | Default Value | Description|
 |---|---|---|
+| `createNamespace`| true | Create the namespace during chart installation |
 | `kueue.install`| false | Have operator install kueue when installing this Helm chart |
 | `nfd.install`| false | Have operator install NFD when installing this Helm chart |
 | `operator.image.repository`| ghcr.io/intel/intel-gpu-base-operator:devel | Operator container image (repository and tag) |

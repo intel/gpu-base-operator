@@ -483,23 +483,6 @@ var _ = Describe("Kubectl apply", Ordered, func() {
 
 var _ = Describe("Helm", Ordered, Label("helm"), func() {
 	Context("install", func() {
-
-		BeforeAll(func() {
-			cmd := exec.Command("kubectl", "create", "ns", namespace)
-			_, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Failed to create namespace")
-
-			cmd = exec.Command("kubectl", "label", "ns", namespace, "resource.kubernetes.io/admin-access=true")
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Failed to label operator namespace")
-		})
-
-		AfterAll(func() {
-			cmd := exec.Command("kubectl", "delete", "ns", namespace)
-			_, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Failed to delete namespace")
-		})
-
 		AfterEach(func() {
 			By("remove clusterpolicy")
 			cmd := exec.Command("helm", "uninstall", "-n", namespace, helmPolicyName, "--wait")
@@ -535,7 +518,7 @@ var _ = Describe("Helm", Ordered, Label("helm"), func() {
 		})
 
 		It("DRA with defaults", Label("dra", "xpum", "nfd"), func() {
-			cmd := exec.Command("helm", "install", "-n", namespace, helmOperatorName, "charts/gpu-base-operator",
+			cmd := exec.Command("helm", "install", "--create-namespace", "-n", namespace, helmOperatorName, "charts/gpu-base-operator",
 				"--set", "nfd.install=true", "--wait")
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to deploy operator helm chart")
@@ -576,7 +559,7 @@ var _ = Describe("Helm", Ordered, Label("helm"), func() {
 			By("validating that Prometheus is running")
 			Eventually(waitForPrometheusToBeReady).Should(Succeed())
 
-			cmd := exec.Command("helm", "install", "-n", namespace, helmOperatorName, "charts/gpu-base-operator",
+			cmd := exec.Command("helm", "install", "--create-namespace", "-n", namespace, helmOperatorName, "charts/gpu-base-operator",
 				"--set", "nfd.install=true", "--wait")
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to deploy operator helm chart")
@@ -607,7 +590,7 @@ var _ = Describe("Helm", Ordered, Label("helm"), func() {
 		})
 
 		It("check operator's TLS cipher selection", Label("helm", "tls", "long"), func() {
-			cmd := exec.Command("helm", "install", "-n", namespace, helmOperatorName, "charts/gpu-base-operator", "--wait")
+			cmd := exec.Command("helm", "install", "--create-namespace", "-n", namespace, helmOperatorName, "charts/gpu-base-operator", "--wait")
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to deploy operator helm chart")
 
@@ -644,7 +627,7 @@ var _ = Describe("Helm", Ordered, Label("helm"), func() {
 		})
 
 		It("check operator's open ports", Label("helm", "ports", "long"), func() {
-			cmd := exec.Command("helm", "install", "-n", namespace, helmOperatorName, "charts/gpu-base-operator", "--wait")
+			cmd := exec.Command("helm", "install", "--create-namespace", "-n", namespace, helmOperatorName, "charts/gpu-base-operator", "--wait")
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to deploy operator helm chart")
 
@@ -694,7 +677,7 @@ var _ = Describe("Helm", Ordered, Label("helm"), func() {
 		})
 
 		It("device plugin with xpumd", Label("deviceplugin", "xpum"), func() {
-			cmd := exec.Command("helm", "install", "-n", namespace, helmOperatorName, "charts/gpu-base-operator", "--wait")
+			cmd := exec.Command("helm", "install", "--create-namespace", "-n", namespace, helmOperatorName, "charts/gpu-base-operator", "--wait")
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to deploy operator helm chart")
 
@@ -718,7 +701,7 @@ var _ = Describe("Helm", Ordered, Label("helm"), func() {
 		})
 
 		It("Kueue with DRA", Label("dra", "kueue", "nfd"), func() {
-			cmd := exec.Command("helm", "install", "-n", namespace, helmOperatorName, "charts/gpu-base-operator", "--wait", "--set", "kueue.install=true", "--set", "nfd.install=true")
+			cmd := exec.Command("helm", "install", "--create-namespace", "-n", namespace, helmOperatorName, "charts/gpu-base-operator", "--wait", "--set", "kueue.install=true", "--set", "nfd.install=true")
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to deploy operator helm chart")
 

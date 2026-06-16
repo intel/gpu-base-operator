@@ -1,0 +1,9 @@
+{{- if eq .Values.createNamespace true }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    app.kubernetes.io/name: intel-gpu-base-operator
+    resource.kubernetes.io/admin-access: "true"
+  name: {{ .Release.Namespace }}
+{{- end }}

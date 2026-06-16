@@ -1,5 +1,7 @@
 # Default values for gpu-base-operator.
 
+createNamespace: true
+
 nfd:
   install: false
 
