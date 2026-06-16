@@ -120,7 +120,7 @@ var _ = Describe("Misc", func() {
 				Spec: v1alpha.ClusterPolicySpec{},
 			}
 
-			nfr := createNfdRule(spec)
+			nfr := createNfdRule(spec, "")
 			Expect(nfr).NotTo(BeNil())
 
 			Expect(nfr.Spec.Rules).To(HaveLen(1))
@@ -591,6 +591,132 @@ var _ = Describe("Misc Prometheus", func() {
 			Expect(err).To(HaveOccurred())
 
 			err = r.Get(ctx, types.NamespacedName{Name: "intel-xpumanager", Namespace: r.Opts.Namespace}, service)
+			Expect(err).To(HaveOccurred())
+		})
+	})
+})
+
+func nfdCRDObject(scope apiextensionsv1.ResourceScope) *apiextensionsv1.CustomResourceDefinition {
+	return &apiextensionsv1.CustomResourceDefinition{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: nfdRuleCrd,
+		},
+		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+			Scope: scope,
+		},
+	}
+}
+
+var _ = Describe("Misc NFD", func() {
+
+	cp := func(useNFD bool) *v1alpha.ClusterPolicy {
+		return &v1alpha.ClusterPolicy{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-cluster-policy",
+			},
+			Spec: v1alpha.ClusterPolicySpec{
+				UseNFDLabeling: useNFD,
+			},
+		}
+	}
+
+	Context("cluster-scoped NFD CRD", func() {
+		It("creates NFR without namespace when UseNFDLabeling is true", func() {
+			s := runtime.NewScheme()
+			Expect(apiextensionsv1.AddToScheme(s)).To(Succeed())
+			Expect(nfdcrd.AddToScheme(s)).To(Succeed())
+
+			r := &MiscReconciler{}
+			r.Client = fake.NewClientBuilder().WithScheme(s).
+				WithObjects(nfdCRDObject(apiextensionsv1.ClusterScoped)).
+				Build()
+			r.Opts = ControllerOpts{ReqName: "test-cluster-policy", Namespace: "gpu-operator"}
+			ctx := context.Background()
+
+			err := r.reconcileNfdRules(ctx, cp(true))
+			Expect(err).NotTo(HaveOccurred())
+
+			nfr := &nfdcrd.NodeFeatureRule{}
+			err = r.Get(ctx, types.NamespacedName{Name: nfdRuleName}, nfr)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(nfr.Namespace).To(BeEmpty())
+		})
+
+		It("deletes NFR without namespace when UseNFDLabeling is false", func() {
+			existingNfr := &nfdcrd.NodeFeatureRule{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: nfdRuleName,
+				},
+			}
+
+			s := runtime.NewScheme()
+			Expect(apiextensionsv1.AddToScheme(s)).To(Succeed())
+			Expect(nfdcrd.AddToScheme(s)).To(Succeed())
+
+			r := &MiscReconciler{}
+			r.Client = fake.NewClientBuilder().WithScheme(s).
+				WithObjects(nfdCRDObject(apiextensionsv1.ClusterScoped)).
+				WithObjects(existingNfr).
+				Build()
+			r.Opts = ControllerOpts{ReqName: "test-cluster-policy", Namespace: "gpu-operator"}
+			ctx := context.Background()
+
+			err := r.reconcileNfdRules(ctx, cp(false))
+			Expect(err).NotTo(HaveOccurred())
+
+			nfr := &nfdcrd.NodeFeatureRule{}
+			err = r.Get(ctx, types.NamespacedName{Name: nfdRuleName}, nfr)
+			Expect(err).To(HaveOccurred())
+		})
+	})
+
+	Context("namespace-scoped NFD CRD", func() {
+		It("creates NFR with operator namespace when UseNFDLabeling is true", func() {
+			s := runtime.NewScheme()
+			Expect(apiextensionsv1.AddToScheme(s)).To(Succeed())
+			Expect(nfdcrd.AddToScheme(s)).To(Succeed())
+
+			r := &MiscReconciler{}
+			r.Client = fake.NewClientBuilder().WithScheme(s).
+				WithObjects(nfdCRDObject(apiextensionsv1.NamespaceScoped)).
+				Build()
+			r.Opts = ControllerOpts{ReqName: "test-cluster-policy", Namespace: "gpu-operator"}
+			ctx := context.Background()
+
+			err := r.reconcileNfdRules(ctx, cp(true))
+			Expect(err).NotTo(HaveOccurred())
+
+			nfr := &nfdcrd.NodeFeatureRule{}
+			err = r.Get(ctx, types.NamespacedName{Name: nfdRuleName, Namespace: r.Opts.Namespace}, nfr)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(nfr.Namespace).To(Equal(r.Opts.Namespace))
+		})
+
+		It("deletes NFR with operator namespace when UseNFDLabeling is false", func() {
+			existingNfr := &nfdcrd.NodeFeatureRule{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      nfdRuleName,
+					Namespace: "gpu-operator",
+				},
+			}
+
+			s := runtime.NewScheme()
+			Expect(apiextensionsv1.AddToScheme(s)).To(Succeed())
+			Expect(nfdcrd.AddToScheme(s)).To(Succeed())
+
+			r := &MiscReconciler{}
+			r.Client = fake.NewClientBuilder().WithScheme(s).
+				WithObjects(nfdCRDObject(apiextensionsv1.NamespaceScoped)).
+				WithObjects(existingNfr).
+				Build()
+			r.Opts = ControllerOpts{ReqName: "test-cluster-policy", Namespace: "gpu-operator"}
+			ctx := context.Background()
+
+			err := r.reconcileNfdRules(ctx, cp(false))
+			Expect(err).NotTo(HaveOccurred())
+
+			nfr := &nfdcrd.NodeFeatureRule{}
+			err = r.Get(ctx, types.NamespacedName{Name: nfdRuleName, Namespace: "gpu-operator"}, nfr)
 			Expect(err).To(HaveOccurred())
 		})
 	})

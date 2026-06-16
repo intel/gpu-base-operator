@@ -25,6 +25,7 @@ import (
 
 	core "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -73,12 +74,16 @@ const (
 // +kubebuilder:rbac:groups="kueue.x-k8s.io",resources=resourceflavors,verbs=watch;list;create;get;delete;update;patch;deletecollection
 // +kubebuilder:rbac:groups="kueue.x-k8s.io",resources=localqueues,verbs=watch;list;create;get;delete;update;patch;deletecollection
 
-func createNfdRule(cp *v1alpha.ClusterPolicy) *nfdcrd.NodeFeatureRule {
+func createNfdRule(cp *v1alpha.ClusterPolicy, namespace string) *nfdcrd.NodeFeatureRule {
 	nfr := deployments.NFDNodeFeatureRulesGpu()
 
 	nfr.Labels = map[string]string{
 		"app":   "nfd-gpu",
 		"owner": cp.Name,
+	}
+
+	if len(namespace) > 0 {
+		nfr.Namespace = namespace
 	}
 
 	return nfr
@@ -239,18 +244,42 @@ func (r *MiscReconciler) checkIfCRDsExists(ctx context.Context, crdName string) 
 	return false, nil
 }
 
+// getNFDCRDScope returns the scope of the NFD NodeFeatureRule CRD.
+// Returns apiextensionsv1.ClusterScoped or apiextensionsv1.NamespaceScoped.
+func (r *MiscReconciler) getNFDCRDScope(ctx context.Context) (apiextensionsv1.ResourceScope, error) {
+	crd := &apiextensionsv1.CustomResourceDefinition{}
+	if err := r.Get(ctx, types.NamespacedName{Name: nfdRuleCrd}, crd); err != nil {
+		return "", fmt.Errorf("unable to get NFD CRD %s: %w", nfdRuleCrd, err)
+	}
+
+	return crd.Spec.Scope, nil
+}
+
 func (r *MiscReconciler) reconcileNfdRules(ctx context.Context, cp *v1alpha.ClusterPolicy) error {
 	_ = logf.FromContext(ctx)
 
-	if found, err := r.checkIfCRDsExists(ctx, nfdRuleCrd); err != nil {
-		klog.Error(err, "unable to check if NFD CRDs exist")
+	// Get NFD CRD scope to create the rules correctly.
+	// Also use the error to determine if the CRD is installed or not.
+	scope, err := r.getNFDCRDScope(ctx)
+	if err != nil {
+		if client.IgnoreNotFound(err) == nil {
+			return nil
+		}
+
+		klog.Error(err, "unable to determine NFD CRD scope")
 
 		return err
-	} else if !found {
-		return nil
 	}
 
 	klog.V(4).Info("Reconciling NFD NodeFeatureRules for GPU detection")
+
+	namedObject := types.NamespacedName{Name: nfdRuleName}
+
+	nfrNamespace := ""
+	if scope == apiextensionsv1.NamespaceScoped {
+		nfrNamespace = r.Opts.Namespace
+		namedObject = types.NamespacedName{Name: nfdRuleName, Namespace: nfrNamespace}
+	}
 
 	if cp.Spec.UseNFDLabeling {
 		// Directly trying to use the NFD object in the Get call results in:
@@ -264,7 +293,7 @@ func (r *MiscReconciler) reconcileNfdRules(ctx context.Context, cp *v1alpha.Clus
 		currentNfr.SetName(nfdRuleName)
 
 		found := true
-		if err := r.Get(ctx, types.NamespacedName{Name: nfdRuleName}, currentNfr); err != nil {
+		if err := r.Get(ctx, namedObject, currentNfr); err != nil {
 			if client.IgnoreNotFound(err) != nil {
 				klog.Error(err, " unable to get NodeFeatureRule")
 
@@ -283,7 +312,7 @@ func (r *MiscReconciler) reconcileNfdRules(ctx context.Context, cp *v1alpha.Clus
 				return err
 			}
 
-			fromPolicy := createNfdRule(cp)
+			fromPolicy := createNfdRule(cp, "")
 
 			specDiff := cmp.Diff(nfr.Spec, fromPolicy.Spec, cmpopts.EquateEmpty())
 			if len(specDiff) > 0 {
@@ -297,7 +326,7 @@ func (r *MiscReconciler) reconcileNfdRules(ctx context.Context, cp *v1alpha.Clus
 				}
 			}
 		} else {
-			newNfr := createNfdRule(cp)
+			newNfr := createNfdRule(cp, nfrNamespace)
 			if err := r.Create(ctx, newNfr); err != nil {
 				klog.Error(err, "unable to create NodeFeatureRule")
 
@@ -305,7 +334,7 @@ func (r *MiscReconciler) reconcileNfdRules(ctx context.Context, cp *v1alpha.Clus
 			}
 		}
 	} else {
-		newNfr := createNfdRule(cp)
+		newNfr := createNfdRule(cp, nfrNamespace)
 
 		if err := r.Delete(ctx, newNfr); err != nil {
 			if client.IgnoreNotFound(err) != nil {
@@ -322,14 +351,17 @@ func (r *MiscReconciler) reconcileNfdRules(ctx context.Context, cp *v1alpha.Clus
 func (r *MiscReconciler) removeNfdRules(ctx context.Context, crName string) error {
 	_ = logf.FromContext(ctx)
 
-	if found, err := r.checkIfCRDsExists(ctx, nfdRuleCrd); err != nil {
-		klog.Error(err, "unable to check if CRDs exist")
+	// Get NFD CRD scope to delete the rules correctly.
+	// Also use the error to determine if the CRD is installed or not.
+	scope, err := r.getNFDCRDScope(ctx)
+	if err != nil {
+		if client.IgnoreNotFound(err) == nil {
+			return nil
+		}
+
+		klog.Error(err, "unable to determine NFD CRD scope")
 
 		return err
-	} else if !found {
-		klog.Info("CRDs not found, skipping NFD rule removal")
-
-		return nil
 	}
 
 	matchLabels := map[string]string{
@@ -339,6 +371,10 @@ func (r *MiscReconciler) removeNfdRules(ctx context.Context, crName string) erro
 
 	nfr := deployments.NFDNodeFeatureRulesGpu()
 	nfr.Labels = matchLabels
+
+	if scope == apiextensionsv1.NamespaceScoped {
+		nfr.Namespace = r.Opts.Namespace
+	}
 
 	if err := r.Delete(ctx, nfr); err != nil {
 		if client.IgnoreNotFound(err) != nil {
