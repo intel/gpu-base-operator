@@ -25,6 +25,7 @@ import (
 
 	apps "k8s.io/api/apps/v1"
 	core "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
@@ -202,7 +203,9 @@ func (r *ClusterPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 		controllerutil.RemoveFinalizer(cp, clusterPolicyFinalizer)
 
-		if err := r.Update(ctx, cp); err != nil {
+		// The object may have been garbage-collected between the Get and this.
+		// NotFound here means the goal is already achieved.
+		if err := r.Update(ctx, cp); !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, err
 		}
 
@@ -223,11 +226,13 @@ func (r *ClusterPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 			retErr = err
 
-			for len(cp.Status.Errors) > maxKeptErrors {
-				cp.Status.Errors = cp.Status.Errors[1:]
-			}
+			if cp != nil {
+				for len(cp.Status.Errors) > maxKeptErrors {
+					cp.Status.Errors = cp.Status.Errors[1:]
+				}
 
-			cp.Status.Errors = append(cp.Status.Errors, err.Error())
+				cp.Status.Errors = append(cp.Status.Errors, err.Error())
+			}
 		}
 	}
 
