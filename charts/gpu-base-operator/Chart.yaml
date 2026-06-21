@@ -2,8 +2,8 @@ apiVersion: v2
 name: intel-gpu-base-operator-chart
 description: A Helm chart for Intel GPU Base Operator
 type: application
-version: 0.0.1
-appVersion: "0.0.1"
+version: 0.3.0-rc0
+appVersion: "0.3.0-rc0"
 
 dependencies:
   - name: node-feature-discovery
