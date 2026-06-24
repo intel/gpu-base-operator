@@ -250,9 +250,9 @@ func (r *XpuManagerReconciler) buildOTelConfigData(cp *v1alpha.ClusterPolicy) (s
 					for _, loc := range filter.Values {
 						switch loc {
 						case "gpu":
-							setWarningThreshold(rule, float64(health.CoreTemperatureThreshold))
+							setCriticalThreshold(rule, float64(health.CoreTemperatureThreshold))
 						case "memory":
-							setWarningThreshold(rule, float64(health.MemoryTemperatureThreshold))
+							setCriticalThreshold(rule, float64(health.MemoryTemperatureThreshold))
 						}
 					}
 				}
@@ -268,11 +268,11 @@ func (r *XpuManagerReconciler) buildOTelConfigData(cp *v1alpha.ClusterPolicy) (s
 	return string(out), nil
 }
 
-// setWarningThreshold updates the condition values on the "warning" state of a rule.
+// setCriticalThreshold updates the condition values on the "critical" state of a rule.
 // All conditions are set to the same threshold, overriding any device-specific defaults.
-func setWarningThreshold(rule *deployments.StatusRule, threshold float64) {
+func setCriticalThreshold(rule *deployments.StatusRule, threshold float64) {
 	for i := range rule.States {
-		if rule.States[i].StateName == "warning" {
+		if rule.States[i].StateName == "critical" {
 			for j := range rule.States[i].Conditions {
 				rule.States[i].Conditions[j].Value = threshold
 			}
