@@ -77,10 +77,6 @@ type DynamicResourceAllocationSpec struct {
 
 	LogLevel int32 `json:"logLevel,omitempty"`
 
-	// DeviceTaints controls whether DRA applies taints to the GPU devices if
-	// the devices are indicated as unhealthy by the health monitoring.
-	DeviceTaints bool `json:"deviceTaints,omitempty"`
-
 	// Enable DRA Pod's health check.
 	// +kubebuilder:default=true
 	PodHealthCheck bool `json:"podHealthCheck,omitempty"`

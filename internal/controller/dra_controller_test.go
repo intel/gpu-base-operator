@@ -491,7 +491,6 @@ var _ = Describe("ClusterPolicy Controller for DRA", func() {
 					DynamicResourceAllocationSpec: v1alpha.DynamicResourceAllocationSpec{
 						LogLevel:       3,
 						PodHealthCheck: true,
-						DeviceTaints:   true,
 					},
 					HealthinessSpec: &v1alpha.HealthinessSpec{
 						CheckIntervalSeconds:       67,
@@ -504,11 +503,10 @@ var _ = Describe("ClusterPolicy Controller for DRA", func() {
 
 			args := controller.generateArgs(cp)
 
-			Expect(args).To(HaveLen(5))
+			Expect(args).To(HaveLen(4))
 			Expect(args).To(ContainElement("-v=3"))
 			Expect(args).To(ContainElement("--health-monitoring=true"))
 			Expect(args).To(ContainElement("--healthcheck-port=51516"))
-			Expect(args).To(ContainElement("--ignore-health-warning=false"))
 			Expect(args).To(ContainElement("--manage-binding=false"))
 		})
 

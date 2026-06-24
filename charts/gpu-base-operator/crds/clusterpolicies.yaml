@@ -90,11 +90,6 @@ spec:
                 description: DynamicResourceAllocationSpec defines the desired state
                   of DynamicResourceAllocation.
                 properties:
-                  deviceTaints:
-                    description: |-
-                      DeviceTaints controls whether DRA applies taints to the GPU devices if
-                      the devices are indicated as unhealthy by the health monitoring.
-                    type: boolean
                   image:
                     type: string
                   logLevel:

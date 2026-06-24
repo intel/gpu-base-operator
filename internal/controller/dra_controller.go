@@ -487,10 +487,6 @@ func (r *DRAReconciler) generateArgs(spec *v1alpha.ClusterPolicy) []string {
 
 	if spec.Spec.HealthinessSpec != nil {
 		args = append(args, "--health-monitoring=true")
-
-		if spec.Spec.DynamicResourceAllocationSpec.DeviceTaints {
-			args = append(args, "--ignore-health-warning=false")
-		}
 	}
 
 	if spec.Spec.DynamicResourceAllocationSpec.PodHealthCheck {

@@ -41,7 +41,6 @@ See [Customizing the Chart Before Installing](https://helm.sh/docs/intro/using_h
 | dp.denyIDs | [] | Denied PCI Device IDs |
 | dra.image | ghcr.io/intel/intel-resource-drivers-for-kubernetes/intel-gpu-resource-driver:v0.10.0 | DRA driver image. |
 | dra.logLevel | 2 | DRA log level. |
-| dra.deviceTaints | false | Enable device taints. |
 | dra.podHealthCheck | true | Health check for DRA Pod. |
 | xpu.image | ghcr.io/intel/xpumanager/xpumd:v2.0.0 | XPU manager image. |
 | xpu.logLevel | 2 | XPU manager log level. |
