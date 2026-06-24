@@ -224,6 +224,17 @@ func waitUntilResourceSlicesAreGone(g Gomega) {
 	g.Expect(lines).To(ContainElement("No resources found"), "Expected no ResourceSlices to be present")
 }
 
+func waitUntilNamespaceGone(g Gomega, namespace string) {
+	cmd := exec.Command("kubectl", "get", "namespace", namespace, "--ignore-not-found", "-o", "name")
+	output, err := utils.Run(cmd)
+	if err != nil {
+		return
+	}
+
+	g.Expect(err).NotTo(HaveOccurred(), "Failed to query namespace")
+	g.Expect(strings.TrimSpace(output)).To(BeEmpty(), "expected namespace "+namespace+" to be gone")
+}
+
 // removeNFDLabels removes all node-feature-discovery labels from every node.
 // It is called as cleanup after tests that deploy NFD, because NFD labels
 // persist on nodes even after the NFD workloads are deleted.

@@ -498,8 +498,9 @@ var _ = Describe("Helm", Ordered, Label("helm"), func() {
 
 		AfterEach(func() {
 			By("remove clusterpolicy")
-			cmd := exec.Command("helm", "uninstall", "-n", namespace, helmPolicyName, "--wait")
-			utils.Run(cmd)
+			cmd := exec.Command("helm", "uninstall", "-n", namespace, helmPolicyName, "--wait", "--ignore-not-found")
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to uninstall clusterpolicy")
 
 			// TODO: Find a better way to ensure that the xpumanager pods are gone
 			By("wait for the xpumanager pods to vanish")
@@ -518,8 +519,13 @@ var _ = Describe("Helm", Ordered, Label("helm"), func() {
 			Eventually(waitForKueueObjectsToClear, time.Second*60).Should(Succeed())
 
 			By("remove operator")
-			cmd = exec.Command("helm", "uninstall", "-n", namespace, helmOperatorName, "--wait")
-			utils.Run(cmd)
+			cmd = exec.Command("helm", "uninstall", "-n", namespace, helmOperatorName)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to uninstall operator")
+
+			Eventually(func(g Gomega) {
+				waitUntilNamespaceGone(g, namespace)
+			}, 1*time.Minute, 3*time.Second).Should(Succeed())
 
 			By("remove gpu resource slices after each test")
 			cmd = exec.Command("kubectl", "delete", "resourceslices", "--all")
