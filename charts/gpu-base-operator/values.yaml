@@ -4,6 +4,7 @@ createNamespace: true
 
 nfd:
   install: false
+  postDeleteCleanup: false
 
 operator:
   image:
