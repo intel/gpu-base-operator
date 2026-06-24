@@ -179,7 +179,6 @@ Used when `spec.resourceRegistration: dra`.
 
 |Field|Description|Default|
 |---|---|---|
-|`spec.dra.deviceTaints`|Apply taints to GPU devices reported as unhealthy by health monitoring|`false`|
 |`spec.dra.podHealthCheck`|Enable health check for DRA Pod|true|
 
 #### Health monitoring (`spec.health`)

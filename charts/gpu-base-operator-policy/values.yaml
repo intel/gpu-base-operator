@@ -19,7 +19,6 @@ dp:
 dra:
   image: ghcr.io/intel/intel-resource-drivers-for-kubernetes/intel-gpu-resource-driver:v0.11.0@sha256:49f38fcbee4f98d748b537b1a728a12f39e56fd208c86dc3fa32ab2162c21197
   logLevel: 2
-  deviceTaints: false
   podHealthCheck: true
   manageBinding: false
 
