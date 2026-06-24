@@ -37,9 +37,9 @@ processors:
         states:
           # Default state
           - state_name: "ok"
-          - state_name: "warning"
+          - state_name: "critical"
             conditions:
-              - value: 105.0
+              - value: 100.0
       - name: "Intel GPU memory temperature health"
         source_metric: "hw.temperature"
         parent_metric: "hw.gpu.info"
@@ -58,31 +58,9 @@ processors:
         states:
           # Default state
           - state_name: "ok"
-          - state_name: "warning"
+          - state_name: "critical"
             conditions:
-              - value: 85.0
-
-      - name: "Intel GPU power limit"
-        source_metric: "hw.power"
-        parent_metric: "hw.gpu.info"
-        parent_ref_attribute: "hw.id"
-        parent_filters:
-          - key: "pci.vendor_id"
-            values: ["8086"]
-        component_filters:
-          - key: "hw.sensor_location"
-            values: ["card"]
-        copy_attributes: ["hw.id", "hw.name", "pci.bdf", "hw.sensor_location"]
-        add_attributes:
-          hw.type: "power"
-        # Ordered list of state rules. The rules should be ordered by increasing severity.
-        # All rules are evaluated, the last matching one will be active.
-        states:
-          # Default state
-          - state_name: "ok"
-          - state_name: "warning"
-            conditions:
-              - value: 150.0
+              - value: 100.0
 
 exporters:
   intelxpuinfo:
@@ -106,6 +84,14 @@ exporters:
           "*":
             severity: warning
             message: "Unexpected memory health state, mapped to warning"
+      # Filter out (by using empty state_mapping) ECC states that are not indicative of device health
+      - health_domain: "gpu"
+        filters:
+          - key: hw.type
+            values: [gpu]
+          - key: hw.state
+            values: [ecc_disabled, ecc_enabled, ecc_available, ecc_unavailable]
+        state_mapping: {}
       - health_domain: "{{ .hw_type }}"
         state_mapping:
           unknown:
