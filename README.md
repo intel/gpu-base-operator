@@ -180,6 +180,7 @@ Used when `spec.resourceRegistration: dra`.
 |Field|Description|Default|
 |---|---|---|
 |`spec.dra.podHealthCheck`|Enable health check for DRA Pod|true|
+|`spec.dra.manageBinding`|Allow DRA plugin to manage device binding between xe/i915 and vfio drivers. Needed for dynamic switching between normal and KubeVirt workloads|`false`|
 
 #### Health monitoring (`spec.health`)
 
@@ -195,7 +196,7 @@ Applies to both DP and DRA unless noted. Thresholds that are exceeded mark the G
 
 |Field|Description|Default|
 |---|---|---|
-|`spec.xpu.monitoringResource`|Set XPUMD resource for Device Plugin use.|`xe_monitoring`|
+|`spec.xpu.monitoringResource`|Set XPUMD resource for Device Plugin use.|`monitoring`|
 |`spec.xpu.configMapOverride`|Name of a ConfigMap in the operator namespace containing a custom OpenTelemetry Collector `config.yaml`|—|
 
 #### Kueue (`spec.kueue`)
