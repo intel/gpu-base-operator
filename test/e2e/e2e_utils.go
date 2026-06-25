@@ -473,7 +473,7 @@ func getServiceClusterIP(name, ns string) string {
 
 func getControllerPodIP(ns string) string {
 	cmd := exec.Command("kubectl", "get",
-		"pods", "-l", "control-plane=controller-manager",
+		"pods", "-l", "control-plane=gpu-operator-controller-manager",
 		"-o", "go-template={{ range .items }}"+
 			"{{ if not .metadata.deletionTimestamp }}"+
 			"{{ .status.podIP }}"+
