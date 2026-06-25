@@ -1,15 +1,15 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: controller-manager
+  name: {{ .Release.Name }}-controller-manager
   labels:
-    control-plane: controller-manager
+    control-plane: {{ .Release.Name }}-controller-manager
     app.kubernetes.io/name: intel-gpu-base-operator
     app.kubernetes.io/managed-by: kustomize
 spec:
   selector:
     matchLabels:
-      control-plane: controller-manager
+      control-plane: {{ .Release.Name }}-controller-manager
       app.kubernetes.io/name: intel-gpu-base-operator
   replicas: 1
   template:
@@ -17,7 +17,7 @@ spec:
       annotations:
         kubectl.kubernetes.io/default-container: manager
       labels:
-        control-plane: controller-manager
+        control-plane: {{ .Release.Name }}-controller-manager
         app.kubernetes.io/name: intel-gpu-base-operator
     spec:
       # TODO(user): Uncomment the following code to configure the nodeAffinity expression
@@ -105,7 +105,7 @@ spec:
           requests:
             cpu: {{ .Values.operator.resources.requests.cpu | default "10m" }}
             memory: {{ .Values.operator.resources.requests.memory | default "64Mi" }}
-      serviceAccountName: controller-manager
+      serviceAccountName: {{ .Release.Name }}-controller-manager
       terminationGracePeriodSeconds: 10
       volumes:
       - name: webhook-certs
