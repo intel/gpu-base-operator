@@ -48,7 +48,7 @@ endif
 OPERATOR_SDK_VERSION ?= v1.41.1
 
 # NOTE: This is a source of truth for some of the workflows. Don't change the format!
-TAG ?= 0.3.0-rc0
+TAG ?= 0.3.0-rc1
 
 # Image URL to use all building/pushing image targets
 IMG ?= ghcr.io/intel/intel-gpu-base-operator:$(TAG)
