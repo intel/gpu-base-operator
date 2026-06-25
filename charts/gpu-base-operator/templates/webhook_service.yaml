@@ -14,4 +14,4 @@ spec:
     targetPort: 9443
   selector:
     app.kubernetes.io/name: intel-gpu-base-operator
-    control-plane: controller-manager
+    control-plane: {{ .Release.Name }}-controller-manager
