@@ -414,6 +414,7 @@ var _ = Describe("Misc Kueue", func() {
 			Expect(core.AddToScheme(s)).To(Succeed())
 			Expect(kueuev1beta2.AddToScheme(s)).To(Succeed())
 			Expect(apiextensionsv1.AddToScheme(s)).To(Succeed())
+			Expect(v1alpha.AddToScheme(s)).To(Succeed())
 
 			cp := &v1alpha.ClusterPolicy{
 				ObjectMeta: metav1.ObjectMeta{
@@ -444,6 +445,7 @@ var _ = Describe("Misc Kueue", func() {
 			r := MiscReconciler{}
 			r.Client = fake.NewClientBuilder().WithScheme(s).WithObjects(crd1, crd2, crd3, node).Build()
 			r.Opts = ControllerOpts{ReqName: "test-cluster-policy"}
+			r.Scheme = s
 
 			err := r.reconcileKueueObjects(ctx, cp)
 			Expect(err).NotTo(HaveOccurred())

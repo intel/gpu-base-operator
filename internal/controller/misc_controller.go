@@ -461,7 +461,7 @@ func (r *MiscReconciler) createResourceFlavor() *kueuev1beta2.ResourceFlavor {
 	}
 }
 
-func (r *MiscReconciler) modifyResourceFlavor(ctx context.Context) error {
+func (r *MiscReconciler) modifyResourceFlavor(ctx context.Context, cp *v1alpha.ClusterPolicy) error {
 	currentUnstructured := &unstructured.Unstructured{}
 	currentUnstructured.SetKind(kueueResourceFlavorKind)
 	currentUnstructured.SetAPIVersion(kueueAPIVersion)
@@ -476,7 +476,14 @@ func (r *MiscReconciler) modifyResourceFlavor(ctx context.Context) error {
 	}
 
 	if !found {
-		err := r.Create(ctx, r.createResourceFlavor())
+		resourceFlavor := r.createResourceFlavor()
+
+		if err := ctrl.SetControllerReference(cp, resourceFlavor, r.Scheme); err != nil {
+			klog.Error(err, "unable to set Kueue ResourceFlavor controller reference")
+			return err
+		}
+
+		err := r.Create(ctx, resourceFlavor)
 		if client.IgnoreAlreadyExists(err) != nil {
 			klog.Error(err, "unable to create Kueue ResourceFlavor '%s'", kueueFlavorName)
 			return err
@@ -590,7 +597,7 @@ func (r *MiscReconciler) createLocalQueue(clusterQueueName string, localQueueSpe
 	return &localQueue
 }
 
-func (r *MiscReconciler) modifyLocalQueues(ctx context.Context, clusterQueue *v1alpha.ClusterQueueSpec) error {
+func (r *MiscReconciler) modifyLocalQueues(ctx context.Context, clusterQueue *v1alpha.ClusterQueueSpec, cp *v1alpha.ClusterPolicy) error {
 	if len(clusterQueue.LocalQueues) == 0 {
 		klog.V(3).Infof("No LocalQueues defined for ClusterQueue '%s'", clusterQueue.Name)
 		return nil
@@ -613,6 +620,11 @@ func (r *MiscReconciler) modifyLocalQueues(ctx context.Context, clusterQueue *v1
 		newLocalQueue := r.createLocalQueue(clusterQueue.Name, &localQueue)
 
 		if !found {
+			if err := ctrl.SetControllerReference(cp, newLocalQueue, r.Scheme); err != nil {
+				klog.Error(err, "unable to set Kueue LocalQueue controller reference")
+				return err
+			}
+
 			err := r.Create(ctx, newLocalQueue)
 			if client.IgnoreAlreadyExists(err) != nil {
 				klog.Error(err, "unable to create Kueue LocalQueue '%s/%s'", localQueue.Namespace, localQueue.Name)
@@ -692,7 +704,9 @@ func (r *MiscReconciler) createClusterQueue(resources clusterResourceMap, cluste
 	return clusterQueue
 }
 
-func (r *MiscReconciler) modifyClusterQueue(ctx context.Context, resources clusterResourceMap, kueueSpec *v1alpha.KueueQueueSpec) error {
+func (r *MiscReconciler) modifyClusterQueue(ctx context.Context, resources clusterResourceMap, cp *v1alpha.ClusterPolicy) error {
+	kueueSpec := cp.Spec.Kueue
+
 	if len(kueueSpec.EqualResources) == 0 {
 		klog.V(3).Infof("At least one EqualResources queue should be configured")
 		return nil
@@ -720,6 +734,11 @@ func (r *MiscReconciler) modifyClusterQueue(ctx context.Context, resources clust
 		newClusterQueue := r.createClusterQueue(clusterResources[n], &clusterQueue)
 
 		if !found {
+			if err := ctrl.SetControllerReference(cp, newClusterQueue, r.Scheme); err != nil {
+				klog.Error(err, "unable to set Kueue ClusterQueue controller reference")
+				return err
+			}
+
 			err = r.Create(ctx, newClusterQueue)
 			if client.IgnoreAlreadyExists(err) != nil {
 				klog.Error(err, "unable to create Kueue ClusterQueue '%s'", clusterQueue.Name)
@@ -752,7 +771,7 @@ func (r *MiscReconciler) modifyClusterQueue(ctx context.Context, resources clust
 			}
 		}
 
-		if err := r.modifyLocalQueues(ctx, &clusterQueue); err != nil {
+		if err := r.modifyLocalQueues(ctx, &clusterQueue, cp); err != nil {
 			return err
 		}
 	}
@@ -760,17 +779,17 @@ func (r *MiscReconciler) modifyClusterQueue(ctx context.Context, resources clust
 	return nil
 }
 
-func (r *MiscReconciler) createKueueQueues(ctx context.Context, resources clusterResourceMap, kueueSpec *v1alpha.KueueQueueSpec) error {
+func (r *MiscReconciler) createKueueQueues(ctx context.Context, resources clusterResourceMap, cp *v1alpha.ClusterPolicy) error {
 	if resources == nil {
 		klog.V(3).Infof("no resources defined when attempting to create Kueue queues")
 		return nil
 	}
 
-	if err := r.modifyResourceFlavor(ctx); err != nil {
+	if err := r.modifyResourceFlavor(ctx, cp); err != nil {
 		return err
 	}
 
-	if err := r.modifyClusterQueue(ctx, resources, kueueSpec); err != nil {
+	if err := r.modifyClusterQueue(ctx, resources, cp); err != nil {
 		return err
 	}
 
@@ -881,7 +900,7 @@ func (r *MiscReconciler) reconcileKueueObjects(ctx context.Context, cp *v1alpha.
 		return nil
 	}
 
-	return r.createKueueQueues(ctx, resources, cp.Spec.Kueue)
+	return r.createKueueQueues(ctx, resources, cp)
 }
 
 func (r *MiscReconciler) Reconcile(ctx context.Context, cp *v1alpha.ClusterPolicy) (ctrl.Result, error) {
