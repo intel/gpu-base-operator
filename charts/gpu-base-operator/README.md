@@ -9,24 +9,19 @@ Helm chart is for installing the Intel GPU base operator. Operator installation 
 
 ## Helm install
 ```
-kubectl create ns intel-gpu-operator
-# Required by DRA's admin access
-kubectl label ns intel-gpu-operator resource.kubernetes.io/admin-access=true
-
-helm install --namespace "intel-gpu-operator" --version 0.2.1 gpu-operator \
+helm install --create-namespace --namespace "intel-gpu-base-operator" --version 0.3.0 gpu-operator \
   oci://ghcr.io/intel/intel-gpu-base-operator-chart --wait
 ```
 
 ## Helm upgrade
 ```
-helm upgrade --namespace "intel-gpu-operator" --version 0.2.1 gpu-operator \
+helm upgrade --namespace "intel-gpu-base-operator" --version 0.3.0 gpu-operator \
   oci://ghcr.io/intel/intel-gpu-base-operator-chart --wait
 ```
 
 ## Helm uninstall
 ```
-helm uninstall --namespace "intel-gpu-operator" gpu-operator
-kubectl delete ns intel-gpu-operator
+helm uninstall --namespace "intel-gpu-base-operator" gpu-operator
 ```
 
 ## Configuration
