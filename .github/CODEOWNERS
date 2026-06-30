@@ -1,0 +1,5 @@
+#
+# Syntax and details are here: https://help.github.com/articles/about-codeowners/
+#
+# Global code ownership, fallback
+*                   @pfl @tkatila
