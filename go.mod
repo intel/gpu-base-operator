@@ -16,7 +16,7 @@ require (
 	k8s.io/klog/v2 v2.140.0
 	k8s.io/utils v0.0.0-20260507154919-ff6756f316d2
 	sigs.k8s.io/controller-runtime v0.24.1
-	sigs.k8s.io/kueue v0.18.1
+	sigs.k8s.io/kueue v0.18.2
 	sigs.k8s.io/node-feature-discovery/api/nfd v0.18.3
 	sigs.k8s.io/yaml v1.6.0
 )
@@ -40,20 +40,20 @@ require (
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-logr/zapr v1.3.0 // indirect
-	github.com/go-openapi/jsonpointer v0.22.4 // indirect
-	github.com/go-openapi/jsonreference v0.21.4 // indirect
-	github.com/go-openapi/swag v0.25.4 // indirect
-	github.com/go-openapi/swag/cmdutils v0.25.4 // indirect
-	github.com/go-openapi/swag/conv v0.25.4 // indirect
-	github.com/go-openapi/swag/fileutils v0.25.4 // indirect
-	github.com/go-openapi/swag/jsonname v0.25.4 // indirect
-	github.com/go-openapi/swag/jsonutils v0.25.4 // indirect
-	github.com/go-openapi/swag/loading v0.25.4 // indirect
-	github.com/go-openapi/swag/mangling v0.25.4 // indirect
-	github.com/go-openapi/swag/netutils v0.25.4 // indirect
-	github.com/go-openapi/swag/stringutils v0.25.4 // indirect
-	github.com/go-openapi/swag/typeutils v0.25.4 // indirect
-	github.com/go-openapi/swag/yamlutils v0.25.4 // indirect
+	github.com/go-openapi/jsonpointer v0.22.5 // indirect
+	github.com/go-openapi/jsonreference v0.21.5 // indirect
+	github.com/go-openapi/swag v0.25.5 // indirect
+	github.com/go-openapi/swag/cmdutils v0.25.5 // indirect
+	github.com/go-openapi/swag/conv v0.25.5 // indirect
+	github.com/go-openapi/swag/fileutils v0.25.5 // indirect
+	github.com/go-openapi/swag/jsonname v0.25.5 // indirect
+	github.com/go-openapi/swag/jsonutils v0.25.5 // indirect
+	github.com/go-openapi/swag/loading v0.25.5 // indirect
+	github.com/go-openapi/swag/mangling v0.25.5 // indirect
+	github.com/go-openapi/swag/netutils v0.25.5 // indirect
+	github.com/go-openapi/swag/stringutils v0.25.5 // indirect
+	github.com/go-openapi/swag/typeutils v0.25.5 // indirect
+	github.com/go-openapi/swag/yamlutils v0.25.5 // indirect
 	github.com/go-task/slim-sprig/v3 v3.0.0 // indirect
 	github.com/google/cel-go v0.26.0 // indirect
 	github.com/google/gnostic-models v0.7.1 // indirect
@@ -99,7 +99,7 @@ require (
 	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/term v0.44.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
-	golang.org/x/time v0.14.0 // indirect
+	golang.org/x/time v0.15.0 // indirect
 	golang.org/x/tools v0.46.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.5.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260128011058-8636f8732409 // indirect
