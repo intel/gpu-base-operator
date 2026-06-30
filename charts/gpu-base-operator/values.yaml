@@ -8,7 +8,7 @@ nfd:
 
 operator:
   image:
-    repository: ghcr.io/intel/intel-gpu-base-operator:0.3.0-rc1
+    repository: ghcr.io/intel/intel-gpu-base-operator:0.3.0
     pullPolicy: IfNotPresent
   verbosity: 2
   resources:
