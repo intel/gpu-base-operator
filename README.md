@@ -92,13 +92,9 @@ Helm deployment is split into two charts: operator and policy. The reason for th
 
 The basic installation is as follows:
 ```
-kubectl create ns intel-gpu-operator
-# Required by DRA's admin access
-kubectl label ns intel-gpu-operator resource.kubernetes.io/admin-access=true
-
-helm install --namespace "intel-gpu-operator" --version 0.2.1 gpu-operator \
+helm install --create-namespace --namespace "intel-gpu-base-operator" --version 0.3.0 gpu-operator \
   oci://ghcr.io/intel/intel-gpu-base-operator-chart --wait
-helm install --namespace "intel-gpu-operator" --version 0.2.1 gpu-policy \
+helm install --namespace "intel-gpu-base-operator" --version 0.3.0 gpu-policy \
   oci://ghcr.io/intel/intel-gpu-base-operator-policy-chart --set resourceRegistration=dra
 ```
 
@@ -107,20 +103,20 @@ This installs the operator and a DRA-enabled deployment with Intel XPU Manager. 
 #### Example: DRA without NFD
 
 ```
-helm install --namespace "intel-gpu-operator" --version 0.2.1 gpu-operator \
+helm install --create-namespace --namespace "intel-gpu-base-operator" --version 0.3.0 gpu-operator \
   oci://ghcr.io/intel/intel-gpu-base-operator-chart --wait
-helm install --namespace "intel-gpu-operator" --version 0.2.1 gpu-policy \
+helm install --namespace "intel-gpu-base-operator" --version 0.3.0 gpu-policy \
   oci://ghcr.io/intel/intel-gpu-base-operator-policy-chart --set resourceRegistration=dra
 ```
 
 #### Example: DRA with NFD and Kueue
 
 ```
-helm install --namespace "intel-gpu-operator" --version 0.2.1 gpu-operator \
+helm install --create-namespace --namespace "intel-gpu-base-operator" --version 0.3.0 gpu-operator \
   oci://ghcr.io/intel/intel-gpu-base-operator-chart --wait \
   --set nfd.install=true \
   --set kueue.install=true
-helm install --namespace "intel-gpu-operator" --version 0.2.1 gpu-policy \
+helm install --namespace "intel-gpu-base-operator" --version 0.3.0 gpu-policy \
   oci://ghcr.io/intel/intel-gpu-base-operator-policy-chart \
   --set resourceRegistration=dra \
   --set useNFDLabeling=true \
@@ -130,10 +126,10 @@ helm install --namespace "intel-gpu-operator" --version 0.2.1 gpu-policy \
 #### Example: Device Plugin with NFD
 
 ```
-helm install --namespace "intel-gpu-operator" --version 0.2.1 gpu-operator \
+helm install --create-namespace --namespace "intel-gpu-base-operator" --version 0.3.0 gpu-operator \
   oci://ghcr.io/intel/intel-gpu-base-operator-chart --wait \
   --set nfd.install=true
-helm install --namespace "intel-gpu-operator" --version 0.2.1 gpu-policy \
+helm install --namespace "intel-gpu-base-operator" --version 0.3.0 gpu-policy \
   oci://ghcr.io/intel/intel-gpu-base-operator-policy-chart \
   --set resourceRegistration=dp \
   --set useNFDLabeling=true
@@ -141,12 +137,21 @@ helm install --namespace "intel-gpu-operator" --version 0.2.1 gpu-policy \
 
 Uninstalling the charts:
 ```
-helm uninstall --namespace "intel-gpu-operator" gpu-policy --wait
-helm uninstall --namespace "intel-gpu-operator" gpu-operator
-kubectl delete ns intel-gpu-operator
+helm uninstall --namespace "intel-gpu-base-operator" gpu-policy --wait
+helm uninstall --namespace "intel-gpu-base-operator" gpu-operator
 ```
 
 See more details for the charts in the [operator](charts/gpu-base-operator/README.md) and [policy](charts/gpu-base-operator-policy/README.md) READMEs.
+
+#### Installation to an existing namespace
+
+Installation to a pre-existing namespace needs to set `createNamespace=false` chart variable and drop the `--create-namespace` argument to prevent chart from trying to create the namespace.
+
+Also note that DRA requires the install namespace to contain `resource.kubernetes.io/admin-access=true` label for the monitoring to function. If one installs the operator to an existing namespace, the namespace has to be labeled:
+
+```
+kubectl label ns <target namespace> resource.kubernetes.io/admin-access=true
+```
 
 ### Custom Resource (CR) fields
 
