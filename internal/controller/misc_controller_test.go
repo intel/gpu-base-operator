@@ -474,6 +474,153 @@ var _ = Describe("Misc Kueue", func() {
 			err = r.Get(ctx, types.NamespacedName{Name: kueueFlavorName}, flavor)
 			Expect(err).To(HaveOccurred())
 		})
+
+		It("update Kueue queues", func() {
+			s := runtime.NewScheme()
+			Expect(core.AddToScheme(s)).To(Succeed())
+			Expect(kueuev1beta2.AddToScheme(s)).To(Succeed())
+			Expect(apiextensionsv1.AddToScheme(s)).To(Succeed())
+			Expect(v1alpha.AddToScheme(s)).To(Succeed())
+
+			cp := &v1alpha.ClusterPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster-policy",
+				},
+				Spec: v1alpha.ClusterPolicySpec{
+					ResourceRegistration: "dp",
+					EnableKueue:          true,
+
+					Kueue: &v1alpha.KueueQueueSpec{
+						EqualResources: []v1alpha.ClusterQueueSpec{
+							{
+								Name: "keep-clusterqueue",
+								LocalQueues: []v1alpha.LocalQueueSpec{
+									{Name: "keepy-queue-1", Namespace: "default"},
+									{Name: "keep-queue-2", Namespace: "foo"},
+								},
+							},
+							{
+								Name: "update-local-queues",
+								LocalQueues: []v1alpha.LocalQueueSpec{
+									{Name: "my-queue-1", Namespace: "foo"},
+									{Name: "my-queue-2", Namespace: "default"},
+								},
+							},
+							{
+								Name: "remove-these-queues",
+								LocalQueues: []v1alpha.LocalQueueSpec{
+									{Name: "remove-queue-A", Namespace: "bar"},
+									{Name: "remove-queue-B", Namespace: "foo"},
+								},
+							},
+						},
+					},
+				},
+			}
+			cpUpdated := &v1alpha.ClusterPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster-policy",
+				},
+				Spec: v1alpha.ClusterPolicySpec{
+					ResourceRegistration: "dp",
+					EnableKueue:          true,
+
+					Kueue: &v1alpha.KueueQueueSpec{
+						EqualResources: []v1alpha.ClusterQueueSpec{
+							{
+								Name: "update-local-queues",
+								LocalQueues: []v1alpha.LocalQueueSpec{
+									{Name: "my-queue-1", Namespace: "bar"},
+									{Name: "my-queue-B", Namespace: "default"},
+								},
+							},
+							{
+								Name: "keep-clusterqueue",
+								LocalQueues: []v1alpha.LocalQueueSpec{
+									{Name: "keepy-queue-1", Namespace: "default"},
+									{Name: "keep-queue-2", Namespace: "default"},
+								},
+							},
+							{
+								Name: "test-spec-name",
+								LocalQueues: []v1alpha.LocalQueueSpec{
+									{Name: "my-queue-A", Namespace: "default"},
+									{Name: "my-queue-B", Namespace: "default"},
+								},
+							},
+						},
+					},
+				},
+			}
+			// specify which cluster and local queues are left after
+			// pruning them against 'cpUpdated' cluster policy
+			queuesAfterPrune := map[string]map[string]v1alpha.LocalQueueSpec{
+				"keep-clusterqueue": {
+					"keepy-queue-1": {
+						Name:      "keepy-queue-1",
+						Namespace: "default",
+					},
+				},
+				"update-local-queues": nil,
+			}
+
+			ctx := context.Background()
+
+			crd1, crd2, crd3 := kueueCRDObjects()
+			node := gpuNode()
+
+			r := MiscReconciler{}
+			r.Client = fake.NewClientBuilder().WithScheme(s).WithObjects(crd1, crd2, crd3, node).Build()
+			r.Opts = ControllerOpts{ReqName: "test-cluster-policy"}
+			r.Scheme = s
+
+			// add CR queues
+			_, err := r.Reconcile(ctx, cp)
+			Expect(err).NotTo(HaveOccurred())
+
+			// prune queues
+			err = r.pruneQueues(ctx, cpUpdated)
+			Expect(err).NotTo(HaveOccurred())
+
+			lqList := kueuev1beta2.LocalQueueList{}
+			err = r.List(ctx, &lqList)
+			Expect(err).NotTo(HaveOccurred())
+
+			for _, lq := range lqList.Items {
+				clusterQueueName := string(lq.Spec.ClusterQueue)
+
+				localQueues, found := queuesAfterPrune[clusterQueueName]
+				Expect(found).To(BeTrue())
+
+				localQ, found := localQueues[lq.Name]
+				Expect(found).To(BeTrue())
+				Expect(localQ.Name).To(Equal(lq.Name))
+				Expect(localQ.Namespace).To(Equal(lq.Namespace))
+
+				// local queue was found
+				delete(localQueues, lq.Name)
+			}
+
+			cqList := kueuev1beta2.ClusterQueueList{}
+			err = r.List(ctx, &cqList)
+			Expect(err).NotTo(HaveOccurred())
+
+			for _, cq := range cqList.Items {
+				localQueues, found := queuesAfterPrune[cq.Name]
+
+				// verify each cluster queues is found
+				Expect(found).To(BeTrue())
+
+				// verify each local queue has been found above
+				Expect(localQueues).To(BeEmpty())
+
+				// cluster queue was found
+				delete(queuesAfterPrune, cq.Name)
+			}
+
+			// all cluster queues have been found
+			Expect(queuesAfterPrune).To(BeEmpty())
+		})
 	})
 })
 

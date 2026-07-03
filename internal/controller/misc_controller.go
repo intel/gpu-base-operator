@@ -597,6 +597,90 @@ func (r *MiscReconciler) createLocalQueue(clusterQueueName string, localQueueSpe
 	return &localQueue
 }
 
+func (r *MiscReconciler) keepLocalQueue(lq *kueuev1beta2.LocalQueue, keepLQs []v1alpha.LocalQueueSpec) bool {
+	for _, keep := range keepLQs {
+		if lq.Name == keep.Name && lq.Namespace == keep.Namespace {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *MiscReconciler) pruneLocalQueues(ctx context.Context, lqList *kueuev1beta2.LocalQueueList, keepLQs []v1alpha.LocalQueueSpec, cqName string) {
+	for _, lq := range lqList.Items {
+		klog.V(3).Infof("Checking local queue '%s' attached to cluster queue '%s'", lq.Name, cqName)
+		if lq.Spec.ClusterQueue != kueuev1beta2.ClusterQueueReference(cqName) {
+			continue
+		}
+
+		if r.keepLocalQueue(&lq, keepLQs) {
+			klog.V(3).Infof("Keeping LocalQueue %s (in ClusterQueue %s)", lq.Name, cqName)
+			continue
+		}
+
+		// delete this local queue
+		if err := r.Delete(ctx, &lq); client.IgnoreNotFound(err) != nil {
+			klog.Warningf("Error when attempting to delete LocalQueue %s: %v", lq.Name, err)
+		} else {
+			klog.V(3).Infof("Deleted LocalQueue %s namespace %s (in ClusterQueue %s)", lq.Name, lq.Namespace, cqName)
+		}
+	}
+}
+
+func (r *MiscReconciler) clusterQueueExists(name string, cp *v1alpha.ClusterPolicy) []v1alpha.LocalQueueSpec {
+	kueue := cp.Spec.Kueue
+	if kueue == nil {
+		return nil
+	}
+
+	for _, eq := range kueue.EqualResources {
+		if name == eq.Name {
+			return eq.LocalQueues
+		}
+	}
+
+	return nil
+}
+
+func (r *MiscReconciler) pruneQueues(ctx context.Context, cp *v1alpha.ClusterPolicy) error {
+	matchLabels := map[string]string{
+		"app":   kueueAppLabel,
+		"owner": r.Opts.ReqName,
+	}
+
+	cqList := &kueuev1beta2.ClusterQueueList{}
+	if err := r.List(ctx, cqList, client.MatchingLabels(matchLabels)); client.IgnoreNotFound(err) != nil {
+		return fmt.Errorf("could not fetch ClusterQueue list: %v", err)
+	}
+
+	lqList := &kueuev1beta2.LocalQueueList{}
+	if err := r.List(ctx, lqList, client.InNamespace(metav1.NamespaceAll), client.MatchingLabels(matchLabels)); err != nil {
+		if client.IgnoreNotFound(err) != nil {
+			return fmt.Errorf("could not fetch LocalQueue list: %v", err)
+		} else {
+			klog.Warningf("No LocalQueues found")
+		}
+	}
+
+	for _, cq := range cqList.Items {
+		lq := r.clusterQueueExists(cq.Name, cp)
+		if lq == nil {
+			if err := r.Delete(ctx, &cq); client.IgnoreNotFound(err) != nil {
+				klog.Warningf("Error when attempting to delete ClusterQueue %s: %v", cq.Name, err)
+			} else {
+				klog.V(3).Infof("Deleted ClusterQueue %s", cq.Name)
+			}
+		} else {
+			klog.V(3).Infof("Keep ClusterQueue %s", cq.Name)
+		}
+		// delete lqs, lq = keep, lq = nil -> delete all
+		r.pruneLocalQueues(ctx, lqList, lq, cq.Name)
+
+	}
+
+	return nil
+}
+
 func (r *MiscReconciler) modifyLocalQueues(ctx context.Context, clusterQueue *v1alpha.ClusterQueueSpec, cp *v1alpha.ClusterPolicy) error {
 	if len(clusterQueue.LocalQueues) == 0 {
 		klog.V(3).Infof("No LocalQueues defined for ClusterQueue '%s'", clusterQueue.Name)
@@ -715,6 +799,10 @@ func (r *MiscReconciler) modifyClusterQueue(ctx context.Context, resources clust
 	clusterResources, err := r.divideResources(resources, int64(len(kueueSpec.EqualResources)))
 	if err != nil {
 		return err
+	}
+
+	if err := r.pruneQueues(ctx, cp); err != nil {
+		klog.Warningf("Pruning Queues returned error but continuing anyway: %v", err)
 	}
 
 	for n, clusterQueue := range kueueSpec.EqualResources {
@@ -837,7 +925,11 @@ func (r *MiscReconciler) removeKueueObjects(ctx context.Context, crName string) 
 
 	localQueues := &kueuev1beta2.LocalQueueList{}
 	if err := r.List(ctx, localQueues, client.InNamespace(metav1.NamespaceAll), client.MatchingLabels(matchLabels)); err != nil {
-		klog.Warningf("Error when deleting Kueue LocalQueues: %v", err)
+		if client.IgnoreNotFound(err) == nil {
+			klog.V(3).Infof("No Kueue LocalQueues to delete")
+		} else {
+			klog.Warningf("Error when deleting Kueue LocalQueues: %v", err)
+		}
 	} else {
 		for i := range localQueues.Items {
 
