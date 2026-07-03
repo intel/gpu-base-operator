@@ -71,6 +71,11 @@ func hexArgStr(s []string) string {
 }
 
 func addXpumdMounts(spec *core.PodSpec) {
+	if len(spec.Containers) == 0 {
+		klog.Warning("Cannot add xpumd mounts: no containers in pod spec")
+		return
+	}
+
 	for _, v := range spec.Volumes {
 		if v.Name == xpumdVolumeName {
 			return
@@ -98,6 +103,11 @@ func addXpumdMounts(spec *core.PodSpec) {
 }
 
 func removeXpumdMounts(spec *core.PodSpec) {
+	if len(spec.Containers) == 0 {
+		klog.Warning("Cannot remove xpumd mounts: no containers in pod spec")
+		return
+	}
+
 	for i, v := range spec.Volumes {
 		if v.Name == xpumdVolumeName {
 			spec.Volumes = slices.Delete(spec.Volumes, i, i+1)
@@ -145,6 +155,11 @@ func dpArgs(spec *v1alpha.ClusterPolicy) []string {
 }
 
 func (r *DevicePluginReconciler) updateDaemonSetObject(ds *apps.DaemonSet, spec *v1alpha.ClusterPolicy) {
+	if len(ds.Spec.Template.Spec.Containers) == 0 {
+		klog.Error(nil, "Cannot update DaemonSet: no containers in pod spec", "DaemonSet", ds.Name)
+		return
+	}
+
 	name := fmt.Sprintf("%s-device-plugin", spec.Name)
 
 	ds.Name = name
