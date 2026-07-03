@@ -621,6 +621,384 @@ var _ = Describe("Misc Kueue", func() {
 			// all cluster queues have been found
 			Expect(queuesAfterPrune).To(BeEmpty())
 		})
+
+		It("modify LocalQueue specifications", func() {
+			s := runtime.NewScheme()
+			Expect(core.AddToScheme(s)).To(Succeed())
+			Expect(kueuev1beta2.AddToScheme(s)).To(Succeed())
+			Expect(apiextensionsv1.AddToScheme(s)).To(Succeed())
+			Expect(v1alpha.AddToScheme(s)).To(Succeed())
+
+			cp := &v1alpha.ClusterPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster-policy",
+				},
+				Spec: v1alpha.ClusterPolicySpec{
+					ResourceRegistration: "dp",
+					EnableKueue:          true,
+					Kueue: &v1alpha.KueueQueueSpec{
+						EqualResources: []v1alpha.ClusterQueueSpec{
+							{
+								Name: "test-queue",
+								LocalQueues: []v1alpha.LocalQueueSpec{
+									{Name: "lq-1", Namespace: "default"},
+									{Name: "lq-2", Namespace: "test-ns"},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			ctx := context.Background()
+			crd1, crd2, crd3 := kueueCRDObjects()
+			node := gpuNode()
+
+			r := MiscReconciler{}
+			r.Client = fake.NewClientBuilder().WithScheme(s).WithObjects(crd1, crd2, crd3, node).Build()
+			r.Opts = ControllerOpts{ReqName: "test-cluster-policy"}
+			r.Scheme = s
+
+			// Create initial queues
+			_, err := r.Reconcile(ctx, cp)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify initial LocalQueues were created
+			lqList := kueuev1beta2.LocalQueueList{}
+			err = r.List(ctx, &lqList)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lqList.Items).To(HaveLen(2))
+
+			// Update ClusterPolicy with modified LocalQueue (different namespace)
+			cpUpdated := cp.DeepCopy()
+			cpUpdated.Spec.Kueue.EqualResources[0].LocalQueues[1].Namespace = "modified-ns"
+
+			// Reconcile with updated policy
+			_, err = r.Reconcile(ctx, cpUpdated)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify LocalQueue was updated
+			lqModified := &kueuev1beta2.LocalQueue{}
+			err = r.Get(ctx, types.NamespacedName{Name: "lq-2", Namespace: "modified-ns"}, lqModified)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lqModified.Spec.ClusterQueue).To(Equal(kueuev1beta2.ClusterQueueReference("test-queue")))
+
+			// Old LocalQueue should no longer exist
+			lqOld := &kueuev1beta2.LocalQueue{}
+			err = r.Get(ctx, types.NamespacedName{Name: "lq-2", Namespace: "test-ns"}, lqOld)
+			Expect(err).To(HaveOccurred())
+		})
+
+		It("add new LocalQueues to existing ClusterQueue", func() {
+			s := runtime.NewScheme()
+			Expect(core.AddToScheme(s)).To(Succeed())
+			Expect(kueuev1beta2.AddToScheme(s)).To(Succeed())
+			Expect(apiextensionsv1.AddToScheme(s)).To(Succeed())
+			Expect(v1alpha.AddToScheme(s)).To(Succeed())
+
+			cp := &v1alpha.ClusterPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster-policy",
+				},
+				Spec: v1alpha.ClusterPolicySpec{
+					ResourceRegistration: "dp",
+					EnableKueue:          true,
+					Kueue: &v1alpha.KueueQueueSpec{
+						EqualResources: []v1alpha.ClusterQueueSpec{
+							{
+								Name: "test-queue",
+								LocalQueues: []v1alpha.LocalQueueSpec{
+									{Name: "lq-1", Namespace: "default"},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			ctx := context.Background()
+			crd1, crd2, crd3 := kueueCRDObjects()
+			node := gpuNode()
+
+			r := MiscReconciler{}
+			r.Client = fake.NewClientBuilder().WithScheme(s).WithObjects(crd1, crd2, crd3, node).Build()
+			r.Opts = ControllerOpts{ReqName: "test-cluster-policy"}
+			r.Scheme = s
+
+			// Create initial queue with one LocalQueue
+			_, err := r.Reconcile(ctx, cp)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Add more LocalQueues
+			cpUpdated := cp.DeepCopy()
+			cpUpdated.Spec.Kueue.EqualResources[0].LocalQueues = append(
+				cpUpdated.Spec.Kueue.EqualResources[0].LocalQueues,
+				v1alpha.LocalQueueSpec{Name: "lq-2", Namespace: "ns-2"},
+				v1alpha.LocalQueueSpec{Name: "lq-3", Namespace: "ns-3"},
+			)
+
+			// Reconcile with updated policy
+			_, err = r.Reconcile(ctx, cpUpdated)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify all LocalQueues exist
+			lqList := kueuev1beta2.LocalQueueList{}
+			err = r.List(ctx, &lqList)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lqList.Items).To(HaveLen(3))
+
+			for _, lq := range lqList.Items {
+				Expect(lq.Spec.ClusterQueue).To(Equal(kueuev1beta2.ClusterQueueReference("test-queue")))
+			}
+		})
+
+		It("remove LocalQueues from existing ClusterQueue", func() {
+			s := runtime.NewScheme()
+			Expect(core.AddToScheme(s)).To(Succeed())
+			Expect(kueuev1beta2.AddToScheme(s)).To(Succeed())
+			Expect(apiextensionsv1.AddToScheme(s)).To(Succeed())
+			Expect(v1alpha.AddToScheme(s)).To(Succeed())
+
+			cp := &v1alpha.ClusterPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster-policy",
+				},
+				Spec: v1alpha.ClusterPolicySpec{
+					ResourceRegistration: "dp",
+					EnableKueue:          true,
+					Kueue: &v1alpha.KueueQueueSpec{
+						EqualResources: []v1alpha.ClusterQueueSpec{
+							{
+								Name: "test-queue",
+								LocalQueues: []v1alpha.LocalQueueSpec{
+									{Name: "lq-1", Namespace: "default"},
+									{Name: "lq-2", Namespace: "ns-2"},
+									{Name: "lq-3", Namespace: "ns-3"},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			ctx := context.Background()
+			crd1, crd2, crd3 := kueueCRDObjects()
+			node := gpuNode()
+
+			r := MiscReconciler{}
+			r.Client = fake.NewClientBuilder().WithScheme(s).WithObjects(crd1, crd2, crd3, node).Build()
+			r.Opts = ControllerOpts{ReqName: "test-cluster-policy"}
+			r.Scheme = s
+
+			// Create initial queues
+			_, err := r.Reconcile(ctx, cp)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Remove middle LocalQueue
+			cpUpdated := cp.DeepCopy()
+			cpUpdated.Spec.Kueue.EqualResources[0].LocalQueues = []v1alpha.LocalQueueSpec{
+				{Name: "lq-1", Namespace: "default"},
+				{Name: "lq-3", Namespace: "ns-3"},
+			}
+
+			// Reconcile with updated policy
+			_, err = r.Reconcile(ctx, cpUpdated)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Prune old queues
+			err = r.pruneQueues(ctx, cpUpdated)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify lq-2 was deleted
+			lqDeleted := &kueuev1beta2.LocalQueue{}
+			err = r.Get(ctx, types.NamespacedName{Name: "lq-2", Namespace: "ns-2"}, lqDeleted)
+			Expect(err).To(HaveOccurred())
+
+			// Verify remaining LocalQueues still exist
+			lqList := kueuev1beta2.LocalQueueList{}
+			err = r.List(ctx, &lqList)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lqList.Items).To(HaveLen(2))
+		})
+
+		It("handle ClusterQueue with empty LocalQueues", func() {
+			s := runtime.NewScheme()
+			Expect(core.AddToScheme(s)).To(Succeed())
+			Expect(kueuev1beta2.AddToScheme(s)).To(Succeed())
+			Expect(apiextensionsv1.AddToScheme(s)).To(Succeed())
+			Expect(v1alpha.AddToScheme(s)).To(Succeed())
+
+			cp := &v1alpha.ClusterPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster-policy",
+				},
+				Spec: v1alpha.ClusterPolicySpec{
+					ResourceRegistration: "dp",
+					EnableKueue:          true,
+					Kueue: &v1alpha.KueueQueueSpec{
+						EqualResources: []v1alpha.ClusterQueueSpec{
+							{
+								Name:        "test-queue-empty",
+								LocalQueues: []v1alpha.LocalQueueSpec{},
+							},
+						},
+					},
+				},
+			}
+
+			ctx := context.Background()
+			crd1, crd2, crd3 := kueueCRDObjects()
+			node := gpuNode()
+
+			r := MiscReconciler{}
+			r.Client = fake.NewClientBuilder().WithScheme(s).WithObjects(crd1, crd2, crd3, node).Build()
+			r.Opts = ControllerOpts{ReqName: "test-cluster-policy"}
+			r.Scheme = s
+
+			// Create queue with empty LocalQueues
+			_, err := r.Reconcile(ctx, cp)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify ClusterQueue was created even with empty LocalQueues
+			cqList := kueuev1beta2.ClusterQueueList{}
+			err = r.List(ctx, &cqList)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cqList.Items).To(HaveLen(1))
+			Expect(cqList.Items[0].Name).To(Equal("test-queue-empty"))
+		})
+
+		It("prune queues when none exist", func() {
+			s := runtime.NewScheme()
+			Expect(core.AddToScheme(s)).To(Succeed())
+			Expect(kueuev1beta2.AddToScheme(s)).To(Succeed())
+			Expect(apiextensionsv1.AddToScheme(s)).To(Succeed())
+			Expect(v1alpha.AddToScheme(s)).To(Succeed())
+
+			cp := &v1alpha.ClusterPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster-policy",
+				},
+				Spec: v1alpha.ClusterPolicySpec{
+					ResourceRegistration: "dp",
+					EnableKueue:          true,
+					Kueue: &v1alpha.KueueQueueSpec{
+						EqualResources: []v1alpha.ClusterQueueSpec{},
+					},
+				},
+			}
+
+			ctx := context.Background()
+			crd1, crd2, crd3 := kueueCRDObjects()
+			node := gpuNode()
+
+			r := MiscReconciler{}
+			r.Client = fake.NewClientBuilder().WithScheme(s).WithObjects(crd1, crd2, crd3, node).Build()
+			r.Opts = ControllerOpts{ReqName: "test-cluster-policy"}
+			r.Scheme = s
+
+			// Prune when no queues exist should not error
+			err := r.pruneQueues(ctx, cp)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("replace all ClusterQueues and LocalQueues", func() {
+			s := runtime.NewScheme()
+			Expect(core.AddToScheme(s)).To(Succeed())
+			Expect(kueuev1beta2.AddToScheme(s)).To(Succeed())
+			Expect(apiextensionsv1.AddToScheme(s)).To(Succeed())
+			Expect(v1alpha.AddToScheme(s)).To(Succeed())
+
+			cpInitial := &v1alpha.ClusterPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster-policy",
+				},
+				Spec: v1alpha.ClusterPolicySpec{
+					ResourceRegistration: "dp",
+					EnableKueue:          true,
+					Kueue: &v1alpha.KueueQueueSpec{
+						EqualResources: []v1alpha.ClusterQueueSpec{
+							{
+								Name: "old-queue",
+								LocalQueues: []v1alpha.LocalQueueSpec{
+									{Name: "old-lq", Namespace: "old-ns"},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			cpNew := &v1alpha.ClusterPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster-policy",
+				},
+				Spec: v1alpha.ClusterPolicySpec{
+					ResourceRegistration: "dp",
+					EnableKueue:          true,
+					Kueue: &v1alpha.KueueQueueSpec{
+						EqualResources: []v1alpha.ClusterQueueSpec{
+							{
+								Name: "new-queue-1",
+								LocalQueues: []v1alpha.LocalQueueSpec{
+									{Name: "new-lq-1", Namespace: "new-ns-1"},
+								},
+							},
+							{
+								Name: "new-queue-2",
+								LocalQueues: []v1alpha.LocalQueueSpec{
+									{Name: "new-lq-2", Namespace: "new-ns-2"},
+									{Name: "new-lq-3", Namespace: "new-ns-3"},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			ctx := context.Background()
+			crd1, crd2, crd3 := kueueCRDObjects()
+			node := gpuNode()
+
+			r := MiscReconciler{}
+			r.Client = fake.NewClientBuilder().WithScheme(s).WithObjects(crd1, crd2, crd3, node).Build()
+			r.Opts = ControllerOpts{ReqName: "test-cluster-policy"}
+			r.Scheme = s
+
+			// Create initial queues
+			_, err := r.Reconcile(ctx, cpInitial)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify initial state
+			lqListInitial := kueuev1beta2.LocalQueueList{}
+			err = r.List(ctx, &lqListInitial)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lqListInitial.Items).To(HaveLen(1))
+
+			// Create new queues
+			_, err = r.Reconcile(ctx, cpNew)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Prune old queues
+			err = r.pruneQueues(ctx, cpNew)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify old queue is gone
+			cqOld := &kueuev1beta2.ClusterQueue{}
+			err = r.Get(ctx, types.NamespacedName{Name: "old-queue"}, cqOld)
+			Expect(err).To(HaveOccurred())
+
+			// Verify new queues exist
+			cqList := kueuev1beta2.ClusterQueueList{}
+			err = r.List(ctx, &cqList)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cqList.Items).To(HaveLen(2))
+
+			// Verify new LocalQueues exist
+			lqListNew := kueuev1beta2.LocalQueueList{}
+			err = r.List(ctx, &lqListNew)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lqListNew.Items).To(HaveLen(3))
+		})
 	})
 })
 
