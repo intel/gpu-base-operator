@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -48,6 +49,7 @@ type MiscReconciler struct {
 	APIReader client.Reader
 	Scheme    *runtime.Scheme
 	Opts      ControllerOpts
+	CrdNames  []string
 }
 
 const (
@@ -97,11 +99,7 @@ func (r *MiscReconciler) reconcilePrometheusComponents(ctx context.Context, cp *
 		return nil
 	}
 
-	if found, err := r.checkIfCRDsExists(ctx, serviceMonitorCrd); err != nil {
-		klog.Error(err, "unable to check if CRDs exist")
-
-		return err
-	} else if !found {
+	if found := r.checkIfCRDsExists(serviceMonitorCrd); !found {
 		return nil
 	}
 
@@ -180,11 +178,7 @@ func (r *MiscReconciler) reconcilePrometheusComponents(ctx context.Context, cp *
 }
 
 func (r *MiscReconciler) removePrometheusComponents(ctx context.Context, cRName string) error {
-	if found, err := r.checkIfCRDsExists(ctx, serviceMonitorCrd); err != nil {
-		klog.Error(err, "unable to check if CRDs exist")
-
-		return err
-	} else if !found {
+	if found := r.checkIfCRDsExists(serviceMonitorCrd); !found {
 		return nil
 	}
 
@@ -224,25 +218,8 @@ func (r *MiscReconciler) removePrometheusComponents(ctx context.Context, cRName 
 	return nil
 }
 
-func (r *MiscReconciler) checkIfCRDsExists(ctx context.Context, crdName string) (bool, error) {
-	// Check if CRDs already exist using unstructured.UnstructuredList
-	crdList := &unstructured.UnstructuredList{}
-	crdList.SetKind("CustomResourceDefinition")
-	crdList.SetAPIVersion("apiextensions.k8s.io/v1")
-
-	if err := r.List(ctx, crdList); err != nil {
-		klog.Error(err, "unable to list CRDs")
-
-		return false, err
-	}
-
-	for _, crd := range crdList.Items {
-		if crd.GetName() == crdName {
-			return true, nil
-		}
-	}
-
-	return false, nil
+func (r *MiscReconciler) checkIfCRDsExists(crdName string) bool {
+	return slices.Contains(r.CrdNames, crdName)
 }
 
 // getNFDCRDScope returns the scope of the NFD NodeFeatureRule CRD.
@@ -872,10 +849,7 @@ func (r *MiscReconciler) removeKueueObjects(ctx context.Context, crName string) 
 
 	_ = logf.FromContext(ctx)
 
-	if found, err := r.checkIfCRDsExists(ctx, kueueClusterQueueCrd); err != nil {
-		klog.Error(err, "unable to check if Kueue is installed")
-		return err
-	} else if !found {
+	if found := r.checkIfCRDsExists(kueueClusterQueueCrd); !found {
 		return nil
 	}
 
@@ -940,9 +914,7 @@ func (r *MiscReconciler) reconcileKueueObjects(ctx context.Context, cp *v1alpha.
 	_ = logf.FromContext(ctx)
 
 	for _, crd := range []string{kueueResourceFlavorCrd, kueueClusterQueueCrd, kueueLocalQueueCrd} {
-		if found, err := r.checkIfCRDsExists(ctx, crd); err != nil {
-			return fmt.Errorf("unable to check if Kueue is installed: %v", err)
-		} else if !found {
+		if found := r.checkIfCRDsExists(crd); !found {
 			return nil
 		}
 	}

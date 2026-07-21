@@ -461,6 +461,7 @@ var _ = Describe("Misc Kueue", func() {
 			r := MiscReconciler{}
 			r.Client = fake.NewClientBuilder().WithScheme(s).WithObjects(crd1, crd2, crd3, node).Build()
 			r.Opts = ControllerOpts{ReqName: "test-cluster-policy"}
+			r.CrdNames = []string{kueueClusterQueueCrd, kueueResourceFlavorCrd, kueueLocalQueueCrd}
 
 			err := r.reconcileKueueObjects(ctx, cp)
 			Expect(err).NotTo(HaveOccurred())
@@ -530,6 +531,7 @@ var _ = Describe("Misc Kueue", func() {
 			r := MiscReconciler{}
 			r.Client = fake.NewClientBuilder().WithScheme(s).WithObjects(crd1, crd2, crd3, node).Build()
 			r.Opts = ControllerOpts{ReqName: "legacy-name"}
+			r.CrdNames = []string{kueueClusterQueueCrd, kueueResourceFlavorCrd, kueueLocalQueueCrd}
 
 			err := r.reconcileKueueObjects(ctx, cp)
 			Expect(err).NotTo(HaveOccurred())
@@ -661,6 +663,7 @@ var _ = Describe("Misc Prometheus", func() {
 			r := MiscReconciler{}
 			r.Client = fake.NewClientBuilder().WithScheme(s).WithObjects(prometheusCRDObject()).Build()
 			r.Opts = ControllerOpts{ReqName: "test-cluster-policy", Namespace: "default"}
+			r.CrdNames = []string{serviceMonitorCrd}
 
 			err := r.reconcilePrometheusComponents(ctx, cp)
 			Expect(err).NotTo(HaveOccurred())
@@ -705,7 +708,7 @@ var _ = Describe("Misc Prometheus", func() {
 			r := MiscReconciler{}
 			r.Client = fake.NewClientBuilder().WithScheme(s).WithObjects(prometheusCRDObject()).Build()
 			r.Opts = ControllerOpts{ReqName: "test-cluster-policy", Namespace: "default"}
-
+			r.CrdNames = []string{serviceMonitorCrd}
 			_, err := r.Reconcile(ctx, cp)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -749,6 +752,7 @@ var _ = Describe("Misc Prometheus", func() {
 			r := MiscReconciler{}
 			r.Client = fake.NewClientBuilder().WithScheme(s).WithObjects(prometheusCRDObject()).Build()
 			r.Opts = ControllerOpts{ReqName: "test-cluster-policy", Namespace: "default"}
+			r.CrdNames = []string{serviceMonitorCrd}
 
 			err := r.removePrometheusComponents(context.Background(), "test-cluster-policy")
 			Expect(err).NotTo(HaveOccurred())

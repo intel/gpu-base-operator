@@ -26,6 +26,7 @@ import (
 	apps "k8s.io/api/apps/v1"
 	core "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
@@ -157,6 +158,12 @@ func (r *ClusterPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 	}()
 
+	crdNames, err := r.retrieveCRDNameList(ctx)
+	if err != nil {
+		klog.Error(err, "unable to retrieve CRD name list")
+		return ctrl.Result{}, err
+	}
+
 	// Create a local copy of the options, in case we ever have parallel reconciles with
 	// different request names.
 	opts := r.Opts
@@ -169,7 +176,7 @@ func (r *ClusterPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	subControllers = append(subControllers, &XpuManagerReconciler{Client: r.Client, Scheme: r.Scheme, Opts: opts})
 	// Include DRA subcontroller even though cluster might not be configured to use DRA, so it can report a status correctly.
 	subControllers = append(subControllers, &DRAReconciler{Client: r.Client, Scheme: r.Scheme, Opts: opts})
-	subControllers = append(subControllers, &MiscReconciler{Client: r.Client, APIReader: r.APIReader, Scheme: r.Scheme, Opts: opts})
+	subControllers = append(subControllers, &MiscReconciler{Client: r.Client, APIReader: r.APIReader, Scheme: r.Scheme, Opts: opts, CrdNames: crdNames})
 
 	// Ensure finalizer is present on live (non-deleted) ClusterPolicy objects.
 	if cp != nil && cp.DeletionTimestamp.IsZero() {
@@ -238,6 +245,28 @@ func (r *ClusterPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	return ctrl.Result{}, retErr
+}
+
+// retrieveCRDNameList returns a list of all CRD names in the cluster, to be used for
+// by the sub-reconcilers to determine which resources are available for use. This avoids
+// retrieving the CRD list multiple times during a single reconcile.
+func (r *ClusterPolicyReconciler) retrieveCRDNameList(ctx context.Context) ([]string, error) {
+	crdList := &unstructured.UnstructuredList{}
+	crdList.SetKind("CustomResourceDefinition")
+	crdList.SetAPIVersion("apiextensions.k8s.io/v1")
+
+	if err := r.List(ctx, crdList); err != nil {
+		klog.Error(err, "unable to list CRDs")
+
+		return nil, err
+	}
+
+	crdNames := []string{}
+	for _, crd := range crdList.Items {
+		crdNames = append(crdNames, crd.GetName())
+	}
+
+	return crdNames, nil
 }
 
 // draPodToClusterPolicy maps any DRA pod event to reconcile requests for all existing
