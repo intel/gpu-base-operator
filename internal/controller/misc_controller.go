@@ -447,10 +447,10 @@ func (r *MiscReconciler) divideResources(clusterResources clusterResourceMap, nu
 	return queueResources, nil
 }
 
-func (r *MiscReconciler) createResourceFlavor() *kueuev1beta2.ResourceFlavor {
+func (r *MiscReconciler) createResourceFlavor(owner string) *kueuev1beta2.ResourceFlavor {
 	labels := map[string]string{
 		"app":   kueueAppLabel,
-		"owner": r.Opts.ReqName,
+		"owner": owner,
 	}
 
 	return &kueuev1beta2.ResourceFlavor{
@@ -461,7 +461,7 @@ func (r *MiscReconciler) createResourceFlavor() *kueuev1beta2.ResourceFlavor {
 	}
 }
 
-func (r *MiscReconciler) modifyResourceFlavor(ctx context.Context) error {
+func (r *MiscReconciler) modifyResourceFlavor(ctx context.Context, owner string) error {
 	currentUnstructured := &unstructured.Unstructured{}
 	currentUnstructured.SetKind(kueueResourceFlavorKind)
 	currentUnstructured.SetAPIVersion(kueueAPIVersion)
@@ -476,13 +476,29 @@ func (r *MiscReconciler) modifyResourceFlavor(ctx context.Context) error {
 	}
 
 	if !found {
-		err := r.Create(ctx, r.createResourceFlavor())
+		err := r.Create(ctx, r.createResourceFlavor(owner))
 		if client.IgnoreAlreadyExists(err) != nil {
 			klog.Error(err, "unable to create Kueue ResourceFlavor '%s'", kueueFlavorName)
 			return err
 		}
 
 		klog.V(3).Infof("Created ResourceFlavor '%s'", kueueFlavorName)
+	} else {
+		currentResourceFlavor := &kueuev1beta2.ResourceFlavor{}
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(currentUnstructured.UnstructuredContent(), currentResourceFlavor); err != nil {
+			return fmt.Errorf("unable to convert unstructured to ResourceFlavor '%s': %v", kueueFlavorName, err)
+		}
+
+		if currentResourceFlavor.Labels == nil {
+			currentResourceFlavor.Labels = map[string]string{}
+		}
+		if currentResourceFlavor.Labels["app"] != kueueAppLabel || currentResourceFlavor.Labels["owner"] != owner {
+			currentResourceFlavor.Labels["app"] = kueueAppLabel
+			currentResourceFlavor.Labels["owner"] = owner
+			if err := r.Update(ctx, currentResourceFlavor); err != nil {
+				return fmt.Errorf("unable to update labels for Kueue ResourceFlavor '%s': %v", kueueFlavorName, err)
+			}
+		}
 	}
 
 	return nil
@@ -570,10 +586,10 @@ func (r *MiscReconciler) getDraResources(ctx context.Context, clusterNodes clust
 	return resources
 }
 
-func (r *MiscReconciler) createLocalQueue(clusterQueueName string, localQueueSpec *v1alpha.LocalQueueSpec) *kueuev1beta2.LocalQueue {
+func (r *MiscReconciler) createLocalQueue(owner, clusterQueueName string, localQueueSpec *v1alpha.LocalQueueSpec) *kueuev1beta2.LocalQueue {
 	labels := map[string]string{
 		"app":   kueueAppLabel,
-		"owner": r.Opts.ReqName,
+		"owner": owner,
 	}
 
 	localQueue := kueuev1beta2.LocalQueue{
@@ -590,7 +606,7 @@ func (r *MiscReconciler) createLocalQueue(clusterQueueName string, localQueueSpe
 	return &localQueue
 }
 
-func (r *MiscReconciler) modifyLocalQueues(ctx context.Context, clusterQueue *v1alpha.ClusterQueueSpec) error {
+func (r *MiscReconciler) modifyLocalQueues(ctx context.Context, owner string, clusterQueue *v1alpha.ClusterQueueSpec) error {
 	if len(clusterQueue.LocalQueues) == 0 {
 		klog.V(3).Infof("No LocalQueues defined for ClusterQueue '%s'", clusterQueue.Name)
 		return nil
@@ -610,7 +626,7 @@ func (r *MiscReconciler) modifyLocalQueues(ctx context.Context, clusterQueue *v1
 			found = false
 		}
 
-		newLocalQueue := r.createLocalQueue(clusterQueue.Name, &localQueue)
+		newLocalQueue := r.createLocalQueue(owner, clusterQueue.Name, &localQueue)
 
 		if !found {
 			err := r.Create(ctx, newLocalQueue)
@@ -631,10 +647,14 @@ func (r *MiscReconciler) modifyLocalQueues(ctx context.Context, clusterQueue *v1
 		}
 
 		specDiff := cmp.Diff(currentLocalQueue.Spec, newLocalQueue.Spec, cmpopts.EquateEmpty())
-		if len(specDiff) > 0 {
+		labelsDiff := cmp.Diff(currentLocalQueue.Labels, newLocalQueue.Labels, cmpopts.EquateEmpty())
+		if len(specDiff) > 0 || len(labelsDiff) > 0 {
 			klog.V(3).Infof("Updating LocalQueue '%s/%s'", localQueue.Namespace, localQueue.Name)
 
 			currentLocalQueue.Spec = newLocalQueue.Spec
+			for key, value := range newLocalQueue.Labels {
+				currentLocalQueue.Labels[key] = value
+			}
 			err := r.Update(ctx, currentLocalQueue)
 			if client.IgnoreAlreadyExists(err) != nil {
 				klog.Error(err, "unable to update Kueue LocalQueue '%s/%s'", localQueue.Namespace, localQueue.Name)
@@ -650,13 +670,13 @@ func (r *MiscReconciler) modifyLocalQueues(ctx context.Context, clusterQueue *v1
 	return nil
 }
 
-func (r *MiscReconciler) createClusterQueue(resources clusterResourceMap, clusterQueueSpec *v1alpha.ClusterQueueSpec) *kueuev1beta2.ClusterQueue {
+func (r *MiscReconciler) createClusterQueue(owner string, resources clusterResourceMap, clusterQueueSpec *v1alpha.ClusterQueueSpec) *kueuev1beta2.ClusterQueue {
 	coveredResources := []core.ResourceName{}
 	resourceQuotas := []kueuev1beta2.ResourceQuota{}
 
 	labels := map[string]string{
 		"app":   kueueAppLabel,
-		"owner": r.Opts.ReqName,
+		"owner": owner,
 	}
 
 	for name, res := range resources {
@@ -692,10 +712,10 @@ func (r *MiscReconciler) createClusterQueue(resources clusterResourceMap, cluste
 	return clusterQueue
 }
 
-func (r *MiscReconciler) modifyClusterQueue(ctx context.Context, resources clusterResourceMap, kueueSpec *v1alpha.KueueQueueSpec) error {
+func (r *MiscReconciler) modifyClusterQueue(ctx context.Context, owner string, resources clusterResourceMap, kueueSpec *v1alpha.KueueQueueSpec) error {
 	if len(kueueSpec.EqualResources) == 0 {
 		klog.V(3).Infof("At least one EqualResources queue should be configured")
-		return nil
+		return r.cleanupStaleKueueQueues(ctx, owner, kueueSpec)
 	}
 
 	clusterResources, err := r.divideResources(resources, int64(len(kueueSpec.EqualResources)))
@@ -717,7 +737,7 @@ func (r *MiscReconciler) modifyClusterQueue(ctx context.Context, resources clust
 			found = false
 		}
 
-		newClusterQueue := r.createClusterQueue(clusterResources[n], &clusterQueue)
+		newClusterQueue := r.createClusterQueue(owner, clusterResources[n], &clusterQueue)
 
 		if !found {
 			err = r.Create(ctx, newClusterQueue)
@@ -736,10 +756,14 @@ func (r *MiscReconciler) modifyClusterQueue(ctx context.Context, resources clust
 			}
 
 			specDiff := cmp.Diff(currentClusterQueue.Spec, newClusterQueue.Spec, cmpopts.EquateEmpty())
-			if len(specDiff) > 0 {
+			labelsDiff := cmp.Diff(currentClusterQueue.Labels, newClusterQueue.Labels, cmpopts.EquateEmpty())
+			if len(specDiff) > 0 || len(labelsDiff) > 0 {
 				klog.V(3).Infof("Updating ClusterQueue '%s'", clusterQueue.Name)
 
 				currentClusterQueue.Spec = newClusterQueue.Spec
+				for key, value := range newClusterQueue.Labels {
+					currentClusterQueue.Labels[key] = value
+				}
 				err = r.Update(ctx, currentClusterQueue)
 				if client.IgnoreAlreadyExists(err) != nil {
 					klog.Error(err, "unable to update Kueue ClusterQueue '%s'", clusterQueue.Name)
@@ -752,32 +776,99 @@ func (r *MiscReconciler) modifyClusterQueue(ctx context.Context, resources clust
 			}
 		}
 
-		if err := r.modifyLocalQueues(ctx, &clusterQueue); err != nil {
+		if err := r.modifyLocalQueues(ctx, owner, &clusterQueue); err != nil {
 			return err
+		}
+	}
+
+	if err := r.cleanupStaleKueueQueues(ctx, owner, kueueSpec); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (r *MiscReconciler) createKueueQueues(ctx context.Context, owner string, resources clusterResourceMap, kueueSpec *v1alpha.KueueQueueSpec) error {
+	if resources == nil {
+		klog.V(3).Infof("no resources defined when attempting to create Kueue queues")
+		return nil
+	}
+
+	if err := r.modifyResourceFlavor(ctx, owner); err != nil {
+		return err
+	}
+
+	if err := r.modifyClusterQueue(ctx, owner, resources, kueueSpec); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (r *MiscReconciler) cleanupStaleKueueQueues(ctx context.Context, owner string, kueueSpec *v1alpha.KueueQueueSpec) error {
+	klog.V(4).Infof("Cleaning up stale Kueue ClusterQueues and LocalQueues for %s", owner)
+
+	matchLabels := map[string]string{
+		"app":   kueueAppLabel,
+		"owner": owner,
+	}
+
+	expectedClusterQueues := map[string]struct{}{}
+	expectedLocalQueues := map[types.NamespacedName]struct{}{}
+	if kueueSpec != nil {
+		for _, cq := range kueueSpec.EqualResources {
+			expectedClusterQueues[cq.Name] = struct{}{}
+			for _, lq := range cq.LocalQueues {
+				expectedLocalQueues[types.NamespacedName{Name: lq.Name, Namespace: lq.Namespace}] = struct{}{}
+			}
+		}
+	}
+
+	clusterQueues := &kueuev1beta2.ClusterQueueList{}
+	if err := r.List(ctx, clusterQueues, client.MatchingLabels(matchLabels)); err != nil {
+		return fmt.Errorf("failed to list Kueue ClusterQueues for cleanup: %v", err)
+	}
+
+	klog.V(4).Infof("Cluster queues: %d", len(clusterQueues.Items))
+
+	for i := range clusterQueues.Items {
+		cq := &clusterQueues.Items[i]
+		if _, exists := expectedClusterQueues[cq.Name]; exists {
+			klog.V(5).Infof("Cluster queue %s found in policy, skip", cq.Name)
+
+			continue
+		}
+		if err := r.Delete(ctx, cq); err != nil && client.IgnoreNotFound(err) != nil {
+			return fmt.Errorf("unable to delete stale Kueue ClusterQueue '%s': %v", cq.Name, err)
+		}
+	}
+
+	localQueues := &kueuev1beta2.LocalQueueList{}
+	if err := r.List(ctx, localQueues, client.InNamespace(metav1.NamespaceAll), client.MatchingLabels(matchLabels)); err != nil {
+		return fmt.Errorf("failed to list Kueue LocalQueues for cleanup: %v", err)
+	}
+
+	klog.V(4).Infof("Local queues: %d", len(localQueues.Items))
+
+	for i := range localQueues.Items {
+		lq := &localQueues.Items[i]
+		nn := types.NamespacedName{Name: lq.Name, Namespace: lq.Namespace}
+		if _, exists := expectedLocalQueues[nn]; exists {
+			klog.V(5).Infof("Local queue %s/%s found in policy, skip", lq.Namespace, lq.Name)
+
+			continue
+		}
+		if err := r.Delete(ctx, lq); err != nil && client.IgnoreNotFound(err) != nil {
+			return fmt.Errorf("unable to delete stale Kueue LocalQueue '%s/%s': %v", lq.Namespace, lq.Name, err)
 		}
 	}
 
 	return nil
 }
 
-func (r *MiscReconciler) createKueueQueues(ctx context.Context, resources clusterResourceMap, kueueSpec *v1alpha.KueueQueueSpec) error {
-	if resources == nil {
-		klog.V(3).Infof("no resources defined when attempting to create Kueue queues")
-		return nil
-	}
-
-	if err := r.modifyResourceFlavor(ctx); err != nil {
-		return err
-	}
-
-	if err := r.modifyClusterQueue(ctx, resources, kueueSpec); err != nil {
-		return err
-	}
-
-	return nil
-}
-
 func (r *MiscReconciler) removeKueueObjects(ctx context.Context, crName string) error {
+	klog.V(3).Infof("Removing Kueue ClusterQueues and LocalQueues for %s", crName)
+
 	_ = logf.FromContext(ctx)
 
 	if found, err := r.checkIfCRDsExists(ctx, kueueClusterQueueCrd); err != nil {
@@ -857,7 +948,7 @@ func (r *MiscReconciler) reconcileKueueObjects(ctx context.Context, cp *v1alpha.
 
 	if cp.Spec.Kueue == nil || cp.Spec.Kueue.EqualResources == nil || len(cp.Spec.Kueue.EqualResources) == 0 {
 		klog.V(3).Infof("Kueue enabled, but no EqualResources queues defined")
-		return nil
+		return r.cleanupStaleKueueQueues(ctx, cp.Name, cp.Spec.Kueue)
 	}
 
 	clusternodes, err := r.getClusterNodes(ctx)
@@ -881,7 +972,7 @@ func (r *MiscReconciler) reconcileKueueObjects(ctx context.Context, cp *v1alpha.
 		return nil
 	}
 
-	return r.createKueueQueues(ctx, resources, cp.Spec.Kueue)
+	return r.createKueueQueues(ctx, cp.Name, resources, cp.Spec.Kueue)
 }
 
 func (r *MiscReconciler) Reconcile(ctx context.Context, cp *v1alpha.ClusterPolicy) (ctrl.Result, error) {

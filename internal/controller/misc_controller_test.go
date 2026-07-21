@@ -196,7 +196,7 @@ var _ = Describe("Misc Kueue", func() {
 			}
 
 			r := &MiscReconciler{}
-			clusterQueue := r.createClusterQueue(resourceMap, &v1alpha.ClusterQueueSpec{Name: "test-cluster-queue"})
+			clusterQueue := r.createClusterQueue("test-owner", resourceMap, &v1alpha.ClusterQueueSpec{Name: "test-cluster-queue"})
 			Expect(clusterQueue).NotTo(BeNil())
 			resourceGroups := clusterQueue.Spec.ResourceGroups
 			Expect(resourceGroups).To(HaveLen(1))
@@ -372,7 +372,7 @@ var _ = Describe("Misc Kueue", func() {
 			}
 			sortClusterQueue(expectedClusterQueue)
 
-			actualClusterQueue := r.createClusterQueue(resourceMap, &clusterQueueSpec)
+			actualClusterQueue := r.createClusterQueue(testOptsName, resourceMap, &clusterQueueSpec)
 			sortClusterQueue(actualClusterQueue)
 
 			Expect(cmp.Equal(actualClusterQueue, expectedClusterQueue)).To(BeTrue())
@@ -457,11 +457,13 @@ var _ = Describe("Misc Kueue", func() {
 			err = r.Get(ctx, types.NamespacedName{Name: "my-queue-1", Namespace: "default"}, localQueue1)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(string(localQueue1.Spec.ClusterQueue)).To(Equal("test-spec-name"))
+			Expect(localQueue1.Labels["owner"]).To(Equal(cp.Name))
 
 			localQueue2 := &kueuev1beta2.LocalQueue{}
 			err = r.Get(ctx, types.NamespacedName{Name: "my-queue-2", Namespace: "default"}, localQueue2)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(string(localQueue2.Spec.ClusterQueue)).To(Equal("test-spec-name"))
+			Expect(localQueue2.Labels["owner"]).To(Equal(cp.Name))
 
 			cp.Spec.EnableKueue = false
 			cp.Spec.Kueue = nil
@@ -471,6 +473,84 @@ var _ = Describe("Misc Kueue", func() {
 
 			err = r.Get(ctx, types.NamespacedName{Name: kueueFlavorName}, flavor)
 			Expect(err).To(HaveOccurred())
+		})
+
+		It("removes stale Kueue queues when policy queue names change", func() {
+			s := runtime.NewScheme()
+			Expect(core.AddToScheme(s)).To(Succeed())
+			Expect(kueuev1beta2.AddToScheme(s)).To(Succeed())
+			Expect(apiextensionsv1.AddToScheme(s)).To(Succeed())
+
+			cp := &v1alpha.ClusterPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster-policy",
+				},
+				Spec: v1alpha.ClusterPolicySpec{
+					ResourceRegistration: "dp",
+					EnableKueue:          true,
+					Kueue: &v1alpha.KueueQueueSpec{
+						EqualResources: []v1alpha.ClusterQueueSpec{
+							{
+								Name: "cq-a",
+								LocalQueues: []v1alpha.LocalQueueSpec{
+									{Name: "lq-a", Namespace: "default"},
+								},
+							},
+							{
+								Name: "cq-b",
+								LocalQueues: []v1alpha.LocalQueueSpec{
+									{Name: "lq-b", Namespace: "default"},
+								},
+							},
+						},
+					},
+				},
+			}
+			ctx := context.Background()
+
+			crd1, crd2, crd3 := kueueCRDObjects()
+			node := gpuNode()
+			r := MiscReconciler{}
+			r.Client = fake.NewClientBuilder().WithScheme(s).WithObjects(crd1, crd2, crd3, node).Build()
+			r.Opts = ControllerOpts{ReqName: "legacy-name"}
+
+			err := r.reconcileKueueObjects(ctx, cp)
+			Expect(err).NotTo(HaveOccurred())
+
+			cp.Spec.Kueue.EqualResources = []v1alpha.ClusterQueueSpec{
+				{
+					Name: "cq-renamed",
+					LocalQueues: []v1alpha.LocalQueueSpec{
+						{Name: "lq-renamed", Namespace: "default"},
+					},
+				},
+			}
+
+			err = r.reconcileKueueObjects(ctx, cp)
+			Expect(err).NotTo(HaveOccurred())
+
+			staleClusterQueue := &kueuev1beta2.ClusterQueue{}
+			err = r.Get(ctx, types.NamespacedName{Name: "cq-a"}, staleClusterQueue)
+			Expect(err).To(HaveOccurred())
+			err = r.Get(ctx, types.NamespacedName{Name: "cq-b"}, staleClusterQueue)
+			Expect(err).To(HaveOccurred())
+
+			activeClusterQueue := &kueuev1beta2.ClusterQueue{}
+			err = r.Get(ctx, types.NamespacedName{Name: "cq-renamed"}, activeClusterQueue)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(activeClusterQueue.Labels["owner"]).To(Equal(cp.Name))
+
+			staleLocalQueue := &kueuev1beta2.LocalQueue{}
+			err = r.Get(ctx, types.NamespacedName{Name: "lq-a", Namespace: "default"}, staleLocalQueue)
+			Expect(err).To(HaveOccurred())
+			err = r.Get(ctx, types.NamespacedName{Name: "lq-b", Namespace: "default"}, staleLocalQueue)
+			Expect(err).To(HaveOccurred())
+
+			activeLocalQueue := &kueuev1beta2.LocalQueue{}
+			err = r.Get(ctx, types.NamespacedName{Name: "lq-renamed", Namespace: "default"}, activeLocalQueue)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(activeLocalQueue.Labels["owner"]).To(Equal(cp.Name))
+			Expect(string(activeLocalQueue.Spec.ClusterQueue)).To(Equal("cq-renamed"))
 		})
 	})
 })
