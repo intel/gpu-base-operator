@@ -247,7 +247,7 @@ func (r *ClusterPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	return ctrl.Result{}, retErr
 }
 
-// retrieveCRDNameList returns a list of all CRD names in the cluster, to be used for
+// retrieveCRDNameList returns a list of all CRD names in the cluster, to be used
 // by the sub-reconcilers to determine which resources are available for use. This avoids
 // retrieving the CRD list multiple times during a single reconcile.
 func (r *ClusterPolicyReconciler) retrieveCRDNameList(ctx context.Context) ([]string, error) {
