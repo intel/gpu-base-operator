@@ -34,10 +34,27 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	kueuev1beta2 "sigs.k8s.io/kueue/apis/kueue/v1beta2"
 	nfdcrd "sigs.k8s.io/node-feature-discovery/api/nfd/v1alpha1"
 )
+
+type localQueueListTrackingReader struct {
+	client.Reader
+	localQueueListCalled bool
+}
+
+func (r *localQueueListTrackingReader) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	return r.Reader.Get(ctx, key, obj, opts...)
+}
+
+func (r *localQueueListTrackingReader) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	if _, ok := list.(*kueuev1beta2.LocalQueueList); ok {
+		r.localQueueListCalled = true
+	}
+	return r.Reader.List(ctx, list, opts...)
+}
 
 var (
 	testNodeName string = "test-node-01"
@@ -551,6 +568,42 @@ var _ = Describe("Misc Kueue", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(activeLocalQueue.Labels["owner"]).To(Equal(cp.Name))
 			Expect(string(activeLocalQueue.Spec.ClusterQueue)).To(Equal("cq-renamed"))
+		})
+
+		It("uses APIReader for LocalQueue listing during cleanup", func() {
+			s := runtime.NewScheme()
+			Expect(core.AddToScheme(s)).To(Succeed())
+			Expect(kueuev1beta2.AddToScheme(s)).To(Succeed())
+
+			localQueue := &kueuev1beta2.LocalQueue{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "stale-lq",
+					Namespace: "default",
+					Labels: map[string]string{
+						"app":   kueueAppLabel,
+						"owner": "test-cluster-policy",
+					},
+				},
+				Spec: kueuev1beta2.LocalQueueSpec{
+					ClusterQueue: "stale-cq",
+				},
+			}
+
+			fakeClient := fake.NewClientBuilder().WithScheme(s).WithObjects(localQueue).Build()
+			apiReader := &localQueueListTrackingReader{Reader: fakeClient}
+
+			r := MiscReconciler{
+				Client:    fakeClient,
+				APIReader: apiReader,
+			}
+
+			err := r.cleanupStaleKueueQueues(context.Background(), "test-cluster-policy", nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(apiReader.localQueueListCalled).To(BeTrue())
+
+			check := &kueuev1beta2.LocalQueue{}
+			err = fakeClient.Get(context.Background(), types.NamespacedName{Name: "stale-lq", Namespace: "default"}, check)
+			Expect(err).To(HaveOccurred())
 		})
 	})
 })

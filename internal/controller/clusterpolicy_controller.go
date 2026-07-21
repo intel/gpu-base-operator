@@ -45,8 +45,9 @@ import (
 // ClusterPolicyReconciler reconciles a ClusterPolicy object
 type ClusterPolicyReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
-	Opts   ControllerOpts
+	APIReader client.Reader
+	Scheme    *runtime.Scheme
+	Opts      ControllerOpts
 }
 
 type ControllerOpts struct {
@@ -168,7 +169,7 @@ func (r *ClusterPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	subControllers = append(subControllers, &XpuManagerReconciler{Client: r.Client, Scheme: r.Scheme, Opts: opts})
 	// Include DRA subcontroller even though cluster might not be configured to use DRA, so it can report a status correctly.
 	subControllers = append(subControllers, &DRAReconciler{Client: r.Client, Scheme: r.Scheme, Opts: opts})
-	subControllers = append(subControllers, &MiscReconciler{Client: r.Client, Scheme: r.Scheme, Opts: opts})
+	subControllers = append(subControllers, &MiscReconciler{Client: r.Client, APIReader: r.APIReader, Scheme: r.Scheme, Opts: opts})
 
 	// Ensure finalizer is present on live (non-deleted) ClusterPolicy objects.
 	if cp != nil && cp.DeletionTimestamp.IsZero() {
@@ -308,6 +309,7 @@ func draPodReadinessPredicate() predicate.Predicate {
 // SetupWithManager sets up the controller with the Manager.
 func (r *ClusterPolicyReconciler) SetupWithManager(mgr ctrl.Manager, opts ControllerOpts) error {
 	r.Opts = opts
+	r.APIReader = mgr.GetAPIReader()
 
 	b := ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha.ClusterPolicy{}).

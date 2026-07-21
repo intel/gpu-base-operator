@@ -45,8 +45,9 @@ import (
 
 type MiscReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
-	Opts   ControllerOpts
+	APIReader client.Reader
+	Scheme    *runtime.Scheme
+	Opts      ControllerOpts
 }
 
 const (
@@ -844,7 +845,7 @@ func (r *MiscReconciler) cleanupStaleKueueQueues(ctx context.Context, owner stri
 	}
 
 	localQueues := &kueuev1beta2.LocalQueueList{}
-	if err := r.List(ctx, localQueues, client.InNamespace(metav1.NamespaceAll), client.MatchingLabels(matchLabels)); err != nil {
+	if err := r.listLocalQueues(ctx, localQueues, client.MatchingLabels(matchLabels)); err != nil {
 		return fmt.Errorf("failed to list Kueue LocalQueues for cleanup: %v", err)
 	}
 
@@ -908,8 +909,8 @@ func (r *MiscReconciler) removeKueueObjects(ctx context.Context, crName string) 
 	}
 
 	localQueues := &kueuev1beta2.LocalQueueList{}
-	if err := r.List(ctx, localQueues, client.InNamespace(metav1.NamespaceAll), client.MatchingLabels(matchLabels)); err != nil {
-		klog.Warningf("Error when deleting Kueue LocalQueues: %v", err)
+	if err := r.listLocalQueues(ctx, localQueues, client.MatchingLabels(matchLabels)); err != nil {
+		klog.Warningf("Error when listing Kueue LocalQueues: %v", err)
 	} else {
 		for i := range localQueues.Items {
 
@@ -924,6 +925,13 @@ func (r *MiscReconciler) removeKueueObjects(ctx context.Context, crName string) 
 	}
 
 	return nil
+}
+
+func (r *MiscReconciler) listLocalQueues(ctx context.Context, list *kueuev1beta2.LocalQueueList, opts ...client.ListOption) error {
+	if r.APIReader != nil {
+		return r.APIReader.List(ctx, list, opts...)
+	}
+	return r.List(ctx, list, opts...)
 }
 
 func (r *MiscReconciler) reconcileKueueObjects(ctx context.Context, cp *v1alpha.ClusterPolicy) error {
