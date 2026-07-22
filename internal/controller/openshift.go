@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 const (
@@ -195,18 +196,20 @@ func createSCCRole(ctx context.Context, c client.Client, roleName, sccName strin
 		}},
 	}
 
-	existing := &rbac.ClusterRole{}
-
-	err := c.Get(ctx, client.ObjectKey{Name: roleName}, existing)
-	if errors.IsNotFound(err) {
-		if createErr := c.Create(ctx, cr); createErr != nil && !errors.IsAlreadyExists(createErr) {
-			return createErr
-		}
+	if _, err := controllerutil.CreateOrPatch(ctx, c, cr, func() error {
+		cr.Rules = []rbac.PolicyRule{{
+			APIGroups:     []string{"security.openshift.io"},
+			Resources:     []string{"securitycontextconstraints"},
+			ResourceNames: []string{sccName},
+			Verbs:         []string{"use"},
+		}}
 
 		return nil
+	}); err != nil {
+		return fmt.Errorf("failed to create or patch ClusterRole %s: %v", roleName, err)
 	}
 
-	return err
+	return nil
 }
 
 // createSCCRoleBinding creates a ClusterRoleBinding that binds the ServiceAccount to the SCC ClusterRole
@@ -226,18 +229,24 @@ func createSCCRoleBinding(ctx context.Context, c client.Client, bindingName, rol
 		}},
 	}
 
-	existing := &rbac.ClusterRoleBinding{}
-
-	err := c.Get(ctx, client.ObjectKey{Name: bindingName}, existing)
-	if errors.IsNotFound(err) {
-		if createErr := c.Create(ctx, crb); createErr != nil && !errors.IsAlreadyExists(createErr) {
-			return createErr
+	if _, err := controllerutil.CreateOrPatch(ctx, c, crb, func() error {
+		crb.RoleRef = rbac.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "ClusterRole",
+			Name:     roleName,
 		}
+		crb.Subjects = []rbac.Subject{{
+			Kind:      "ServiceAccount",
+			Name:      saName,
+			Namespace: namespace,
+		}}
 
 		return nil
+	}); err != nil {
+		return fmt.Errorf("failed to create or patch ClusterRoleBinding %s: %v", bindingName, err)
 	}
 
-	return err
+	return nil
 }
 
 // createServiceAccount creates a namespace-scoped ServiceAccount if it does not already exist.

@@ -48,3 +48,31 @@ func generateTolerations(cp *v1alpha.ClusterPolicy) []core.Toleration {
 
 	return tolerations
 }
+
+func isClusterPolicyBeingDeleted(cp *v1alpha.ClusterPolicy) bool {
+	// CP is nil, which means the CR was deleted, so we should remove everything.
+	if cp == nil {
+		return true
+	}
+
+	// CP is marked for deletion, so we should remove everything.
+	if !cp.DeletionTimestamp.IsZero() {
+		return true
+	}
+
+	return false
+}
+
+func shouldRemoveDRA(cp *v1alpha.ClusterPolicy) bool {
+	if isClusterPolicyBeingDeleted(cp) {
+		return true
+	}
+
+	// DRA not selected
+	if cp.Spec.ResourceRegistration != resourceModeDRA {
+		return true
+	}
+
+	return false
+}
+

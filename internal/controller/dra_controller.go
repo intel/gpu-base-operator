@@ -34,10 +34,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/google/go-cmp/cmp"
-	"github.com/google/go-cmp/cmp/cmpopts"
 	v1alpha "github.com/intel/gpu-base-operator/api/v1alpha1"
 	"github.com/intel/gpu-base-operator/config/deployments"
 )
@@ -57,7 +56,7 @@ const (
 	draResourcePart = "gpu-dra"
 )
 
-func (r *DRAReconciler) createAll(ctx context.Context, cp *v1alpha.ClusterPolicy) error {
+func (r *DRAReconciler) createDependencyComponentsIfMissing(ctx context.Context, cp *v1alpha.ClusterPolicy) error {
 	objects := []client.Object{}
 
 	objName := fmt.Sprintf("%s-gpu-dra", cp.Name)
@@ -107,7 +106,7 @@ func (r *DRAReconciler) createAll(ctx context.Context, cp *v1alpha.ClusterPolicy
 	for _, o := range objects {
 		if err := r.Create(ctx, o); err != nil {
 			if errors.IsAlreadyExists(err) {
-				klog.Info("object already exists: "+o.GetName(), o)
+				klog.V(4).Infof("object already exists: %s (%+v)", o.GetName(), o.GetObjectKind().GroupVersionKind())
 
 				continue
 			}
@@ -118,38 +117,23 @@ func (r *DRAReconciler) createAll(ctx context.Context, cp *v1alpha.ClusterPolicy
 		}
 	}
 
-	return r.createDaemonSet(ctx, cp)
+	return nil
 }
 
 func (r *DRAReconciler) ensureVfioDeviceClass(ctx context.Context, manageBinding bool) {
-	existing := deployments.DynamicResourceAllocationDeviceClassVfio(!manageBinding)
-
-	if err := r.Get(ctx, client.ObjectKey{Name: existing.Name}, existing); err != nil {
-		if errors.IsNotFound(err) {
-			klog.Info("VFIO device class not found, creating")
-
-			if err := r.Create(ctx, existing); err != nil {
-				klog.Error(err, "unable to create VFIO device class")
-			}
-
-			return
-		}
-
-		klog.Error(err, "unable to get VFIO device class")
-		return
-	}
-
 	desired := deployments.DynamicResourceAllocationDeviceClassVfio(!manageBinding)
 
-	diff := cmp.Diff(existing.Spec.Selectors, desired.Spec.Selectors, cmpopts.EquateEmpty())
-	if len(diff) > 0 {
-		klog.V(2).Info("Updating VFIO device class due to ManageBinding change", "diff", diff)
+	selectors := desired.Spec.Selectors
 
-		existing.Spec.Selectors = desired.Spec.Selectors
+	if ret, err := controllerutil.CreateOrPatch(ctx, r.Client, desired, func() error {
+		desired.Spec.Selectors = selectors
 
-		if err := r.Update(ctx, existing); err != nil {
-			klog.Error(err, "unable to update VFIO device class")
-		}
+		return nil
+	}); err != nil {
+		klog.Error(err, "unable to create or patch VFIO device class")
+		return
+	} else {
+		klog.V(4).Infof("VFIO device class %s %s", desired.Name, ret)
 	}
 }
 
@@ -357,8 +341,12 @@ func removeHealthCheckIfExists(container *core.Container) {
 	container.LivenessProbe = nil
 }
 
+func (r *DRAReconciler) buildDaemonSetName(crName string) string {
+	return fmt.Sprintf("%s-gpu-dra", crName)
+}
+
 func (r *DRAReconciler) updateDaemonSetObject(ds *apps.DaemonSet, spec *v1alpha.ClusterPolicy) {
-	name := fmt.Sprintf("%s-gpu-dra", spec.Name)
+	name := r.buildDaemonSetName(spec.Name)
 
 	ds.Name = name
 	ds.Namespace = r.Opts.Namespace
@@ -410,39 +398,30 @@ func (r *DRAReconciler) updateDaemonSetObject(ds *apps.DaemonSet, spec *v1alpha.
 	}
 }
 
-func (r *DRAReconciler) createDaemonSet(ctx context.Context, spec *v1alpha.ClusterPolicy) error {
+func (r *DRAReconciler) buildDraDaemonset(spec *v1alpha.ClusterPolicy) *apps.DaemonSet {
 	ds := deployments.DynamicResourceAllocationDaemonset()
 
 	r.updateDaemonSetObject(ds, spec)
 
-	if err := r.Create(ctx, ds); err != nil {
-		klog.Error(err, "unable to create DaemonSet")
+	return ds
+}
+
+func (r *DRAReconciler) updateStatus(ctx context.Context, cp *v1alpha.ClusterPolicy) error {
+	ds := &apps.DaemonSet{}
+	err := r.Get(ctx, client.ObjectKey{Name: r.buildDaemonSetName(cp.Name), Namespace: r.Opts.Namespace}, ds)
+	if err != nil {
+		klog.Error(err, "unable to get DRA DaemonSet to update status")
 
 		return err
 	}
 
+	cp.Status.DRAStatus = fmt.Sprintf("%d/%d",
+		ds.Status.NumberReady, ds.Status.DesiredNumberScheduled)
+
 	return nil
 }
 
-func (r *DRAReconciler) removeDeploymentIfExists(ctx context.Context) (ctrl.Result, error) {
-	crName := r.Opts.ReqName
-
-	dss := &apps.DaemonSetList{}
-	labels := client.MatchingLabels{
-		appLabel: draValue,
-		ownerKey: crName,
-	}
-
-	if err := r.List(ctx, dss, client.InNamespace(r.Opts.Namespace), labels); err != nil {
-		klog.Error(err, "unable to list child DaemonSets")
-
-		return ctrl.Result{}, err
-	}
-
-	if len(dss.Items) == 0 {
-		return ctrl.Result{}, nil
-	}
-
+func (r *DRAReconciler) removeDeploymentIfExists(ctx context.Context, cp *v1alpha.ClusterPolicy) (ctrl.Result, error) {
 	// If there are any allocated ResourceClaims, removal of DRA will cause
 	// the Pods using them to be stuck at Terminating.
 	// Requeue and try again later.
@@ -452,6 +431,10 @@ func (r *DRAReconciler) removeDeploymentIfExists(ctx context.Context) (ctrl.Resu
 
 	if err := r.deleteAll(ctx, r.Opts.ReqName); err != nil {
 		return ctrl.Result{}, err
+	}
+
+	if cp != nil {
+		cp.Status.DRAStatus = notAvailableStatus
 	}
 
 	klog.Info("DRA deployment removed")
@@ -499,24 +482,8 @@ func (r *DRAReconciler) Reconcile(ctx context.Context, cp *v1alpha.ClusterPolicy
 		return ctrl.Result{}, nil
 	}
 
-	if cp == nil || !cp.DeletionTimestamp.IsZero() {
-		return r.removeDeploymentIfExists(ctx)
-	}
-
-	// DRA not selected, remove existing deployment if exists
-	if cp.Spec.ResourceRegistration != resourceModeDRA {
-		cp.Status.DRAStatus = notAvailableStatus
-
-		return r.removeDeploymentIfExists(ctx)
-	}
-
-	labels := client.MatchingLabels{appLabel: draValue}
-
-	var olderDs apps.DaemonSetList
-	if err := r.List(ctx, &olderDs, client.InNamespace(r.Opts.Namespace), labels); err != nil {
-		klog.Error(err, "unable to list child DaemonSets")
-
-		return ctrl.Result{}, err
+	if shouldRemoveDRA(cp) {
+		return r.removeDeploymentIfExists(ctx, cp)
 	}
 
 	if r.Opts.OpenShift {
@@ -527,38 +494,26 @@ func (r *DRAReconciler) Reconcile(ctx context.Context, cp *v1alpha.ClusterPolicy
 		}
 	}
 
-	if len(olderDs.Items) == 0 {
-		return ctrl.Result{}, r.createAll(ctx, cp)
-	}
-
-	// Update DaemonSet
-
-	ds := &olderDs.Items[0]
-	originalDs := ds.DeepCopy()
-
-	r.updateDaemonSetObject(ds, cp)
-
-	dsDiff := cmp.Diff(originalDs.Spec.Template.Spec, ds.Spec.Template.Spec, cmpopts.EquateEmpty())
-	if len(dsDiff) > 0 {
-		klog.Info("DRA difference", "diff", dsDiff)
-
-		if err := r.Update(ctx, ds); err != nil {
-			klog.Error(err, "unable to update daemonset", "DaemonSet", ds)
-
-			return ctrl.Result{}, err
-		}
-	}
-
-	r.ensureVfioDeviceClass(ctx, cp.Spec.DynamicResourceAllocationSpec.ManageBinding)
-
-	if err := r.List(ctx, &olderDs, client.InNamespace(r.Opts.Namespace), labels); err != nil {
-		klog.Error(err, "unable to list child DaemonSets")
+	if err := r.createDependencyComponentsIfMissing(ctx, cp); err != nil {
+		klog.Error(err, "unable to create dependency components for DRA")
 
 		return ctrl.Result{}, err
 	}
 
-	cp.Status.DRAStatus = fmt.Sprintf("%d/%d",
-		olderDs.Items[0].Status.NumberReady, olderDs.Items[0].Status.DesiredNumberScheduled)
+	r.ensureVfioDeviceClass(ctx, cp.Spec.DynamicResourceAllocationSpec.ManageBinding)
 
-	return ctrl.Result{}, nil
+	ds := r.buildDraDaemonset(cp)
+
+	_, err := controllerutil.CreateOrPatch(ctx, r.Client, ds, func() error {
+		r.updateDaemonSetObject(ds, cp)
+
+		return nil
+	})
+	if err != nil {
+		klog.Error(err, "unable to create or patch DRA DaemonSet")
+
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{}, r.updateStatus(ctx, cp)
 }
