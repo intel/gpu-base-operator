@@ -157,25 +157,8 @@ func (r *DevicePluginReconciler) updateDaemonSetObject(ds *apps.DaemonSet, spec 
 
 	ds.Spec.Template.Spec.Containers[0].Args = dpArgs(spec)
 
-	ds.Spec.Template.Spec.NodeSelector = map[string]string{
-		"kubernetes.io/arch": "amd64",
-	}
-
-	if len(spec.Spec.NodeSelector) > 0 {
-		for k, v := range spec.Spec.NodeSelector {
-			ds.Spec.Template.Spec.NodeSelector[k] = v
-		}
-	}
-
-	if spec.Spec.UseNFDLabeling {
-		ds.Spec.Template.Spec.NodeSelector["intel.feature.node.kubernetes.io/gpu"] = trueValue
-	}
-
-	if len(spec.Spec.Tolerations) > 0 {
-		ds.Spec.Template.Spec.Tolerations = spec.Spec.Tolerations
-	} else {
-		ds.Spec.Template.Spec.Tolerations = nil
-	}
+	ds.Spec.Template.Spec.NodeSelector = generateNodeSelector(spec)
+	ds.Spec.Template.Spec.Tolerations = generateTolerations(spec)
 
 	cspec := &ds.Spec.Template.Spec
 
