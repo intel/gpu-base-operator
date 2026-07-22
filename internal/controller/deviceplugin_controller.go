@@ -26,13 +26,13 @@ import (
 	core "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/google/go-cmp/cmp"
-	"github.com/google/go-cmp/cmp/cmpopts"
 	v1alpha "github.com/intel/gpu-base-operator/api/v1alpha1"
 	"github.com/intel/gpu-base-operator/config/deployments"
 )
@@ -144,8 +144,18 @@ func dpArgs(spec *v1alpha.ClusterPolicy) []string {
 	return args
 }
 
+func (r *DevicePluginReconciler) buildDaemonSet(spec *v1alpha.ClusterPolicy) *apps.DaemonSet {
+	ds := deployments.DevicePluginDaemonset()
+	r.updateDaemonSetObject(ds, spec)
+	return ds
+}
+
+func (r *DevicePluginReconciler) buildDaemonSetName(crName string) string {
+	return fmt.Sprintf("%s-device-plugin", crName)
+}
+
 func (r *DevicePluginReconciler) updateDaemonSetObject(ds *apps.DaemonSet, spec *v1alpha.ClusterPolicy) {
-	name := fmt.Sprintf("%s-device-plugin", spec.Name)
+	name := r.buildDaemonSetName(spec.Name)
 
 	ds.Name = name
 	ds.Namespace = r.Opts.Namespace
@@ -216,29 +226,7 @@ func (r *DevicePluginReconciler) cleanupOpenShiftResources(ctx context.Context, 
 	deleteOpenShiftSCCResources(ctx, r.Client, sccName, roleName, bindingName, saName, r.Opts.Namespace)
 }
 
-func (r *DevicePluginReconciler) createDaemonSet(ctx context.Context, obj client.Object) (ctrl.Result, error) {
-	spec := obj.(*v1alpha.ClusterPolicy)
-
-	ds := deployments.DevicePluginDaemonset()
-
-	r.updateDaemonSetObject(ds, spec)
-
-	if err := ctrl.SetControllerReference(obj, ds, r.Scheme); err != nil {
-		klog.Error(err, "unable to set controller reference")
-
-		return ctrl.Result{}, err
-	}
-
-	if err := r.Create(ctx, ds); err != nil {
-		klog.Error(err, "unable to create DaemonSet")
-
-		return ctrl.Result{}, err
-	}
-
-	return ctrl.Result{}, nil
-}
-
-func (r *DevicePluginReconciler) removeDeploymentIfExists(ctx context.Context) (ctrl.Result, error) {
+func (r *DevicePluginReconciler) removeDeploymentIfExists(ctx context.Context, cp *v1alpha.ClusterPolicy) (ctrl.Result, error) {
 	klog.V(4).Info("Removing Device Plugin deployment")
 
 	crName := r.Opts.ReqName
@@ -247,26 +235,21 @@ func (r *DevicePluginReconciler) removeDeploymentIfExists(ctx context.Context) (
 		r.cleanupOpenShiftResources(ctx, crName)
 	}
 
-	dss := &apps.DaemonSetList{}
-	labels := client.MatchingLabels{
-		appLabel: dpValue,
-		ownerKey: crName,
+	name := r.buildDaemonSetName(crName)
+
+	ds := &apps.DaemonSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: r.Opts.Namespace,
+		},
 	}
 
-	if err := r.List(ctx, dss, client.InNamespace(r.Opts.Namespace), labels); err != nil {
-		klog.Error(err, "unable to list child DaemonSets")
-
+	if err := r.Delete(ctx, ds); client.IgnoreNotFound(err) != nil {
 		return ctrl.Result{}, err
 	}
 
-	if len(dss.Items) == 0 {
-		klog.V(4).Info("No DevicePlugin deployment found, nothing to do")
-
-		return ctrl.Result{}, nil
-	}
-
-	if err := r.Delete(ctx, &dss.Items[0]); err != nil {
-		return ctrl.Result{}, err
+	if cp != nil {
+		cp.Status.DevicePluginStatus = notAvailableStatus
 	}
 
 	klog.V(4).Info("DevicePlugin deployment removed")
@@ -274,24 +257,26 @@ func (r *DevicePluginReconciler) removeDeploymentIfExists(ctx context.Context) (
 	return ctrl.Result{}, nil
 }
 
+func (r *DevicePluginReconciler) updateStatus(ctx context.Context, cp *v1alpha.ClusterPolicy) error {
+	ds := &apps.DaemonSet{}
+	err := r.Get(ctx, client.ObjectKey{Name: r.buildDaemonSetName(cp.Name), Namespace: r.Opts.Namespace}, ds)
+	if err != nil {
+		klog.Error(err, "unable to get DP DaemonSet to update status")
+
+		return err
+	}
+
+	cp.Status.DevicePluginStatus = fmt.Sprintf("%d/%d",
+		ds.Status.NumberReady, ds.Status.DesiredNumberScheduled)
+
+	return nil
+}
+
 func (r *DevicePluginReconciler) Reconcile(ctx context.Context, cp *v1alpha.ClusterPolicy) (ctrl.Result, error) {
 	_ = logf.FromContext(ctx)
 
-	if cp == nil || !cp.DeletionTimestamp.IsZero() {
-		return r.removeDeploymentIfExists(ctx)
-	}
-
-	if cp.Spec.ResourceRegistration != "dp" {
-		cp.Status.DevicePluginStatus = notAvailableStatus
-
-		return r.removeDeploymentIfExists(ctx)
-	}
-
-	var olderDs apps.DaemonSetList
-	if err := r.List(ctx, &olderDs, client.InNamespace(r.Opts.Namespace), client.MatchingLabels{appLabel: dpValue}); err != nil {
-		klog.Error(err, "unable to list child DaemonSets")
-
-		return ctrl.Result{}, err
+	if shouldRemoveDevicePlugin(cp) {
+		return r.removeDeploymentIfExists(ctx, cp)
 	}
 
 	if r.Opts.OpenShift {
@@ -302,36 +287,17 @@ func (r *DevicePluginReconciler) Reconcile(ctx context.Context, cp *v1alpha.Clus
 		}
 	}
 
-	if len(olderDs.Items) == 0 {
-		return r.createDaemonSet(ctx, cp)
-	}
+	ds := r.buildDaemonSet(cp)
 
-	// Update DaemonSet
+	if _, err := controllerutil.CreateOrPatch(ctx, r.Client, ds, func() error {
+		r.updateDaemonSetObject(ds, cp)
 
-	ds := &olderDs.Items[0]
-	originalDs := ds.DeepCopy()
-
-	r.updateDaemonSetObject(ds, cp)
-
-	dsDiff := cmp.Diff(originalDs.Spec.Template.Spec, ds.Spec.Template.Spec, cmpopts.EquateEmpty())
-	if len(dsDiff) > 0 {
-		klog.Info("DS difference", "diff", dsDiff)
-
-		if err := r.Update(ctx, ds); err != nil {
-			klog.Error(err, "unable to update daemonset", "DaemonSet", ds)
-
-			return ctrl.Result{}, err
-		}
-	}
-
-	if err := r.List(ctx, &olderDs, client.InNamespace(r.Opts.Namespace), client.MatchingLabels{appLabel: dpValue}); err != nil {
-		klog.Error(err, "unable to list child DaemonSets")
+		return nil
+	}); err != nil {
+		klog.Error(err, "unable to create or patch DP DaemonSet")
 
 		return ctrl.Result{}, err
 	}
 
-	cp.Status.DevicePluginStatus = fmt.Sprintf("%d/%d",
-		olderDs.Items[0].Status.NumberReady, olderDs.Items[0].Status.DesiredNumberScheduled)
-
-	return ctrl.Result{}, nil
+	return ctrl.Result{}, r.updateStatus(ctx, cp)
 }
