@@ -408,8 +408,7 @@ func (r *DRAReconciler) buildDraDaemonset(spec *v1alpha.ClusterPolicy) *apps.Dae
 
 func (r *DRAReconciler) updateStatus(ctx context.Context, cp *v1alpha.ClusterPolicy) error {
 	ds := &apps.DaemonSet{}
-	err := r.Get(ctx, client.ObjectKey{Name: r.buildDaemonSetName(cp.Name), Namespace: r.Opts.Namespace}, ds)
-	if err != nil {
+	if err := r.Get(ctx, client.ObjectKey{Name: r.buildDaemonSetName(cp.Name), Namespace: r.Opts.Namespace}, ds); err != nil {
 		klog.Error(err, "unable to get DRA DaemonSet to update status")
 
 		return err
