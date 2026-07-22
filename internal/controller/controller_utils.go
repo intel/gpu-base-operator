@@ -89,3 +89,32 @@ func shouldRemoveDevicePlugin(cp *v1alpha.ClusterPolicy) bool {
 	return false
 }
 
+func shouldRemoveXpumd(cp *v1alpha.ClusterPolicy) bool {
+	if isClusterPolicyBeingDeleted(cp) {
+		return true
+	}
+
+	// No resource monitoring, no xpumd
+	if !cp.Spec.ResourceMonitoring {
+		return true
+	}
+
+	return false
+}
+
+// Convert the integer based log level to a string based log level for the OTel config.
+func logLevelForXpum(cp *v1alpha.ClusterPolicy) string {
+	v := cp.Spec.XpuManagerSpec.LogLevel
+	v = max(cp.Spec.LogLevel, v)
+
+	switch v {
+	case 0:
+		return "error"
+	case 1:
+		return "warn"
+	case 2:
+		return "info"
+	default:
+		return "debug"
+	}
+}

@@ -33,11 +33,10 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/yaml"
 
-	"github.com/google/go-cmp/cmp"
-	"github.com/google/go-cmp/cmp/cmpopts"
 	v1alpha "github.com/intel/gpu-base-operator/api/v1alpha1"
 	"github.com/intel/gpu-base-operator/config/deployments"
 )
@@ -198,39 +197,6 @@ func processContainerResources(ds *apps.DaemonSet, spec *v1alpha.ClusterPolicy, 
 	}
 }
 
-func processNodeSelectors(ds *apps.DaemonSet, spec *v1alpha.ClusterPolicy) {
-	ds.Spec.Template.Spec.NodeSelector = map[string]string{
-		"kubernetes.io/arch": "amd64",
-	}
-
-	if len(spec.Spec.NodeSelector) > 0 {
-		for k, v := range spec.Spec.NodeSelector {
-			ds.Spec.Template.Spec.NodeSelector[k] = v
-		}
-	}
-
-	if spec.Spec.UseNFDLabeling {
-		ds.Spec.Template.Spec.NodeSelector["intel.feature.node.kubernetes.io/gpu"] = trueValue
-	}
-}
-
-// Convert the integer based log level to a string based log level for the OTel config.
-func logLevelForXpum(cp *v1alpha.ClusterPolicy) string {
-	v := cp.Spec.XpuManagerSpec.LogLevel
-	v = max(cp.Spec.LogLevel, v)
-
-	switch v {
-	case 0:
-		return "error"
-	case 1:
-		return "warn"
-	case 2:
-		return "info"
-	default:
-		return "debug"
-	}
-}
-
 // buildOTelConfigData constructs the otel-config.yaml content with thresholds
 // from the ClusterPolicy health spec applied to the default embedded config.
 func (r *XpuManagerReconciler) buildOTelConfigData(cp *v1alpha.ClusterPolicy) (string, error) {
@@ -379,7 +345,7 @@ func (r *XpuManagerReconciler) createMonitoringResourceClaim(ctx context.Context
 
 	if err := r.Create(ctx, mct); err != nil {
 		if errors.IsAlreadyExists(err) {
-			klog.Warning(err, "ResourceClaimTemplate already exists")
+			klog.V(4).Info(err, "ResourceClaimTemplate already exists")
 
 			return nil
 		}
@@ -421,8 +387,12 @@ func (r *XpuManagerReconciler) fetchConfigHashFromConfigMap(ctx context.Context,
 	return otelConfigHash(overrideCm.Data[otelConfigMapKey]), nil
 }
 
+func (r *XpuManagerReconciler) buildDaemonSetName(cpName string) string {
+	return fmt.Sprintf("%s-xpu-manager", cpName)
+}
+
 func (r *XpuManagerReconciler) updateDaemonSetObject(ds *apps.DaemonSet, spec *v1alpha.ClusterPolicy, draClaim string, otelConfigMapName string, otelConfigHash string) {
-	name := fmt.Sprintf("%s-xpu-manager", spec.Name)
+	name := r.buildDaemonSetName(spec.Name)
 
 	ds.Name = name
 	ds.Namespace = r.Opts.Namespace
@@ -431,20 +401,14 @@ func (r *XpuManagerReconciler) updateDaemonSetObject(ds *apps.DaemonSet, spec *v
 		ownerKey: spec.Name,
 	}
 
-	if ds.Spec.Template.Annotations == nil {
-		ds.Spec.Template.Annotations = map[string]string{}
+	ds.Spec.Template.Annotations = map[string]string{
+		otelConfigHashKey: otelConfigHash,
 	}
-	ds.Spec.Template.Annotations[otelConfigHashKey] = otelConfigHash
 
 	processContainerResources(ds, spec, draClaim)
 	processXpumdConfigMapMount(ds, otelConfigMapName)
-	processNodeSelectors(ds, spec)
-
-	if len(spec.Spec.Tolerations) > 0 {
-		ds.Spec.Template.Spec.Tolerations = spec.Spec.Tolerations
-	} else {
-		ds.Spec.Template.Spec.Tolerations = nil
-	}
+	ds.Spec.Template.Spec.NodeSelector = generateNodeSelector(spec)
+	ds.Spec.Template.Spec.Tolerations = generateTolerations(spec)
 
 	cspec := &ds.Spec.Template.Spec
 
@@ -507,72 +471,32 @@ func (r *XpuManagerReconciler) cleanupOpenShiftResources(ctx context.Context, cp
 	deleteOpenShiftSCCResources(ctx, r.Client, sccName, roleName, bindingName, saName, r.Opts.Namespace)
 }
 
-func (r *XpuManagerReconciler) createDaemonSet(ctx context.Context, obj client.Object) (ctrl.Result, error) {
-	cp := obj.(*v1alpha.ClusterPolicy)
-
+func (r *XpuManagerReconciler) buildDaemonSet(cp *v1alpha.ClusterPolicy, draClaim, cmName, configHash string) *apps.DaemonSet {
 	ds := deployments.XpuManagerDaemonset()
-
-	useDra := r.Opts.DRAEnable && cp.Spec.ResourceRegistration == resourceModeDRA
-	var draClaim string
-
-	if useDra {
-		draClaim = cp.Name + "-monitor-claim"
-
-		if err := r.createMonitoringResourceClaim(ctx, obj, draClaim); err != nil {
-			klog.Error(err, "unable to create ResourceClaimTemplate")
-
-			return ctrl.Result{}, err
-		}
-	}
-
-	cmName, configHash, err := r.generateXpumdConfigEntries(ctx, cp)
-	if err != nil {
-		klog.Error(err, "unable to create or fetch Xpumd config")
-
-		return ctrl.Result{}, err
-	}
 
 	r.updateDaemonSetObject(ds, cp, draClaim, cmName, configHash)
 
-	if err := ctrl.SetControllerReference(obj, ds, r.Scheme); err != nil {
-		klog.Error(err, "unable to set controller reference")
-
-		return ctrl.Result{}, err
-	}
-
-	if err := r.Create(ctx, ds); err != nil {
-		klog.Error(err, "unable to create DaemonSet")
-
-		return ctrl.Result{}, err
-	}
-
-	return ctrl.Result{}, nil
+	return ds
 }
 
-func (r *XpuManagerReconciler) removeDeploymentIfExists(ctx context.Context) (ctrl.Result, error) {
+func (r *XpuManagerReconciler) removeDeploymentIfExists(ctx context.Context, cp *v1alpha.ClusterPolicy) (ctrl.Result, error) {
 	if r.Opts.OpenShift {
 		r.cleanupOpenShiftResources(ctx, r.Opts.ReqName)
 	}
 
-	dss := &apps.DaemonSetList{}
-
-	matching := client.MatchingLabels{
-		xpuLabel: xpuValue,
-		ownerKey: r.Opts.ReqName,
+	ds := &apps.DaemonSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      r.buildDaemonSetName(r.Opts.ReqName),
+			Namespace: r.Opts.Namespace,
+		},
 	}
 
-	if err := r.List(ctx, dss, client.InNamespace(r.Opts.Namespace), matching); err != nil {
-		klog.Error(err, "unable to list XPU Manager DaemonSets")
-
+	if err := r.Delete(ctx, ds); client.IgnoreNotFound(err) != nil {
 		return ctrl.Result{}, err
 	}
 
-	if len(dss.Items) == 0 {
-		return ctrl.Result{}, nil
-	}
-
-	if err := r.Delete(ctx, &dss.Items[0]); err != nil {
-		return ctrl.Result{}, err
+	if cp != nil {
+		cp.Status.XPUManagerStatus = notAvailableStatus
 	}
 
 	klog.Info("XPU Manager deployment removed")
@@ -580,25 +504,26 @@ func (r *XpuManagerReconciler) removeDeploymentIfExists(ctx context.Context) (ct
 	return ctrl.Result{}, nil
 }
 
+func (r *XpuManagerReconciler) updateStatus(ctx context.Context, cp *v1alpha.ClusterPolicy) error {
+	ds := &apps.DaemonSet{}
+	err := r.Get(ctx, client.ObjectKey{Name: r.buildDaemonSetName(cp.Name), Namespace: r.Opts.Namespace}, ds)
+	if err != nil {
+		klog.Error(err, "unable to get XPU Manager DaemonSet to update status")
+
+		return err
+	}
+
+	cp.Status.XPUManagerStatus = fmt.Sprintf("%d/%d",
+		ds.Status.NumberReady, ds.Status.DesiredNumberScheduled)
+
+	return nil
+}
+
 func (r *XpuManagerReconciler) Reconcile(ctx context.Context, cp *v1alpha.ClusterPolicy) (ctrl.Result, error) {
 	_ = logf.FromContext(ctx)
 
-	// Delete DaemonSet if ClusterPolicy is being deleted
-	if cp == nil || cp.DeletionTimestamp != nil {
-		return r.removeDeploymentIfExists(ctx)
-	}
-
-	if !cp.Spec.ResourceMonitoring {
-		cp.Status.XPUManagerStatus = notAvailableStatus
-
-		return r.removeDeploymentIfExists(ctx)
-	}
-
-	var olderDs apps.DaemonSetList
-	if err := r.List(ctx, &olderDs, client.InNamespace(r.Opts.Namespace), client.MatchingLabels{xpuLabel: xpuValue}); err != nil {
-		klog.Error(err, "unable to list child DaemonSets")
-
-		return ctrl.Result{}, err
+	if shouldRemoveXpumd(cp) {
+		return r.removeDeploymentIfExists(ctx, cp)
 	}
 
 	if r.Opts.OpenShift {
@@ -608,15 +533,6 @@ func (r *XpuManagerReconciler) Reconcile(ctx context.Context, cp *v1alpha.Cluste
 			return ctrl.Result{}, err
 		}
 	}
-
-	if len(olderDs.Items) == 0 {
-		return r.createDaemonSet(ctx, cp)
-	}
-
-	// Update DaemonSet
-
-	ds := &olderDs.Items[0]
-	originalDs := ds.DeepCopy()
 
 	useDra := r.Opts.DRAEnable && cp.Spec.ResourceRegistration == resourceModeDRA
 	var draClaim string
@@ -639,29 +555,17 @@ func (r *XpuManagerReconciler) Reconcile(ctx context.Context, cp *v1alpha.Cluste
 		return ctrl.Result{}, err
 	}
 
-	configMapChanged := originalDs.Spec.Template.Annotations[otelConfigHashKey] != configHash
+	ds := r.buildDaemonSet(cp, draClaim, cmName, configHash)
 
-	r.updateDaemonSetObject(ds, cp, draClaim, cmName, configHash)
+	if _, err := controllerutil.CreateOrPatch(ctx, r.Client, ds, func() error {
+		r.updateDaemonSetObject(ds, cp, draClaim, cmName, configHash)
 
-	dsDiff := cmp.Diff(originalDs.Spec.Template.Spec, ds.Spec.Template.Spec, cmpopts.EquateEmpty())
-	if configMapChanged || len(dsDiff) > 0 {
-		klog.Info("DS difference", "diff", dsDiff)
-
-		if err := r.Update(ctx, ds); err != nil {
-			klog.Error(err, "unable to update daemonset", "DaemonSet", ds)
-
-			return ctrl.Result{}, err
-		}
-	}
-
-	if err := r.List(ctx, &olderDs, client.InNamespace(r.Opts.Namespace), client.MatchingLabels{xpuLabel: xpuValue}); err != nil {
-		klog.Error(err, "unable to list child DaemonSets")
+		return nil
+	}); err != nil {
+		klog.Error(err, "unable to create or patch XPU Manager DaemonSet")
 
 		return ctrl.Result{}, err
 	}
 
-	cp.Status.XPUManagerStatus = fmt.Sprintf("%d/%d",
-		olderDs.Items[0].Status.NumberReady, olderDs.Items[0].Status.DesiredNumberScheduled)
-
-	return ctrl.Result{}, nil
+	return ctrl.Result{}, r.updateStatus(ctx, cp)
 }
