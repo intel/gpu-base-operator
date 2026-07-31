@@ -1,1 +1,2 @@
 ignorefile: .trivyignore.yaml
+skip-version-check: true
