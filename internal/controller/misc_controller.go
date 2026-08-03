@@ -845,7 +845,7 @@ func (r *MiscReconciler) cleanupStaleKueueQueues(ctx context.Context, owner stri
 }
 
 func (r *MiscReconciler) removeKueueObjects(ctx context.Context, crName string) error {
-	klog.V(3).Infof("Removing Kueue ClusterQueues and LocalQueues for %s", crName)
+	klog.V(3).Infof("Removing all Kueue objects for %s", crName)
 
 	_ = logf.FromContext(ctx)
 
@@ -858,47 +858,18 @@ func (r *MiscReconciler) removeKueueObjects(ctx context.Context, crName string) 
 		"owner": crName,
 	}
 
-	resourceFlavorCrd := &kueuev1beta2.ResourceFlavor{}
-
-	if err := r.DeleteAllOf(ctx, resourceFlavorCrd, client.MatchingLabels(matchLabels)); err != nil {
+	if err := r.DeleteAllOf(ctx, &kueuev1beta2.ResourceFlavor{}, client.MatchingLabels(matchLabels)); err != nil {
 		if client.IgnoreNotFound(err) == nil {
 			klog.V(3).Infof("No Kueue ResourceFlavors to delete")
 		} else {
-			klog.Warningf("Error when attempting to delete Kueue Resourceflavors: %v", err)
+			klog.Warningf("Error when attempting to delete Kueue ResourceFlavors: %v", err)
 		}
 	} else {
-		klog.V(3).Infof("Deleted Kueue ResourceFlavor")
+		klog.V(3).Infof("Deleted Kueue ResourceFlavors")
 	}
 
-	clusterQueueCrd := &kueuev1beta2.ClusterQueue{}
-
-	if err := r.DeleteAllOf(ctx, clusterQueueCrd, client.MatchingLabels(matchLabels)); err != nil {
-		if client.IgnoreNotFound(err) == nil {
-			klog.V(3).Infof("No Kueue ClusterQueues to delete")
-		} else {
-			klog.Warningf("Error when attempting to delete Kueue ClusterQueues: %v", err)
-		}
-	} else {
-		klog.V(3).Infof("Deleted Kueue ClusterQueues")
-	}
-
-	localQueues := &kueuev1beta2.LocalQueueList{}
-	if err := r.listLocalQueues(ctx, localQueues, client.MatchingLabels(matchLabels)); err != nil {
-		klog.Warningf("Error when listing Kueue LocalQueues: %v", err)
-	} else {
-		for i := range localQueues.Items {
-
-			localQueueCrd := &localQueues.Items[i]
-
-			if err := r.Delete(ctx, localQueueCrd); err != nil && client.IgnoreNotFound(err) != nil {
-				klog.Warningf("Error when attempting to delete Kueue LocalQueue %s/%s: %v", localQueueCrd.Namespace, localQueueCrd.Name, err)
-			} else {
-				klog.V(3).Infof("Deleted LocalQueue '%s/%s'", localQueueCrd.Namespace, localQueueCrd.Name)
-			}
-		}
-	}
-
-	return nil
+	// Pass nil spec so all owned ClusterQueues and LocalQueues are treated as stale.
+	return r.cleanupStaleKueueQueues(ctx, crName, nil)
 }
 
 func (r *MiscReconciler) listLocalQueues(ctx context.Context, list *kueuev1beta2.LocalQueueList, opts ...client.ListOption) error {
