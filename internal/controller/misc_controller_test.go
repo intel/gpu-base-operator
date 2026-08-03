@@ -572,6 +572,61 @@ var _ = Describe("Misc Kueue", func() {
 			Expect(string(activeLocalQueue.Spec.ClusterQueue)).To(Equal("cq-renamed"))
 		})
 
+		It("update changed LocalQueue back to original state", func() {
+			s := runtime.NewScheme()
+			Expect(core.AddToScheme(s)).To(Succeed())
+			Expect(kueuev1beta2.AddToScheme(s)).To(Succeed())
+			Expect(apiextensionsv1.AddToScheme(s)).To(Succeed())
+
+			cp := &v1alpha.ClusterPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster-policy",
+				},
+				Spec: v1alpha.ClusterPolicySpec{
+					ResourceRegistration: "dp",
+					EnableKueue:          true,
+					Kueue: &v1alpha.KueueQueueSpec{
+						EqualResources: []v1alpha.ClusterQueueSpec{
+							{
+								Name: "cq-a",
+								LocalQueues: []v1alpha.LocalQueueSpec{
+									{Name: "lq-a", Namespace: "default"},
+								},
+							},
+						},
+					},
+				},
+			}
+			ctx := context.Background()
+
+			crd1, crd2, crd3 := kueueCRDObjects()
+			node := gpuNode()
+			r := MiscReconciler{}
+			r.Client = fake.NewClientBuilder().WithScheme(s).WithObjects(crd1, crd2, crd3, node).Build()
+			r.Opts = ControllerOpts{ReqName: "legacy-name"}
+			r.CrdNames = []string{kueueClusterQueueCrd, kueueResourceFlavorCrd, kueueLocalQueueCrd}
+
+			err := r.reconcileKueueObjects(ctx, cp)
+			Expect(err).NotTo(HaveOccurred())
+
+			modKueue := kueuev1beta2.LocalQueue{}
+			err = r.Get(ctx, types.NamespacedName{Name: "lq-a", Namespace: "default"}, &modKueue)
+			Expect(err).NotTo(HaveOccurred())
+			modKueue.Spec.ClusterQueue = "cq-notexisting"
+			err = r.Update(ctx, &modKueue)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Reconcile again to see if the LocalQueue is reverted back to the original ClusterQueue
+			err = r.reconcileKueueObjects(ctx, cp)
+			Expect(err).NotTo(HaveOccurred())
+
+			modKueue = kueuev1beta2.LocalQueue{}
+			err = r.Get(ctx, types.NamespacedName{Name: "lq-a", Namespace: "default"}, &modKueue)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(modKueue.Spec.ClusterQueue).To(Equal(kueuev1beta2.ClusterQueueReference("cq-a")))
+		})
+
 		It("uses APIReader for LocalQueue listing during cleanup", func() {
 			s := runtime.NewScheme()
 			Expect(core.AddToScheme(s)).To(Succeed())
