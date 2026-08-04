@@ -18,5 +18,5 @@ dependencies:
     condition: kueue.install
     tags:
       - kueue
-    version: ~0.18
+    version: ~0.19
     repository: oci://registry.k8s.io/kueue/charts

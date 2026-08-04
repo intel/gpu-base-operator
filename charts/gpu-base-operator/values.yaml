@@ -26,56 +26,51 @@ privateRegistry:
 
 kueue:
   install: false
-  controllerManager:
-    featureGates:
-    - name: KueueDRAIntegrationExtendedResource
-      enabled: true
   managerConfig:
     # -- controller_manager_config.yaml.
     # ControllerManager utilizes this yaml via manager-config Configmap.
     # @default -- controllerManagerConfigYaml
+    #
+    # Original Kueue v0.19 managerConfig from
+    # https://github.com/kubernetes-sigs/kueue/blob/main/charts/kueue/values.yaml#L113
     controllerManagerConfigYaml: |-
       apiVersion: config.kueue.x-k8s.io/v1beta2
       kind: Configuration
-      clientConnection:
-        burst: 100
-        qps: 50
-      controller:
-        groupKindConcurrency:
-          ClusterQueue.kueue.x-k8s.io: 1
-          Job.batch: 5
-          LocalQueue.kueue.x-k8s.io: 1
-          Pod: 5
-          ResourceFlavor.kueue.x-k8s.io: 1
-          Workload.kueue.x-k8s.io: 5
       health:
         healthProbeBindAddress: :8081
-      integrations:
-        frameworks:
-        - batch/job
-        - kubeflow.org/mpijob
-        - ray.io/rayjob
-        - ray.io/rayservice
-        - ray.io/raycluster
-        - jobset.x-k8s.io/jobset
-        - trainer.kubeflow.org/trainjob
-        - kubeflow.org/paddlejob
-        - kubeflow.org/pytorchjob
-        - kubeflow.org/tfjob
-        - kubeflow.org/xgboostjob
-        - kubeflow.org/jaxjob
-        - workload.codeflare.dev/appwrapper
-        - pod
-        - deployment
-        - statefulset
-        - leaderworkerset.x-k8s.io/leaderworkerset
-      leaderElection:
-        leaderElect: true
-        resourceName: c1f6bfd2.kueue.x-k8s.io
       metrics:
         bindAddress: :8443
       webhook:
         port: 9443
+      leaderElection:
+        leaderElect: true
+        resourceName: c1f6bfd2.kueue.x-k8s.io
+      controller:
+        groupKindConcurrency:
+          Job.batch: 5
+          Pod: 5
+          Workload.kueue.x-k8s.io: 10
+          LocalQueue.kueue.x-k8s.io: 5
+          ClusterQueue.kueue.x-k8s.io: 5
+          ResourceFlavor.kueue.x-k8s.io: 1
+      clientConnection:
+        qps: 300
+        burst: 500
+      integrations:
+        frameworks:
+        - "batch/job"
+        - "kubeflow.org/mpijob"
+        - "ray.io/rayjob"
+        - "ray.io/rayservice"
+        - "ray.io/raycluster"
+        - "jobset.x-k8s.io/jobset"
+        - "trainer.kubeflow.org/trainjob"
+        - "workload.codeflare.dev/appwrapper"
+        - "pod"
+        - "deployment"
+        - "statefulset"
+        - "leaderworkerset.x-k8s.io/leaderworkerset"
+      # deviceClassMappings set by https://github.com/intel/gpu-base-operator
       resources:
         deviceClassMappings:
         - deviceClassNames:
