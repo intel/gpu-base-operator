@@ -86,7 +86,7 @@ The latest release version is [0.2.1](https://github.com/intel/gpu-base-operator
 
 ### Helm deployment
 
-The _preferred_ installation method to the cluster via our Helm charts.
+The _preferred_ installation method to the cluster via our Helm charts. Please use Helm v4 or later to avoid issues during installation.
 
 Helm deployment is split into two charts: operator and policy. The reason for this split is to allow the operator to run cleanup before it is removed from the cluster. DRA especially is problematic as Pods using its resources (e.g. XPU Manager) will get stuck at `Terminating` if the DRA plugin is removed from the cluster.
 
