@@ -39,12 +39,6 @@ spec:
           spec:
             description: GPUFirmwareUpdateSpec defines the desired state of GPUFirmwareUpdate.
             properties:
-              amcCredentialsSecret:
-                description: |-
-                  AMCCredentialsSecret is the name of a Kubernetes Secret (in the operator namespace)
-                  containing 'username' and 'password' keys used for the AMC firmware update method
-                  (redfish interface). Required when any firmware file has type AMC.
-                type: string
               content:
                 description: List of GPU firmwares to be updated.
                 properties:

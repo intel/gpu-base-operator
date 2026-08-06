@@ -145,7 +145,6 @@ func (v *GPUFirmwareUpdateCustomValidator) ValidateUpdate(_ context.Context, old
 		{"spec.updaterImage", oldFU.Spec.UpdaterImage, newFU.Spec.UpdaterImage},
 		{"spec.pciDeviceID", oldFU.Spec.PCIDeviceID, newFU.Spec.PCIDeviceID},
 		{"spec.content", oldFU.Spec.Content, newFU.Spec.Content},
-		{"spec.amcCredentialsSecret", oldFU.Spec.AMCCredentialsSecret, newFU.Spec.AMCCredentialsSecret},
 		{"spec.updateTaint", oldFU.Spec.UpdateTaint, newFU.Spec.UpdateTaint},
 	}
 

@@ -57,9 +57,9 @@ update_firmware_amc() {
     local type=$1
     local filepath=$2
 
-    echo "Calling xpu-smi: xpu-smi updatefw -y -t $type -f $filepath -u *** -p ***"
+    echo "Calling xpu-smi: xpu-smi updatefw -y -t $type -f $filepath"
 
-    xpu-smi updatefw -y -t "$type" -f "$filepath" -u "$AMC_USERNAME" -p "$AMC_PASSWORD" || {
+    xpu-smi updatefw -y -t "$type" -f "$filepath" || {
         echoerr "AMC firmware update failed"
         return 1
     }
