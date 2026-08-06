@@ -202,9 +202,6 @@ func (r *GPUFirmwareUpdateReconciler) verifyGivenParameters(fu *intelcomv1alpha1
 			return fmt.Errorf("unsupported firmware type %s", fw.Type)
 		}
 
-		if fw.Type == FirmwareTypeAMC && fu.Spec.AMCCredentialsSecret == "" {
-			return fmt.Errorf("amcCredentialsSecret must be specified when firmware type AMC is requested")
-		}
 	}
 
 	return nil
@@ -624,30 +621,6 @@ func (r *GPUFirmwareUpdateReconciler) createUpdateJobObjForNode(nodeName string,
 	}
 
 	job.Spec.Template.Spec.InitContainers[0].Image = fu.Spec.Content.ContainerImage
-
-	if fu.Spec.AMCCredentialsSecret != "" {
-		job.Spec.Template.Spec.Containers[0].Env = append(
-			job.Spec.Template.Spec.Containers[0].Env,
-			core.EnvVar{
-				Name: "AMC_USERNAME",
-				ValueFrom: &core.EnvVarSource{
-					SecretKeyRef: &core.SecretKeySelector{
-						LocalObjectReference: core.LocalObjectReference{Name: fu.Spec.AMCCredentialsSecret},
-						Key:                  "username",
-					},
-				},
-			},
-			core.EnvVar{
-				Name: "AMC_PASSWORD",
-				ValueFrom: &core.EnvVarSource{
-					SecretKeyRef: &core.SecretKeySelector{
-						LocalObjectReference: core.LocalObjectReference{Name: fu.Spec.AMCCredentialsSecret},
-						Key:                  "password",
-					},
-				},
-			},
-		)
-	}
 
 	updateCommands := []string{fmt.Sprintf("echo \"Starting firmware update process on node %s\"", nodeName)}
 

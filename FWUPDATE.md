@@ -4,7 +4,7 @@ The operator manages firmware updates for Intel GPUs through the `GPUFirmwareUpd
 
 Two underlying update methods are supported, selected per firmware file type:
 - **igsc** – updates through the MEI (Management Engine Interface) on the host; requires detecting the GPU's BDF address.
-- **AMC** – updates through a Redfish interface via an external component; no host-side device detection needed, but requires credentials.
+- **AMC** – updates through an auxiliary interface; no host-side device detection needed.
 
 ## Rough flow for executing a GPU firmware update
 
@@ -334,30 +334,12 @@ kubectl patch gpufirmwareupdate gfx-update --type=merge -p '{"spec":{"holdAfterC
 
 ## AMC update
 
-AMC updates go through a Redfish interface on an external component, so there is no need to detect the GPU's BDF address on the host. The `xpu-smi` tool handles device targeting internally. Because the Redfish interface requires authentication, a Kubernetes Secret must be provided.
-
-### Secret format
-
-Create a Secret in the **operator namespace** with keys `username` and `password`:
-
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: amc-credentials
-  namespace: <operator-namespace>
-type: Opaque
-stringData:
-  username: admin
-  password: s3cr3t
-```
-
-The operator injects these into the update Job as the environment variables `AMC_USERNAME` and `AMC_PASSWORD`.
+AMC updates go through an auxiliary interface that is attached the the GPU. The `xpu-smi` tool handles device targeting internally, and `xpu-smi updatefw -t AMC`.
 
 The update command run inside the Job container is:
 
 ```sh
-xpu-smi updatefw -y -t AMC -f <firmwareFile> -u $AMC_USERNAME -p $AMC_PASSWORD
+xpu-smi updatefw -y -t AMC -f <firmwareFile>
 ```
 
 ### Example CR
@@ -373,7 +355,6 @@ spec:
   updateTaint: gpufirmware-update
   nodeSelector:
     gpu-update: "true"
-  amcCredentialsSecret: amc-credentials   # must be in the operator namespace
   updaterImage: intel/xpumanager:v1.3.4
   content:
     containerImage: registry.example.com/gpu-firmware@sha256:abcd1234...
@@ -382,8 +363,6 @@ spec:
         filename: amc_fw.bin
         checksum: "sha256:3739b855dd6b92df2f905a1c2cf6127efa03efc4862e063074e0ec8930bb5bb4"
 ```
-
-> **Note:** `amcCredentialsSecret` is required whenever any entry in `spec.content.files` has `type: AMC`. The operator will reject the CR (set status to `error`) if the field is missing.
 
 ---
 
@@ -399,7 +378,7 @@ The following firmware file types are supported (set in `spec.content.files[].ty
 | `GFX_DATA` | igsc | |
 | `GFX_CODE_DATA` | igsc | |
 | `GFX_PSCBIN` | igsc | |
-| `AMC` | AMC (Redfish) | Requires `spec.amcCredentialsSecret` |
+| `AMC` | AMC | No `-d` |
 | `FAN_TABLE` | igsc | |
 | `VR_CONFIG` | igsc | |
 | `OPROM_CODE` | igsc | |
@@ -416,7 +395,6 @@ A validating admission webhook prevents editing structural spec fields while an 
 | `spec.nodeSelector` | Node selection has already happened |
 | `spec.pciDeviceID` | Already encoded in running Jobs |
 | `spec.content` | Firmware files and image already in use by running Jobs |
-| `spec.amcCredentialsSecret` | Credentials already injected into running Jobs |
 | `spec.updateTaint` | Taint key already applied to nodes; cleanup depends on it |
 
 The following fields remain mutable at any time:

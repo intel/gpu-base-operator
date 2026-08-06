@@ -16,10 +16,6 @@ spec:
   updateMethod: "direct"
   updateTaint:  "gpu-update-in-progress"
 
-  # Reference to the Secret holding the Redfish credentials (username/password).
-  # The Secret must exist in the operator namespace before applying this CR.
-  amcCredentialsSecret: amc-credentials
-
   content:
     containerImage: ghcr.io/intel/gpu-firmware-update-files:devel
 

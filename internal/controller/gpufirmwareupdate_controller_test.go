@@ -573,22 +573,9 @@ var _ = Describe("GPUFirmwareUpdate Controller", func() {
 			Expect(node.Spec.Taints).To(HaveLen(1))
 		})
 
-		It("it should complete AMC update flow with credentials from secret", func() {
-			amcSecret := &core.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "amc-creds",
-					Namespace: "default",
-				},
-				Data: map[string][]byte{
-					"username": []byte("admin"),
-					"password": []byte("s3cr3t"),
-				},
-			}
-			Expect(fakeClient.Create(ctx, amcSecret)).To(Succeed())
-
+		It("it should complete AMC update flow", func() {
 			resource = baseCr()
 			resource.Spec.UpdateMethod = "direct"
-			resource.Spec.AMCCredentialsSecret = "amc-creds"
 			resource.Spec.Content.Files = []intelcomv1alpha1.GPUFirmwareFile{
 				{Type: "AMC", FileName: "amc_firmware.bin"},
 			}
@@ -608,7 +595,7 @@ var _ = Describe("GPUFirmwareUpdate Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(resource.Status.State).To(Equal(stateUpdating))
 
-			By("Updating reconcile: create Jobs and verify AMC env vars from secret")
+			By("Updating reconcile: create Jobs")
 			ret, err = reconcileAndGet(fakeClient, controllerReconciler, resource)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(resource.Status.State).To(Equal(stateUpdating))
@@ -617,31 +604,6 @@ var _ = Describe("GPUFirmwareUpdate Controller", func() {
 			jobs := &batch.JobList{}
 			Expect(fakeClient.List(ctx, jobs)).To(Succeed())
 			Expect(jobs.Items).To(HaveLen(2))
-
-			for i := range jobs.Items {
-				containers := jobs.Items[i].Spec.Template.Spec.Containers
-				Expect(containers).To(HaveLen(1))
-
-				envVars := containers[0].Env
-				var usernameEnv, passwordEnv *core.EnvVar
-				for j := range envVars {
-					if envVars[j].Name == "AMC_USERNAME" {
-						usernameEnv = &envVars[j]
-					}
-					if envVars[j].Name == "AMC_PASSWORD" {
-						passwordEnv = &envVars[j]
-					}
-				}
-				Expect(usernameEnv).NotTo(BeNil(), "AMC_USERNAME env var must be present")
-				Expect(usernameEnv.ValueFrom).NotTo(BeNil())
-				Expect(usernameEnv.ValueFrom.SecretKeyRef.Name).To(Equal("amc-creds"))
-				Expect(usernameEnv.ValueFrom.SecretKeyRef.Key).To(Equal("username"))
-
-				Expect(passwordEnv).NotTo(BeNil(), "AMC_PASSWORD env var must be present")
-				Expect(passwordEnv.ValueFrom).NotTo(BeNil())
-				Expect(passwordEnv.ValueFrom.SecretKeyRef.Name).To(Equal("amc-creds"))
-				Expect(passwordEnv.ValueFrom.SecretKeyRef.Key).To(Equal("password"))
-			}
 
 			createPodsForJobs(fakeClient, jobs)
 
@@ -936,28 +898,6 @@ var _ = Describe("GPUFirmwareUpdate Controller Errors", func() {
 
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("unsupported firmware type"))
-
-			err = fakeClient.Get(ctx, typeNamespacedName, resource)
-			Expect(err).NotTo(HaveOccurred())
-
-			Expect(resource.Status.State).To(Equal(stateError))
-		})
-
-		It("should detect missing AMC credentials and fail", func() {
-			resource = baseCr()
-
-			resource.Spec.Content.Files = []intelcomv1alpha1.GPUFirmwareFile{
-				{Type: FirmwareTypeAMC, FileName: "amc.bin"},
-			}
-
-			Expect(fakeClient.Create(ctx, resource)).To(Succeed())
-
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: typeNamespacedName,
-			})
-
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("amcCredentialsSecret must be specified"))
 
 			err = fakeClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())

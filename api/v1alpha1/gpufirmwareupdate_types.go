@@ -51,12 +51,6 @@ type GPUFirmwareUpdateSpec struct {
 	// Node selector to target specific nodes for firmware update.
 	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
 
-	// AMCCredentialsSecret is the name of a Kubernetes Secret (in the operator namespace)
-	// containing 'username' and 'password' keys used for the AMC firmware update method
-	// (redfish interface). Required when any firmware file has type AMC.
-	// +optional
-	AMCCredentialsSecret string `json:"amcCredentialsSecret,omitempty"`
-
 	// InsecureSkipTLSVerify disables TLS certificate verification when the operator
 	// contacts the content image registry to check reachability or verify file checksums.
 	// Use this when the registry uses a self-signed or private-CA certificate.
