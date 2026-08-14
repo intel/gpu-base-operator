@@ -25,10 +25,10 @@ type OTelConfig struct {
 
 // OTelReceivers holds receiver configurations.
 type OTelReceivers struct {
-	IntelXPU IntelXPUReceiver `json:"intelxpu"`
+	IntelXPU IntelXPUReceiver `json:"intel_xpu"`
 }
 
-// IntelXPUReceiver is the configuration for the intelxpu receiver.
+// IntelXPUReceiver is the configuration for the intel_xpu receiver.
 type IntelXPUReceiver struct {
 	CollectionInterval string                 `json:"collection_interval"`
 	InitialDelay       string                 `json:"initial_delay"`
@@ -39,10 +39,10 @@ type IntelXPUReceiver struct {
 
 // OTelProcessors holds processor configurations.
 type OTelProcessors struct {
-	IntelXPUStatus IntelXPUStatusProcessor `json:"intelxpustatus"`
+	IntelXPUStatus IntelXPUStatusProcessor `json:"intel_xpu_status"`
 }
 
-// IntelXPUStatusProcessor is the configuration for the intelxpustatus processor.
+// IntelXPUStatusProcessor is the configuration for the intel_xpu_status processor.
 type IntelXPUStatusProcessor struct {
 	Rules []StatusRule `json:"rules"`
 }
@@ -80,7 +80,7 @@ type StateCondition struct {
 
 // OTelExporters holds exporter configurations.
 type OTelExporters struct {
-	IntelXPUInfo IntelXPUInfoExporter `json:"intelxpuinfo"`
+	IntelXPUInfo IntelXPUInfoExporter `json:"intel_xpu_info"`
 	Prometheus   PrometheusExporter   `json:"prometheus"`
 }
 
