@@ -26,6 +26,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+const (
+	nfdGpuWithDriver    = "intel.feature.node.kubernetes.io/gpu"
+	nfdGpuWithoutDriver = "intel.feature.node.kubernetes.io/gpu-pci"
+)
+
 func generateNodeSelector(cp *v1alpha.ClusterPolicy, opts ControllerOpts) map[string]string {
 	ns := map[string]string{
 		"kubernetes.io/arch": "amd64",
@@ -38,11 +43,23 @@ func generateNodeSelector(cp *v1alpha.ClusterPolicy, opts ControllerOpts) map[st
 	}
 
 	if cp.Spec.UseNFDLabeling {
-		ns["intel.feature.node.kubernetes.io/gpu"] = trueValue
+		ns[nfdGpuWithDriver] = trueValue
 	}
 
 	if opts.KMMModuleReadyLabel != "" && cp.Spec.KernelModule != nil {
 		ns[opts.KMMModuleReadyLabel] = ""
+	}
+
+	return ns
+}
+
+func generateNodeSelectorDriverless(cp *v1alpha.ClusterPolicy, opts ControllerOpts) map[string]string {
+	ns := generateNodeSelector(cp, opts)
+
+	// Change the NFD label to driverless, so KMM Pods can be scheduled to the nodes.
+	if cp.Spec.UseNFDLabeling {
+		delete(ns, nfdGpuWithDriver)
+		ns[nfdGpuWithoutDriver] = trueValue
 	}
 
 	return ns

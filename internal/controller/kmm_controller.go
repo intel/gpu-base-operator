@@ -161,7 +161,7 @@ func (r *KMMReconciler) setModuleDesiredState(mod *kmmv1beta1.Module, cp *v1alph
 		return fmt.Errorf("failed to set controller reference: %w", err)
 	}
 
-	mod.Spec.Selector = generateNodeSelector(cp, r.Opts)
+	mod.Spec.Selector = generateNodeSelectorDriverless(cp, r.Opts)
 	mod.Spec.Tolerations = generateTolerations(cp)
 	mod.Spec.ImageRepoSecret = cp.Spec.PullSecret
 
