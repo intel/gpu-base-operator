@@ -29,6 +29,14 @@ spec:
           - feature: kernel.enabledmodule
             matchExpressions:
               xe: {op: Exists}
+    - name: "intel.gpu.without-driver"
+      labels:
+        "intel.feature.node.kubernetes.io/gpu-pci": "true"
+      matchFeatures:
+        - feature: pci.device
+          matchExpressions:
+            vendor: {op: In, value: ["8086"]}
+            class: {op: In, value: ["0300", "0380"]}
     # Assumes there are only one model of GPU per node.
     # source: https://dgpu-docs.intel.com/overview/supported-hardware/xe-driver-gpus.html
     - name: "intel.gpu.pro.b50"
