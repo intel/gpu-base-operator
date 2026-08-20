@@ -26,6 +26,7 @@ import (
 	core "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -261,6 +262,12 @@ func (r *DevicePluginReconciler) updateStatus(ctx context.Context, cp *v1alpha.C
 	ds := &apps.DaemonSet{}
 
 	if err := r.Get(ctx, client.ObjectKey{Name: r.buildDaemonSetName(cp.Name), Namespace: r.Opts.Namespace}, ds); err != nil {
+		if errors.IsNotFound(err) {
+			cp.Status.DevicePluginStatus = notAvailableStatus
+
+			return nil
+		}
+
 		klog.Error(err, "unable to get DP DaemonSet to update status")
 
 		return err

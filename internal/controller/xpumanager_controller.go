@@ -507,6 +507,12 @@ func (r *XpuManagerReconciler) removeDeploymentIfExists(ctx context.Context, cp 
 func (r *XpuManagerReconciler) updateStatus(ctx context.Context, cp *v1alpha.ClusterPolicy) error {
 	ds := &apps.DaemonSet{}
 	if err := r.Get(ctx, client.ObjectKey{Name: r.buildDaemonSetName(cp.Name), Namespace: r.Opts.Namespace}, ds); err != nil {
+		if errors.IsNotFound(err) {
+			cp.Status.XPUManagerStatus = notAvailableStatus
+
+			return nil
+		}
+
 		klog.Error(err, "unable to get XPU Manager DaemonSet to update status")
 
 		return err
