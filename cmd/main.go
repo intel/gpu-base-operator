@@ -55,6 +55,7 @@ import (
 	intelcomv1alpha1 "github.com/intel/gpu-base-operator/api/v1alpha1"
 	"github.com/intel/gpu-base-operator/internal/controller"
 	buildVersion "github.com/intel/gpu-base-operator/internal/version"
+	kmmv1beta1 "github.com/kubernetes-sigs/kernel-module-management/api/v1beta1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -63,6 +64,7 @@ var (
 	setupLog        = ctrl.Log.WithName("setup")
 	openShiftGroups = []string{"route.openshift.io", "security.openshift.io"}
 	draGroups       = []string{"resource.k8s.io"}
+	kmmGroups       = []string{"kmm.sigs.x-k8s.io"}
 )
 
 const (
@@ -70,6 +72,7 @@ const (
 
 	openshiftCluster = "OpenShift"
 	draCluster       = "DRA"
+	kmmCluster       = "KMM"
 )
 
 func init() {
@@ -80,6 +83,7 @@ func init() {
 	utilruntime.Must(prometheusv1.AddToScheme(scheme))
 	utilruntime.Must(resv1.AddToScheme(scheme))
 	utilruntime.Must(kueuev1.AddToScheme(scheme))
+	utilruntime.Must(kmmv1beta1.AddToScheme(scheme))
 
 	// +kubebuilder:scaffold:scheme
 }
@@ -103,6 +107,7 @@ func detectClusterFeatures() (map[string]bool, error) {
 	features := map[string]bool{
 		openshiftCluster: false,
 		draCluster:       false,
+		kmmCluster:       false,
 	}
 
 	for _, group := range apiGroups.Groups {
@@ -111,6 +116,9 @@ func detectClusterFeatures() (map[string]bool, error) {
 		}
 		if slices.Contains(draGroups, group.Name) {
 			features[draCluster] = true
+		}
+		if slices.Contains(kmmGroups, group.Name) {
+			features[kmmCluster] = true
 		}
 	}
 
@@ -323,12 +331,19 @@ func main() {
 		setupLog.Info("Operator secret supplied", "secret", secret)
 	}
 
+	moduleLoaderSAName := os.Getenv("MODULE_LOADER_SERVICE_ACCOUNT_NAME")
+	if moduleLoaderSAName == "" {
+		moduleLoaderSAName = "module-loader"
+	}
+
 	copts := controller.ControllerOpts{
-		Namespace:    ns,
-		SecretName:   secret,
-		RequeueDelay: time.Second * 5,
-		DRAEnable:    features[draCluster],
-		OpenShift:    features[openshiftCluster],
+		Namespace:                      ns,
+		SecretName:                     secret,
+		RequeueDelay:                   time.Second * 5,
+		DRAEnable:                      features[draCluster],
+		OpenShift:                      features[openshiftCluster],
+		KMMEnable:                      features[kmmCluster],
+		ModuleLoaderServiceAccountName: moduleLoaderSAName,
 	}
 
 	if err := (&controller.ClusterPolicyReconciler{

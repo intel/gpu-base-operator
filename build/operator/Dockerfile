@@ -53,8 +53,10 @@ RUN apt-get update -y && apt-get --no-install-recommends -y install file && \
     chmod +x checksec && \
     ./checksec --file=/workspace/manager --output=csv | grep -q "$CHECKSEC_REF"
 
-RUN go get github.com/google/go-licenses && \
-    go run github.com/google/go-licenses save ./cmd/ --save_path licenses && \
+# GOROOT is passed explicitly so go-licenses can recognize stdlib packages even
+# when `go list` re-execs a different toolchain than the one that built it.
+RUN go install github.com/google/go-licenses@v1.6.0 && \
+    GOROOT="$(go env GOROOT)" go-licenses save ./cmd/ --save_path licenses && \
     cp /workspace/LICENSE /workspace/licenses/LICENSE.intel-gpu-base-operator
 
 ARG BASE_IMAGE

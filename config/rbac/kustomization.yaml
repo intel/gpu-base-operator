@@ -27,6 +27,7 @@ resources:
 - gpufirmwareupdate_admin_role.yaml
 - gpufirmwareupdate_editor_role.yaml
 - gpufirmwareupdate_viewer_role.yaml
+- module_loader_serviceaccount.yaml
 - clusterpolicy_admin_role.yaml
 - clusterpolicy_editor_role.yaml
 - clusterpolicy_viewer_role.yaml

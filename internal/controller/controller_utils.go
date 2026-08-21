@@ -17,11 +17,16 @@ limitations under the License.
 package controller
 
 import (
+	"context"
+
 	v1alpha "github.com/intel/gpu-base-operator/api/v1alpha1"
 	core "k8s.io/api/core/v1"
+	resourcev1 "k8s.io/api/resource/v1"
+	"k8s.io/klog/v2"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-func generateNodeSelector(cp *v1alpha.ClusterPolicy) map[string]string {
+func generateNodeSelector(cp *v1alpha.ClusterPolicy, opts ControllerOpts) map[string]string {
 	ns := map[string]string{
 		"kubernetes.io/arch": "amd64",
 	}
@@ -34,6 +39,10 @@ func generateNodeSelector(cp *v1alpha.ClusterPolicy) map[string]string {
 
 	if cp.Spec.UseNFDLabeling {
 		ns["intel.feature.node.kubernetes.io/gpu"] = trueValue
+	}
+
+	if opts.KMMModuleReadyLabel != "" && cp.Spec.KernelModule != nil {
+		ns[opts.KMMModuleReadyLabel] = ""
 	}
 
 	return ns
@@ -97,6 +106,31 @@ func shouldRemoveXpumd(cp *v1alpha.ClusterPolicy) bool {
 	// No resource monitoring, no xpumd
 	if !cp.Spec.ResourceMonitoring {
 		return true
+	}
+
+	return false
+}
+
+func anyAllocatedResourceClaims(ctx context.Context, c client.Client, driverName string) bool {
+	var rcList resourcev1.ResourceClaimList
+
+	if err := c.List(ctx, &rcList); err != nil {
+		klog.Error(err, "unable to list ResourceClaims, assuming allocated claims exist")
+		return true
+	}
+
+	for _, claim := range rcList.Items {
+		alloc := claim.Status.Allocation
+		if alloc == nil || len(alloc.Devices.Results) == 0 {
+			continue
+		}
+
+		for _, dev := range alloc.Devices.Results {
+			if dev.Driver == driverName {
+				klog.Infof("Found allocated ResourceClaim with GPU device: %s", claim.Name)
+				return true
+			}
+		}
 	}
 
 	return false

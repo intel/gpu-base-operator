@@ -24,6 +24,9 @@ spec:
     - jsonPath: .status.xpuManagerStatus
       name: XPU
       type: string
+    - jsonPath: .status.kmmStatus
+      name: KMM
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -135,6 +138,163 @@ spec:
                     maximum: 130
                     minimum: 1
                     type: integer
+                type: object
+              kernelModule:
+                description: |-
+                  KernelModule configures out-of-tree kernel module loading via KMM.
+                  When set, KMM loads the specified OOT driver module on each node.
+                  When nil, the in-tree kernel driver is used.
+                properties:
+                  firmwarePath:
+                    description: FirmwarePath is the in-container path where firmware
+                      files are stored.
+                    type: string
+                  kernelMappings:
+                    description: |-
+                      KernelMappings maps kernel version patterns to container images or
+                      build specifications. Translates directly to KMM KernelMapping objects.
+                    items:
+                      description: |-
+                        KernelMappingSpec maps a kernel version pattern to a container image
+                        or build specification.
+                      properties:
+                        build:
+                          description: |-
+                            Build configures in-cluster building of the driver image via KMM.
+                            When set, KMM builds the image if it doesn't exist in the registry.
+                          properties:
+                            buildArgs:
+                              description: BuildArgs are key-value pairs passed to
+                                the image builder.
+                              items:
+                                description: BuildArg is a key-value pair passed as
+                                  a build argument.
+                                properties:
+                                  name:
+                                    type: string
+                                  value:
+                                    type: string
+                                required:
+                                - name
+                                - value
+                                type: object
+                              type: array
+                            dockerfileConfigMap:
+                              description: DockerfileConfigMap references a ConfigMap
+                                containing the Dockerfile.
+                              properties:
+                                name:
+                                  default: ""
+                                  description: |-
+                                    Name of the referent.
+                                    This field is effectively required, but due to backwards compatibility is
+                                    allowed to be empty. Instances of this type with an empty value here are
+                                    almost certainly wrong.
+                                    More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                  type: string
+                              type: object
+                              x-kubernetes-map-type: atomic
+                            secrets:
+                              description: |-
+                                Secrets are made available during the build (e.g., for private
+                                source repos). Not for registry auth -- use pullSecret on
+                                ClusterPolicySpec.
+                              items:
+                                description: |-
+                                  LocalObjectReference contains enough information to let you locate the
+                                  referenced object inside the same namespace.
+                                properties:
+                                  name:
+                                    default: ""
+                                    description: |-
+                                      Name of the referent.
+                                      This field is effectively required, but due to backwards compatibility is
+                                      allowed to be empty. Instances of this type with an empty value here are
+                                      almost certainly wrong.
+                                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                    type: string
+                                type: object
+                                x-kubernetes-map-type: atomic
+                              type: array
+                          required:
+                          - dockerfileConfigMap
+                          type: object
+                        containerImage:
+                          description: |-
+                            ContainerImage is the full image reference for this kernel version.
+                            Required when Build is nil. KMM template vars (e.g. ${KERNEL_FULL_VERSION},
+                            $MOD_NAME) are supported and resolved by KMM at reconcile time.
+
+                            Changing ContainerImage is the recommended way to upgrade the driver: KMM
+                            rolls the new image out to all selected nodes at once, briefly disrupting
+                            GPU workloads as the module reloads.
+                          type: string
+                        inTreeModulesToRemove:
+                          description: |-
+                            InTreeModulesToRemove lists additional in-tree modules to unload
+                            for this mapping. ModuleName is always included automatically.
+                          items:
+                            type: string
+                          type: array
+                        regexp:
+                          description: |-
+                            Regexp is a regular expression matched against node kernel versions.
+                            Use anchored patterns (e.g. "^5\\.14\\.0-.*$") for exact matches.
+                          type: string
+                        registryTLS:
+                          description: RegistryTLS overrides parent-level TLS settings
+                            for this mapping.
+                          properties:
+                            insecure:
+                              type: boolean
+                            insecureSkipTLSVerify:
+                              type: boolean
+                          type: object
+                      required:
+                      - regexp
+                      type: object
+                    minItems: 1
+                    type: array
+                  moduleName:
+                    default: xe
+                    description: ModuleName is the kernel module to load (defaults
+                      to "xe").
+                    type: string
+                  modulesLoadingOrder:
+                    description: |-
+                      ModulesLoadingOrder specifies softdep-style loading order for
+                      multi-module drivers. First element must be ModuleName (defaults
+                      to "xe"); KMM loads in order and unloads in reverse. Must have
+                      >=2 entries if set.
+                    items:
+                      type: string
+                    type: array
+                  registryTLS:
+                    description: RegistryTLS configures TLS for accessing the module
+                      image registry.
+                    properties:
+                      insecure:
+                        type: boolean
+                      insecureSkipTLSVerify:
+                        type: boolean
+                    type: object
+                  version:
+                    description: |-
+                      Version opts into KMM's ordered upgrade
+                      (https://kmm.sigs.k8s.io/documentation/ordered_upgrade) for advanced,
+                      low-disruption driver rollouts. When set, KMM loads the module onto a node
+                      only once a cluster admin labels that node
+                      "kmm.node.kubernetes.io/version-module.<module-namespace>.<module-name>=<version>",
+                      letting the admin sequence the upgrade node-by-node and drain GPU workloads
+                      first. Nodes without a matching label are left untouched.
+
+                      Most users should leave Version unset and instead upgrade by changing the
+                      containerImage of the relevant kernelMappings entry (see ContainerImage),
+                      which rolls the new driver out to all selected nodes at once without any
+                      per-node label choreography.
+                    type: string
+                required:
+                - kernelMappings
                 type: object
               kueue:
                 description: Define Kueue queues
@@ -289,6 +449,8 @@ spec:
                 items:
                   type: string
                 type: array
+              kmmStatus:
+                type: string
               xpuManagerStatus:
                 type: string
             type: object

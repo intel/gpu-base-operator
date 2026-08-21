@@ -69,6 +69,10 @@ spec:
             valueFrom:
               fieldRef:
                 fieldPath: metadata.namespace
+          - name: MODULE_LOADER_SERVICE_ACCOUNT_NAME
+            # kustomize prepends the namePrefix (intel-gpu-base-operator-) to the
+            # ServiceAccount, but not to this literal, so set the resolved name here.
+            value: intel-gpu-base-operator-module-loader
         image: ghcr.io/intel/intel-gpu-base-operator:devel
         imagePullPolicy: IfNotPresent
         name: manager

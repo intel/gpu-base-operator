@@ -248,40 +248,6 @@ func (r *DRAReconciler) createOpenShiftResourcesIfNotExists(ctx context.Context,
 	return nil
 }
 
-func (r *DRAReconciler) anyAllocatedResourceClaims(ctx context.Context) bool {
-	var rcList resv1.ResourceClaimList
-
-	klog.Info("Checking for allocated ResourceClaims that would prevent DRA removal")
-
-	if err := r.List(ctx, &rcList); err != nil {
-		klog.Error(err, "unable to list ResourceClaims")
-
-		return false
-	}
-
-	klog.Infof("Found %d ResourceClaims", len(rcList.Items))
-	for _, claim := range rcList.Items {
-		alloc := claim.Status.Allocation
-
-		if alloc == nil {
-			continue
-		}
-		if len(alloc.Devices.Results) == 0 {
-			continue
-		}
-
-		for _, dev := range alloc.Devices.Results {
-			if dev.Driver == gpuDeviceClass {
-				klog.Infof("Found allocated ResourceClaim with GPU device: %s", claim.Name)
-
-				return true
-			}
-		}
-	}
-
-	return false
-}
-
 func addHealthCheckIfMissing(container *core.Container, port int32) {
 	for _, p := range container.Ports {
 		if p.ContainerPort == port {
@@ -358,7 +324,7 @@ func (r *DRAReconciler) updateDaemonSetObject(ds *apps.DaemonSet, spec *v1alpha.
 
 	ds.Spec.Template.Spec.Containers[0].Image = dspec.Image
 	ds.Spec.Template.Spec.Containers[0].Args = r.generateArgs(spec)
-	ds.Spec.Template.Spec.NodeSelector = generateNodeSelector(spec)
+	ds.Spec.Template.Spec.NodeSelector = generateNodeSelector(spec, r.Opts)
 	ds.Spec.Template.Spec.Tolerations = generateTolerations(spec)
 
 	cspec := &ds.Spec.Template.Spec
@@ -424,7 +390,7 @@ func (r *DRAReconciler) removeDeploymentIfExists(ctx context.Context, cp *v1alph
 	// If there are any allocated ResourceClaims, removal of DRA will cause
 	// the Pods using them to be stuck at Terminating.
 	// Requeue and try again later.
-	if r.anyAllocatedResourceClaims(ctx) {
+	if anyAllocatedResourceClaims(ctx, r.Client, gpuDeviceClass) {
 		return ctrl.Result{RequeueAfter: r.Opts.RequeueDelay}, requeueReconcileErr{}
 	}
 

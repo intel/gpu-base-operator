@@ -35,6 +35,47 @@ kueue:
       - name: gpu-queue
         namespace: default
 
+# kernelModule:
+#   moduleName: xe
+#   # To upgrade the driver, just change the containerImage below; KMM rolls it
+#   # out to all selected nodes at once (brief GPU-workload disruption). Only set
+#   # `version` if you want KMM's node-by-node ordered upgrade, which requires you
+#   # to label each node with
+#   # kmm.node.kubernetes.io/version-module.<namespace>.<module>=<version> before
+#   # the driver loads there. See https://kmm.sigs.k8s.io/documentation/ordered_upgrade
+#   # version: "1.0"
+#   kernelMappings:
+#   - regexp: "^.+$"
+#     containerImage: registry.example.com/xe-driver:1.0
+#
+#   # Multi-kernel support:
+#   # kernelMappings:
+#   # - regexp: "^5\\.14\\.0-.*\\.el9.*\\.x86_64$"
+#   #   containerImage: registry.example.com/xe-driver-rhel9:1.0
+#   # - regexp: "^6\\.12\\..*"
+#   #   containerImage: registry.example.com/xe-driver-rhel10:1.0
+#   #
+#   # In-cluster build:
+#   # kernelMappings:
+#   # - regexp: "^5\\.14\\..*"
+#   #   build:
+#   #     dockerfileConfigMap:
+#   #       name: xe-dockerfile
+#   #     buildArgs:
+#   #     - name: XE_TAG
+#   #       value: v1.0
+#   #
+#   # Per-mapping extra in-tree modules to remove (moduleName is always included automatically):
+#   # - regexp: "^5\\.14\\..*"
+#   #   containerImage: registry.example.com/xe:1.0
+#   #   inTreeModulesToRemove: ["i915"]
+#   #
+#   # modulesLoadingOrder: ["xe", "drm_buddy", "drm_ttm_helper"]
+#   # firmwarePath: /opt/lib/firmware/xe
+#   # registryTLS:
+#   #   insecure: false
+#   #   insecureSkipTLSVerify: false
+
 pullSecret: null
 nodeSelector: {}
 tolerations: []

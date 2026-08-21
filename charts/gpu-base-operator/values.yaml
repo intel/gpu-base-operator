@@ -76,3 +76,10 @@ kueue:
         - deviceClassNames:
           - "gpu.intel.com"
           name: "dra.gpu.intel.com"
+
+openshift:
+  enabled: false
+
+moduleLoader:
+  create: true
+  serviceAccountName: module-loader

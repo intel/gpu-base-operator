@@ -62,6 +62,66 @@ spec:
     configMapOverride: {{ .Values.xpu.configMapOverride | default "" }}
 {{- end }}
 
+{{- if .Values.kernelModule }}
+  kernelModule:
+    moduleName: {{ .Values.kernelModule.moduleName }}
+    {{- if .Values.kernelModule.version }}
+    version: {{ .Values.kernelModule.version | quote }}
+    {{- end }}
+    kernelMappings:
+    {{- range .Values.kernelModule.kernelMappings }}
+      - regexp: {{ .regexp | quote }}
+        {{- if .containerImage }}
+        containerImage: {{ .containerImage }}
+        {{- end }}
+        {{- if .build }}
+        build:
+          dockerfileConfigMap:
+            name: {{ .build.dockerfileConfigMap.name }}
+          {{- if .build.buildArgs }}
+          buildArgs:
+          {{- range .build.buildArgs }}
+            - name: {{ .name }}
+              value: {{ .value | quote }}
+          {{- end }}
+          {{- end }}
+          {{- if .build.secrets }}
+          secrets:
+          {{- range .build.secrets }}
+            - name: {{ .name }}
+          {{- end }}
+          {{- end }}
+        {{- end }}
+        {{- if .inTreeModulesToRemove }}
+        inTreeModulesToRemove: {{ toYaml .inTreeModulesToRemove | nindent 10 }}
+        {{- end }}
+        {{- if .registryTLS }}
+        registryTLS:
+          {{- if .registryTLS.insecure }}
+          insecure: {{ .registryTLS.insecure }}
+          {{- end }}
+          {{- if .registryTLS.insecureSkipTLSVerify }}
+          insecureSkipTLSVerify: {{ .registryTLS.insecureSkipTLSVerify }}
+          {{- end }}
+        {{- end }}
+    {{- end }}
+    {{- if .Values.kernelModule.modulesLoadingOrder }}
+    modulesLoadingOrder: {{ toYaml .Values.kernelModule.modulesLoadingOrder | nindent 6 }}
+    {{- end }}
+    {{- if .Values.kernelModule.firmwarePath }}
+    firmwarePath: {{ .Values.kernelModule.firmwarePath }}
+    {{- end }}
+    {{- if .Values.kernelModule.registryTLS }}
+    registryTLS:
+      {{- if .Values.kernelModule.registryTLS.insecure }}
+      insecure: {{ .Values.kernelModule.registryTLS.insecure }}
+      {{- end }}
+      {{- if .Values.kernelModule.registryTLS.insecureSkipTLSVerify }}
+      insecureSkipTLSVerify: {{ .Values.kernelModule.registryTLS.insecureSkipTLSVerify }}
+      {{- end }}
+    {{- end }}
+{{- end }}
+
 {{- if .Values.pullSecret }}
   pullSecret: {{ .Values.pullSecret }}
 {{- end }}

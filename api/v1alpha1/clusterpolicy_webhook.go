@@ -74,6 +74,10 @@ func (d *ClusterPolicyCustomDefaulter) Default(_ context.Context, cp *ClusterPol
 		spec.XpuManagerSpec.MonitoringResource = "monitoring"
 	}
 
+	if spec.KernelModule != nil && spec.KernelModule.ModuleName == "" {
+		spec.KernelModule.ModuleName = "xe"
+	}
+
 	return nil
 }
 
@@ -95,6 +99,7 @@ func validateClusterPolicySpec(spec *ClusterPolicySpec) (admission.Warnings, err
 	errs = append(errs, validatePullSecret(spec)...)
 	errs = append(errs, validateConfigMapOverride(spec)...)
 	errs = append(errs, validateKueueSpec(spec)...)
+	errs = append(errs, validateKernelModuleSpec(spec)...)
 
 	if w := warnForSpecProblems(spec); w != "" {
 		warnings = append(warnings, w)
@@ -218,6 +223,104 @@ func validateKueueSpec(spec *ClusterPolicySpec) []error {
 
 			seenLQKeys[key] = true
 		}
+	}
+
+	return errs
+}
+
+func validateKernelModuleSpec(spec *ClusterPolicySpec) []error {
+	if spec.KernelModule == nil {
+		return nil
+	}
+
+	km := spec.KernelModule
+	var errs []error
+
+	for i, m := range km.KernelMappings {
+		prefix := fmt.Sprintf("kernelModule.kernelMappings[%d]", i)
+		errs = append(errs, validateKernelMapping(prefix, &m)...)
+	}
+
+	if len(km.ModulesLoadingOrder) > 0 {
+		errs = append(errs, validateModulesLoadingOrder(km.ModuleName, km.ModulesLoadingOrder)...)
+	}
+
+	return errs
+}
+
+// kmmTemplateVarRegexp matches KMM's ${VAR} and $VAR template placeholders
+// (e.g. ${KERNEL_FULL_VERSION}, $MOD_NAME), which KMM resolves at reconcile time.
+var kmmTemplateVarRegexp = regexp.MustCompile(`\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*`)
+
+// substituteKMMTemplateVars swaps KMM template placeholders for a tag-safe token
+// so the reference can be validated as a normal image reference.
+func substituteKMMTemplateVars(image string) string {
+	return kmmTemplateVarRegexp.ReplaceAllString(image, "0")
+}
+
+func validateImageTagOrDigest(field, image string) error {
+	// Validate a copy with template vars resolved; report the original on error.
+	resolved := substituteKMMTemplateVars(image)
+
+	if _, err := reference.ParseNormalizedNamed(resolved); err != nil {
+		return fmt.Errorf("invalid image reference in %s: %q: %w", field, image, err)
+	}
+
+	if !strings.Contains(resolved, ":") && !strings.Contains(resolved, "@") {
+		return fmt.Errorf("%s: image %q must include an explicit tag or digest", field, image)
+	}
+
+	return nil
+}
+
+func validateKernelMapping(prefix string, m *KernelMappingSpec) []error {
+	var errs []error
+
+	if m.Regexp == "" {
+		errs = append(errs, fmt.Errorf("%s: regexp is required", prefix))
+	} else {
+		if _, err := regexp.Compile(m.Regexp); err != nil {
+			errs = append(errs, fmt.Errorf("%s.regexp: invalid regular expression: %w", prefix, err))
+		}
+	}
+
+	if m.ContainerImage != "" {
+		if err := validateImageTagOrDigest(prefix+".containerImage", m.ContainerImage); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	if m.ContainerImage == "" && m.Build == nil {
+		errs = append(errs, fmt.Errorf("%s: one of containerImage or build must be set", prefix))
+	}
+
+	if m.Build != nil {
+		if m.Build.DockerfileConfigMap.Name == "" {
+			errs = append(errs, fmt.Errorf("%s.build.dockerfileConfigMap.name is required", prefix))
+		}
+	}
+
+	return errs
+}
+
+func validateModulesLoadingOrder(moduleName string, order []string) []error {
+	var errs []error
+
+	if len(order) < 2 {
+		errs = append(errs, fmt.Errorf("kernelModule.modulesLoadingOrder must have at least 2 entries"))
+	}
+
+	if len(order) > 0 && moduleName != "" && order[0] != moduleName {
+		errs = append(errs, fmt.Errorf("kernelModule.modulesLoadingOrder[0] must be moduleName %q", moduleName))
+	}
+
+	seen := make(map[string]bool, len(order))
+	for i, entry := range order {
+		if seen[entry] {
+			errs = append(errs, fmt.Errorf("kernelModule.modulesLoadingOrder[%d]: duplicate entry %q", i, entry))
+			break
+		}
+		seen[entry] = true
 	}
 
 	return errs

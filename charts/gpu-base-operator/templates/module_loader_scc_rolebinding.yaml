@@ -1,0 +1,17 @@
+{{- if .Values.openshift.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Name }}-module-loader-scc-binding
+  labels:
+    app.kubernetes.io/name: intel-gpu-base-operator
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Release.Name }}-module-loader-scc-role
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.moduleLoader.serviceAccountName }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

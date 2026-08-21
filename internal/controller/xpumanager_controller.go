@@ -407,7 +407,7 @@ func (r *XpuManagerReconciler) updateDaemonSetObject(ds *apps.DaemonSet, spec *v
 
 	processContainerResources(ds, spec, draClaim)
 	processXpumdConfigMapMount(ds, otelConfigMapName)
-	ds.Spec.Template.Spec.NodeSelector = generateNodeSelector(spec)
+	ds.Spec.Template.Spec.NodeSelector = generateNodeSelector(spec, r.Opts)
 	ds.Spec.Template.Spec.Tolerations = generateTolerations(spec)
 
 	cspec := &ds.Spec.Template.Spec

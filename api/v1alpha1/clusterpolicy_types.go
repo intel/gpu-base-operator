@@ -69,6 +69,12 @@ type ClusterPolicySpec struct {
 	// +kubebuilder:validation:Range=0:4
 	// +kubebuilder:validation:Default=2
 	LogLevel int32 `json:"logLevel,omitempty"`
+
+	// KernelModule configures out-of-tree kernel module loading via KMM.
+	// When set, KMM loads the specified OOT driver module on each node.
+	// When nil, the in-tree kernel driver is used.
+	// +optional
+	KernelModule *KernelModuleSpec `json:"kernelModule,omitempty"`
 }
 
 // DynamicResourceAllocationSpec defines the desired state of DynamicResourceAllocation.
@@ -147,11 +153,114 @@ type XpuManagerSpec struct {
 	MonitoringResource string `json:"monitoringResource,omitempty"`
 }
 
+// RegistryTLSSpec configures TLS behavior for accessing container image registries.
+type RegistryTLSSpec struct {
+	Insecure              bool `json:"insecure,omitempty"`
+	InsecureSkipTLSVerify bool `json:"insecureSkipTLSVerify,omitempty"`
+}
+
+// KernelModuleSpec configures out-of-tree kernel module loading via KMM.
+type KernelModuleSpec struct {
+	// ModuleName is the kernel module to load (defaults to "xe").
+	// +kubebuilder:default=xe
+	ModuleName string `json:"moduleName,omitempty"`
+
+	// Version opts into KMM's ordered upgrade
+	// (https://kmm.sigs.k8s.io/documentation/ordered_upgrade) for advanced,
+	// low-disruption driver rollouts. When set, KMM loads the module onto a node
+	// only once a cluster admin labels that node
+	// "kmm.node.kubernetes.io/version-module.<module-namespace>.<module-name>=<version>",
+	// letting the admin sequence the upgrade node-by-node and drain GPU workloads
+	// first. Nodes without a matching label are left untouched.
+	//
+	// Most users should leave Version unset and instead upgrade by changing the
+	// containerImage of the relevant kernelMappings entry (see ContainerImage),
+	// which rolls the new driver out to all selected nodes at once without any
+	// per-node label choreography.
+	// +optional
+	Version string `json:"version,omitempty"`
+
+	// KernelMappings maps kernel version patterns to container images or
+	// build specifications. Translates directly to KMM KernelMapping objects.
+	// +kubebuilder:validation:MinItems=1
+	KernelMappings []KernelMappingSpec `json:"kernelMappings"`
+
+	// ModulesLoadingOrder specifies softdep-style loading order for
+	// multi-module drivers. First element must be ModuleName (defaults
+	// to "xe"); KMM loads in order and unloads in reverse. Must have
+	// >=2 entries if set.
+	// +optional
+	ModulesLoadingOrder []string `json:"modulesLoadingOrder,omitempty"`
+
+	// FirmwarePath is the in-container path where firmware files are stored.
+	// +optional
+	FirmwarePath string `json:"firmwarePath,omitempty"`
+
+	// RegistryTLS configures TLS for accessing the module image registry.
+	// +optional
+	RegistryTLS *RegistryTLSSpec `json:"registryTLS,omitempty"`
+}
+
+// KernelMappingSpec maps a kernel version pattern to a container image
+// or build specification.
+type KernelMappingSpec struct {
+	// Regexp is a regular expression matched against node kernel versions.
+	// Use anchored patterns (e.g. "^5\\.14\\.0-.*$") for exact matches.
+	Regexp string `json:"regexp"`
+
+	// ContainerImage is the full image reference for this kernel version.
+	// Required when Build is nil. KMM template vars (e.g. ${KERNEL_FULL_VERSION},
+	// $MOD_NAME) are supported and resolved by KMM at reconcile time.
+	//
+	// Changing ContainerImage is the recommended way to upgrade the driver: KMM
+	// rolls the new image out to all selected nodes at once, briefly disrupting
+	// GPU workloads as the module reloads.
+	// +optional
+	ContainerImage string `json:"containerImage,omitempty"`
+
+	// Build configures in-cluster building of the driver image via KMM.
+	// When set, KMM builds the image if it doesn't exist in the registry.
+	// +optional
+	Build *KernelModuleBuildSpec `json:"build,omitempty"`
+
+	// InTreeModulesToRemove lists additional in-tree modules to unload
+	// for this mapping. ModuleName is always included automatically.
+	// +optional
+	InTreeModulesToRemove []string `json:"inTreeModulesToRemove,omitempty"`
+
+	// RegistryTLS overrides parent-level TLS settings for this mapping.
+	// +optional
+	RegistryTLS *RegistryTLSSpec `json:"registryTLS,omitempty"`
+}
+
+// KernelModuleBuildSpec configures in-cluster driver image building.
+type KernelModuleBuildSpec struct {
+	// DockerfileConfigMap references a ConfigMap containing the Dockerfile.
+	DockerfileConfigMap v1.LocalObjectReference `json:"dockerfileConfigMap"`
+
+	// BuildArgs are key-value pairs passed to the image builder.
+	// +optional
+	BuildArgs []BuildArg `json:"buildArgs,omitempty"`
+
+	// Secrets are made available during the build (e.g., for private
+	// source repos). Not for registry auth -- use pullSecret on
+	// ClusterPolicySpec.
+	// +optional
+	Secrets []v1.LocalObjectReference `json:"secrets,omitempty"`
+}
+
+// BuildArg is a key-value pair passed as a build argument.
+type BuildArg struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
 // ClusterPolicyStatus defines the observed state of ClusterPolicy.
 type ClusterPolicyStatus struct {
 	DevicePluginStatus string   `json:"devicePluginStatus,omitempty"`
 	DRAStatus          string   `json:"draStatus,omitempty"`
 	XPUManagerStatus   string   `json:"xpuManagerStatus,omitempty"`
+	KMMStatus          string   `json:"kmmStatus,omitempty"`
 	Errors             []string `json:"errors,omitempty"`
 }
 
@@ -183,6 +292,7 @@ type LocalQueueSpec struct {
 // +kubebuilder:printcolumn:name="DP",type=string,JSONPath=`.status.devicePluginStatus`
 // +kubebuilder:printcolumn:name="DRA",type=string,JSONPath=`.status.draStatus`
 // +kubebuilder:printcolumn:name="XPU",type=string,JSONPath=`.status.xpuManagerStatus`
+// +kubebuilder:printcolumn:name="KMM",type=string,JSONPath=`.status.kmmStatus`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 // +operator-sdk:csv:customresourcedefinitions:displayName="Intel GPU Cluster Policy"
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object

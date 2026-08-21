@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"time"
@@ -41,6 +42,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	v1alpha "github.com/intel/gpu-base-operator/api/v1alpha1"
+	kmmv1beta1 "github.com/kubernetes-sigs/kernel-module-management/api/v1beta1"
 )
 
 // ClusterPolicyReconciler reconciles a ClusterPolicy object
@@ -52,12 +54,15 @@ type ClusterPolicyReconciler struct {
 }
 
 type ControllerOpts struct {
-	ReqName      string
-	Namespace    string
-	SecretName   string
-	RequeueDelay time.Duration
-	DRAEnable    bool
-	OpenShift    bool
+	ReqName                        string
+	Namespace                      string
+	SecretName                     string
+	RequeueDelay                   time.Duration
+	DRAEnable                      bool
+	OpenShift                      bool
+	KMMEnable                      bool
+	ModuleLoaderServiceAccountName string
+	KMMModuleReadyLabel            string
 }
 
 type requeueReconcileErr struct {
@@ -146,6 +151,11 @@ func (r *ClusterPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	var origCp *v1alpha.ClusterPolicy
 	if cp != nil {
 		origCp = cp.DeepCopy()
+
+		// Clear stale errors so Status.Errors reflects the current reconcile only.
+		// Sub-controllers re-add any errors that are still relevant this pass; the
+		// deferred DeepEqual status update persists the cleared slice.
+		cp.Status.Errors = nil
 	}
 
 	// Defer status update at the end of reconciliation, to ensure we capture any changes made by sub-controllers.
@@ -169,7 +179,12 @@ func (r *ClusterPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	opts := r.Opts
 	opts.ReqName = req.Name
 
-	subControllers := make([]SubControllerInterface, 0, 4)
+	if opts.KMMEnable {
+		opts.KMMModuleReadyLabel = fmt.Sprintf("kmm.node.kubernetes.io/%s.%s.ready",
+			opts.Namespace, kmmModuleName(req.Name))
+	}
+
+	subControllers := make([]SubControllerInterface, 0, 5)
 
 	// Initialize sub-controllers
 	subControllers = append(subControllers, &DevicePluginReconciler{Client: r.Client, Scheme: r.Scheme, Opts: opts})
@@ -177,6 +192,12 @@ func (r *ClusterPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// Include DRA subcontroller even though cluster might not be configured to use DRA, so it can report a status correctly.
 	subControllers = append(subControllers, &DRAReconciler{Client: r.Client, Scheme: r.Scheme, Opts: opts})
 	subControllers = append(subControllers, &MiscReconciler{Client: r.Client, APIReader: r.APIReader, Scheme: r.Scheme, Opts: opts, CrdNames: crdNames})
+
+	// KMM sub-controller gets a copy with the ready label cleared so the
+	// KMM Module itself doesn't gate on its own readiness.
+	kmmOpts := opts
+	kmmOpts.KMMModuleReadyLabel = ""
+	subControllers = append(subControllers, &KMMReconciler{Client: r.Client, Scheme: r.Scheme, Opts: kmmOpts})
 
 	// Ensure finalizer is present on live (non-deleted) ClusterPolicy objects.
 	if cp != nil && cp.DeletionTimestamp.IsZero() {
@@ -344,6 +365,10 @@ func (r *ClusterPolicyReconciler) SetupWithManager(mgr ctrl.Manager, opts Contro
 		For(&v1alpha.ClusterPolicy{}).
 		Named("clusterpolicy").
 		Owns(&apps.DaemonSet{})
+
+	if opts.KMMEnable {
+		b = b.Owns(&kmmv1beta1.Module{})
+	}
 
 	// Only watch DRA pods when DRA is enabled in the cluster, to avoid unnecessary
 	// pod list/watch permissions and reconcile noise when DRA is not in use.

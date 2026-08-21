@@ -64,6 +64,8 @@ spec:
             valueFrom:
               fieldRef:
                 fieldPath: metadata.namespace
+          - name: MODULE_LOADER_SERVICE_ACCOUNT_NAME
+            value: "{{ .Values.moduleLoader.serviceAccountName }}"
       {{- if .Values.privateRegistry.token }}
           - name: OPERATOR_SECRET
             value: "{{ .Release.Name }}-operator-private-registry"
