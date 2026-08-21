@@ -101,6 +101,30 @@ var _ = Describe("XPU manager daemonset", func() {
 			Expect(ds.Spec.Template.Spec.NodeSelector["intel.feature.node.kubernetes.io/gpu"]).To(Equal("true"))
 		})
 
+		It("sets and clears XPU Manager affinity", func() {
+			cp := newCp()
+			cp.Spec.XpuManagerSpec.Affinity = &core.Affinity{
+				NodeAffinity: &core.NodeAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: &core.NodeSelector{
+						NodeSelectorTerms: []core.NodeSelectorTerm{{
+							MatchExpressions: []core.NodeSelectorRequirement{{
+								Key:      "gpu.intel.com/xpumd-deny",
+								Operator: core.NodeSelectorOpDoesNotExist,
+							}},
+						}},
+					},
+				},
+			}
+
+			ds := deployments.XpuManagerDaemonset()
+			controller.updateDaemonSetObject(ds, cp, "", "test-otel-cm", "hash-a")
+			Expect(ds.Spec.Template.Spec.Affinity).To(Equal(cp.Spec.XpuManagerSpec.Affinity))
+
+			cp.Spec.XpuManagerSpec.Affinity = nil
+			controller.updateDaemonSetObject(ds, cp, "", "test-otel-cm", "hash-a")
+			Expect(ds.Spec.Template.Spec.Affinity).To(BeNil())
+		})
+
 		It("with custom labeling to NFD", func() {
 			cp := newCp()
 

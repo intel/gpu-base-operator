@@ -566,6 +566,36 @@ var _ = Describe("Device Plugin", func() {
 	})
 
 	Context("DaemonSet object update", func() {
+		It("sets and clears device plugin affinity", func() {
+			cp := &v1alpha.ClusterPolicy{
+				Spec: v1alpha.ClusterPolicySpec{
+					DevicePluginSpec: v1alpha.DevicePluginSpec{
+						Affinity: &v1.Affinity{
+							NodeAffinity: &v1.NodeAffinity{
+								RequiredDuringSchedulingIgnoredDuringExecution: &v1.NodeSelector{
+									NodeSelectorTerms: []v1.NodeSelectorTerm{{
+										MatchExpressions: []v1.NodeSelectorRequirement{{
+											Key:      "gpu.intel.com/xpumd-deny",
+											Operator: v1.NodeSelectorOpDoesNotExist,
+										}},
+									}},
+								},
+							},
+						},
+					},
+				},
+			}
+			controller := &DevicePluginReconciler{}
+			ds := deployments.DevicePluginDaemonset()
+
+			controller.updateDaemonSetObject(ds, cp)
+			Expect(ds.Spec.Template.Spec.Affinity).To(Equal(cp.Spec.DevicePluginSpec.Affinity))
+
+			cp.Spec.DevicePluginSpec.Affinity = nil
+			controller.updateDaemonSetObject(ds, cp)
+			Expect(ds.Spec.Template.Spec.Affinity).To(BeNil())
+		})
+
 		It("with tolerations and pullsecret", func() {
 			cp := &v1alpha.ClusterPolicy{
 				Spec: v1alpha.ClusterPolicySpec{
