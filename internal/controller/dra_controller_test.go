@@ -363,6 +363,36 @@ var _ = Describe("ClusterPolicy Controller for DRA", func() {
 	})
 
 	Context("DaemonSet object update", func() {
+		It("sets and clears DRA affinity", func() {
+			cp := &v1alpha.ClusterPolicy{
+				Spec: v1alpha.ClusterPolicySpec{
+					DynamicResourceAllocationSpec: v1alpha.DynamicResourceAllocationSpec{
+						Affinity: &v1.Affinity{
+							NodeAffinity: &v1.NodeAffinity{
+								RequiredDuringSchedulingIgnoredDuringExecution: &v1.NodeSelector{
+									NodeSelectorTerms: []v1.NodeSelectorTerm{{
+										MatchExpressions: []v1.NodeSelectorRequirement{{
+											Key:      "gpu.intel.com/xpumd-deny",
+											Operator: v1.NodeSelectorOpDoesNotExist,
+										}},
+									}},
+								},
+							},
+						},
+					},
+				},
+			}
+			controller := &DRAReconciler{}
+			ds := deployments.DynamicResourceAllocationDaemonset()
+
+			controller.updateDaemonSetObject(ds, cp)
+			Expect(ds.Spec.Template.Spec.Affinity).To(Equal(cp.Spec.DynamicResourceAllocationSpec.Affinity))
+
+			cp.Spec.DynamicResourceAllocationSpec.Affinity = nil
+			controller.updateDaemonSetObject(ds, cp)
+			Expect(ds.Spec.Template.Spec.Affinity).To(BeNil())
+		})
+
 		It("with tolerations, nodeSelector and pullsecret", func() {
 			cp := &v1alpha.ClusterPolicy{
 				Spec: v1alpha.ClusterPolicySpec{
