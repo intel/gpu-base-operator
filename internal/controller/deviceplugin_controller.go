@@ -170,6 +170,7 @@ func (r *DevicePluginReconciler) updateDaemonSetObject(ds *apps.DaemonSet, spec 
 
 	ds.Spec.Template.Spec.NodeSelector = generateNodeSelector(spec, r.Opts)
 	ds.Spec.Template.Spec.Tolerations = generateTolerations(spec)
+	ds.Spec.Template.Spec.Affinity = generateAffinity(spec.Spec.DevicePluginSpec.Affinity)
 
 	cspec := &ds.Spec.Template.Spec
 

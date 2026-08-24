@@ -91,6 +91,10 @@ type DynamicResourceAllocationSpec struct {
 	// Needed if cluster is supposed to support dynamic switching from drivers. Not needed, if hosts are
 	// preconfigured to either target KubeVirt or normal workloads.
 	ManageBinding bool `json:"manageBinding,omitempty"`
+
+	// Set optional affinities for DRA pods
+	// +optional
+	Affinity *v1.Affinity `json:"affinity,omitempty"`
 }
 
 // HealthinessSpec defines the thresholds for health monitoring.
@@ -132,6 +136,10 @@ type DevicePluginSpec struct {
 	// +kubebuilder:validation:Range=0:4
 	// +kubebuilder:validation:Default=1
 	LogLevel int32 `json:"logLevel,omitempty"`
+
+	// Set optional affinities for device plugin pods
+	// +optional
+	Affinity *v1.Affinity `json:"affinity,omitempty"`
 }
 
 // XpuManagerSpec defines the desired state of XpuManager.
@@ -151,6 +159,10 @@ type XpuManagerSpec struct {
 	// name "gpu.intel.com/monitoring" will be used.
 	// +kubebuilder:validation:Enum=i915_monitoring;xe_monitoring;monitoring
 	MonitoringResource string `json:"monitoringResource,omitempty"`
+
+	// Set optional affinities for XPU pods
+	// +optional
+	Affinity *v1.Affinity `json:"affinity,omitempty"`
 }
 
 // RegistryTLSSpec configures TLS behavior for accessing container image registries.

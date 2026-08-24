@@ -58,6 +58,14 @@ func generateTolerations(cp *v1alpha.ClusterPolicy) []core.Toleration {
 	return tolerations
 }
 
+func generateAffinity(affinity *core.Affinity) *core.Affinity {
+	if affinity != nil {
+		affinity = affinity.DeepCopy()
+	}
+
+	return affinity
+}
+
 func isClusterPolicyBeingDeleted(cp *v1alpha.ClusterPolicy) bool {
 	// CP is nil, which means the CR was deleted, so we should remove everything.
 	if cp == nil {

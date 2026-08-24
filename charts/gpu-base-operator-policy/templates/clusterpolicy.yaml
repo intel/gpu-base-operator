@@ -34,6 +34,10 @@ spec:
     plugin: {{ .Values.dp.plugin }}
     logLevel: {{ .Values.dp.logLevel }}
     byPathMode: {{ .Values.dp.byPathMode }}
+  {{- if .Values.dp.affinity }}
+    affinity:
+  {{ toYaml .Values.dp.affinity | nindent 6 }}
+  {{- end }}
 {{- if .Values.dp.allowIDs }}
     allowIDs:
 {{ toYaml .Values.dp.allowIDs | default "[]" | indent 6 }}
@@ -48,6 +52,10 @@ spec:
     logLevel: {{ .Values.dra.logLevel }}
     podHealthCheck: {{ .Values.dra.podHealthCheck | default true }}
     manageBinding: {{ .Values.dra.manageBinding | default false }}
+  {{- if .Values.dra.affinity }}
+    affinity:
+  {{ toYaml .Values.dra.affinity | nindent 6 }}
+  {{- end }}
 {{- else }}
     {{- fail "Please select either dp or dra" }}
 {{- end }}
@@ -55,6 +63,10 @@ spec:
   xpu:
     image: {{ .Values.xpu.image }}
     logLevel: {{ .Values.xpu.logLevel }}
+  {{- if .Values.xpu.affinity }}
+    affinity:
+  {{ toYaml .Values.xpu.affinity | nindent 6 }}
+  {{- end }}
 {{- if .Values.xpu.monitoringResource }}
     monitoringResource: {{ .Values.xpu.monitoringResource | quote }}
 {{- end }}
