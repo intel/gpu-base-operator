@@ -35,7 +35,7 @@ import (
 const (
 	DefaultDPImage  = "docker.io/intel/intel-gpu-plugin:0.36.0@sha256:2db679be62b52ac985169084ca711cab6e6c59fe543ab2ddee58163d6f8d29e0"
 	DefaultDRAImage = "ghcr.io/intel/intel-resource-drivers-for-kubernetes/intel-gpu-resource-driver:v0.11.0@sha256:49f38fcbee4f98d748b537b1a728a12f39e56fd208c86dc3fa32ab2162c21197"
-	DefaultXPUImage = "ghcr.io/intel/xpumanager/xpumd:v2.0.0@sha256:bd6bad4f95274832ce6863c6f7744fc73a610903617d9def2932588138be0b85"
+	DefaultXPUImage = "ghcr.io/intel/xpumanager/xpumd:v2.1.0@sha256:67b492e40dd3c99a05abac67d45f480261b4521ed4415ff49f660f2db2691263"
 )
 
 // SetupClusterPolicyWebhookWithManager registers the webhook for ClusterPolicy in the manager.
