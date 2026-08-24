@@ -409,6 +409,7 @@ func (r *XpuManagerReconciler) updateDaemonSetObject(ds *apps.DaemonSet, spec *v
 	processXpumdConfigMapMount(ds, otelConfigMapName)
 	ds.Spec.Template.Spec.NodeSelector = generateNodeSelector(spec)
 	ds.Spec.Template.Spec.Tolerations = generateTolerations(spec)
+	ds.Spec.Template.Spec.Affinity = generateAffinity(spec.Spec.XpuManagerSpec.Affinity)
 
 	cspec := &ds.Spec.Template.Spec
 

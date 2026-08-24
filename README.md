@@ -177,6 +177,7 @@ Used when `spec.resourceRegistration: dp`.
 |`spec.dp.allowIDs`|Only register GPUs whose PCI device ID is in this list. Format: `['0xabcd']`. Cannot be combined with `denyIDs`|`[]`|
 |`spec.dp.denyIDs`|Exclude GPUs whose PCI device ID is in this list. Format: `['0xabcd']`. Cannot be combined with `allowIDs`|`[]`|
 |`spec.dp.byPathMode`|Controls which DRI by-path symlinks are exposed to containers: `single`, `all`, or `none`|`single`|
+|`spec.dp.affinity`|Optional `k8s.io/api/core/v1` `Affinity` object applied to the device plugin daemon set|—|
 
 #### Dynamic Resource Allocation (`spec.dra`)
 
@@ -186,6 +187,7 @@ Used when `spec.resourceRegistration: dra`.
 |---|---|---|
 |`spec.dra.podHealthCheck`|Enable health check for DRA Pod|true|
 |`spec.dra.manageBinding`|Allow DRA plugin to manage device binding between xe/i915 and vfio drivers. Needed for dynamic switching between normal and KubeVirt workloads|`false`|
+|`spec.dra.affinity`|Optional `k8s.io/api/core/v1` `Affinity` object applied to the DRA daemon set|—|
 
 #### Health monitoring (`spec.health`)
 
@@ -203,6 +205,7 @@ Applies to both DP and DRA unless noted. Thresholds that are exceeded mark the G
 |---|---|---|
 |`spec.xpu.monitoringResource`|Set XPUMD resource for Device Plugin use.|`monitoring`|
 |`spec.xpu.configMapOverride`|Name of a ConfigMap in the operator namespace containing a custom OpenTelemetry Collector `config.yaml`|—|
+|`spec.xpu.affinity`|Optional `k8s.io/api/core/v1` `Affinity` object applied to the XPU manager daemon set|—|
 
 #### Kueue (`spec.kueue`)
 
