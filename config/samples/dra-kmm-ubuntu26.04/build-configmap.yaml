@@ -1,0 +1,70 @@
+apiVersion: v1
+data:
+  dockerfile: |
+    FROM ubuntu:26.04 AS builder
+
+    SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+    ARG KERNEL_FULL_VERSION
+    ARG XE_TAG
+    ARG XE_SHA
+    ARG FWFILES
+    ARG EXTRAMODULES
+
+    RUN apt-get update && apt-get install --no-install-recommends -y \
+        automake bc binutils bison ca-certificates coreutils debhelper devscripts \
+        flex gawk gcc git gnupg gperf kmod yacc wget make m4 patch \
+        libelf-dev \
+        linux-headers-${KERNEL_FULL_VERSION} \
+        linux-modules-${KERNEL_FULL_VERSION} \
+        && rm -rf /var/lib/apt/lists/*
+
+    WORKDIR /usr/src
+
+    RUN mkdir -p xe-backports && \
+        wget -q "https://github.com/intel-gpu/xekmd-backports/archive/refs/tags/${XE_TAG}.tar.gz" -O xe.tar.gz && \
+        echo "${XE_SHA}  xe.tar.gz" | sha256sum --check --status && \
+        tar -xzf xe.tar.gz --strip-components=1 -C xe-backports && \
+        rm -f xe.tar.gz && \
+        cd xe-backports && \
+        ./compile.sh compile && \
+        cd src && \
+        while IFS= read -r -d '' kmod; do \
+            strip --strip-debug "$kmod"; \
+            dest="/opt/lib/modules/${KERNEL_FULL_VERSION}/${kmod#./}"; \
+            mkdir -p "$(dirname "$dest")"; \
+            cp "$kmod" "$dest"; \
+        done < <(find . -name "*.ko" -print0)
+
+    # collect ko files from from the modules package and copy to /opt/lib/modules
+    RUN for mod in ${EXTRAMODULES}; do \
+            find /lib/modules/${KERNEL_FULL_VERSION} -type f -name "${mod}*.ko*" -exec sh -c ' \
+                for kmod; do \
+                    dest="/opt/lib/modules/${KERNEL_FULL_VERSION}/${kmod#./}"; \
+                    mkdir -p "$(dirname "$dest")"; \
+                    cp "$kmod" "$dest"; \
+                done' sh {} +; \
+        done
+
+    RUN mkdir -p /usr/src/firmware-out/xe && \
+        for fwfile in $FWFILES; do \
+            wget -q "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/xe/${fwfile}" -O "/usr/src/firmware-out/xe/${fwfile}"; \
+        done
+
+    FROM ubuntu:26.04 AS install
+
+    ARG KERNEL_FULL_VERSION
+
+    RUN apt-get update && apt-get install --no-install-recommends -y \
+        ca-certificates \
+        kmod \
+    && rm -rf /var/lib/apt/lists/*
+
+    COPY --from=builder /opt/lib/modules/${KERNEL_FULL_VERSION}/ /opt/lib/modules/${KERNEL_FULL_VERSION}/
+    COPY --from=builder /usr/src/firmware-out/xe/ /firmware/xe/
+
+    RUN depmod -b /opt "${KERNEL_FULL_VERSION}"
+kind: ConfigMap
+metadata:
+  name: xe-build-u26.04
+  namespace: intel-gpu-base-operator
