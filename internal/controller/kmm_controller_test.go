@@ -887,6 +887,55 @@ var _ = Describe("KMM Controller", func() {
 		})
 	})
 
+	Context("KMM nodeSelector generation", func() {
+		It("should create only requested labels", func() {
+			cp := &v1alpha.ClusterPolicy{
+				Spec: v1alpha.ClusterPolicySpec{
+					NodeSelector: map[string]string{
+						"foo": "bar",
+					},
+				},
+			}
+			ns := generateNodeSelectorDriverless(cp, ControllerOpts{})
+			for k, v := range ns {
+				switch k {
+				case "foo":
+					Expect(v).To(Equal("bar"))
+				case "kubernetes.io/arch":
+					Expect(v).To(Equal("amd64"))
+				default:
+					Fail("unexpected label in nodeSelector: " + k)
+				}
+				Expect(k).NotTo(ContainSubstring("kmm.node.kubernetes.io"))
+			}
+		})
+
+		It("should create only requested labels with NFD rule", func() {
+			cp := &v1alpha.ClusterPolicy{
+				Spec: v1alpha.ClusterPolicySpec{
+					NodeSelector: map[string]string{
+						"foo123": "bar",
+					},
+					UseNFDLabeling: true,
+				},
+			}
+			ns := generateNodeSelectorDriverless(cp, ControllerOpts{})
+			for k, v := range ns {
+				switch k {
+				case "foo123":
+					Expect(v).To(Equal("bar"))
+				case "kubernetes.io/arch":
+					Expect(v).To(Equal("amd64"))
+				case "intel.feature.node.kubernetes.io/gpu-pci":
+					Expect(v).To(Equal("true"))
+				default:
+					Fail("unexpected label in nodeSelector: " + k)
+				}
+				Expect(k).NotTo(ContainSubstring("kmm.node.kubernetes.io"))
+			}
+		})
+	})
+
 	Context("When toggling container.version between empty and non-empty", func() {
 		newReconciler := func(ns string) *KMMReconciler {
 			return &KMMReconciler{
