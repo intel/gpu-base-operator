@@ -317,6 +317,14 @@ kubectl apply -k config/samples/dra/
 
 The Intel GPU base operator supports updating the GPU firmware on the cluster nodes. The update is handled via a GPUFirmwareUpdate CRD. The update flow and details are explained in the [FW update documentation](FWUPDATE.md).
 
+## OoT Kernel driver
+
+The base operator has preliminary support to use out-of-tree Xe kernel mode driver to either add the driver where it is missing, or update the driver to a newer version.
+
+The driver is installed via the [Kernel Module Management](https://github.com/kubernetes-sigs/kernel-module-management) (KMM) operator, which must be installed to the cluster. The driver containers are always built in-cluster, so a registry that the cluster can push to is also required. Currently only Ubuntu 26.04 is supported.
+
+Details of the functionality are provided in the [OOTDRIVER.md](OOTDRIVER.md) file.
+
 ## Contributing
 
 [Contributions](CONTRIBUTING.md) to this project are welcome as issues (bugs, enhancement requests) or via pull requests. Please review our [Code of Conduct](CODE_OF_CONDUCT.md) and our note on [security policy](SECURITY.md).
