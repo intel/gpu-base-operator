@@ -166,12 +166,12 @@ var _ = Describe("Misc", func() {
 			nfr := createNfdRule(spec, "")
 			Expect(nfr).NotTo(BeNil())
 
-			Expect(nfr.Spec.Rules).To(HaveLen(9))
+			Expect(nfr.Spec.Rules).To(HaveLen(10))
 			rule := nfr.Spec.Rules[0]
 
 			checkValues(rule.MatchFeatures[0].MatchExpressions)
 
-			b60Rule := nfr.Spec.Rules[2]
+			b60Rule := nfr.Spec.Rules[3]
 			checkValuesForB60(b60Rule)
 		})
 	})
