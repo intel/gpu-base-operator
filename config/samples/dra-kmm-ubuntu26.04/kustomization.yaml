@@ -1,0 +1,7 @@
+resources:
+- ../dra
+- build-configmap.yaml
+
+patches:
+- path: clusterpolicy.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

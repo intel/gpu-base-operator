@@ -1,0 +1,47 @@
+apiVersion: intel.com/v1alpha1
+kind: ClusterPolicy
+metadata:
+  name: gpu-policy
+spec:
+  nodeSelector:
+    # example only, needs to be changed
+    gpu.intel.com/exists: "true"
+
+  kernelModule:
+    firmwarePath: /firmware
+    # Setting version opts into KMM's ordered upgrade, where the driver is only
+    # loaded on nodes carrying a matching version-module label. See OOTDRIVER.md.
+    #version: v7.1.4.6_260728.7
+    kernelMappings:
+      - build:
+          dockerfileConfigMap:
+            name: xe-build-u26.04
+          buildArgs:
+            - name: XE_TAG
+              value: xebr_v7.1.4.8_260728.8
+            - name: XE_SHA
+              value: 4b11801a7c15916ec0a8056cdb4fd64d94c6499f1b3e41847b70d2825c102db3
+            - name: FWFILES
+              value: "bmg_guc_70.bin bmg_huc.bin fan_control_8086_e20b_8086_1100.bin"
+            - name: EXTRAMODULES
+              value: "drm_dma_helper drm_buddy drm_gpuvm drm_ttm_helper drm_suballoc_helper drm_exec"
+        containerImage: "registry.local/xe-oot-kmd:v7.1.4.8_260728.8-$KERNEL_FULL_VERSION"
+        regexp: '7.0.0-.*-generic'
+        inTreeModulesToRemove: ["xe","intel_pmc_core","pmt_telemetry", "pmt_discovery", "pmt_crashlog", "pmt_class", "intel-vsec"]
+
+    modulesLoadingOrder:
+      - "xe"
+      - "pmt-telemetry"
+      - "pmt-discovery"
+      - "pmt-crashlog"
+      - "pmt-class"
+      - "intel-vsec"
+      - "drm_dma_helper"
+      - "drm_buddy"
+      - "drm_gpuvm"
+      - "gpu-sched"
+      - "drm_ttm_helper"
+      - "xe-compat"
+      - "ttm"
+      - "drm_suballoc_helper"
+

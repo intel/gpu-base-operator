@@ -33,7 +33,7 @@ A few ClusterPolicy fields are shared with the Module:
 
 Currently base operator only supports KMM's in-cluster builds. There are no prebuilt kernel mode driver (KMD) containers available. To leverage the OoT KMD, one has to have access to a registry that is used to store the KMD containers.
 
-To leverage base operator's KMM integration, fill in `kernelModule` object in the ClusterPolicy CR. There is an incomplete sample for Ubuntu 26.04 [here](config/samples/dra-kmmo-ubuntu26.04/). Incomplete means that the container registry, pull secret and nodeSelector are not properly set and need to be filled.
+To leverage base operator's KMM integration, fill in `kernelModule` object in the ClusterPolicy CR. There is an incomplete sample for Ubuntu 26.04 [here](config/samples/dra-kmm-ubuntu26.04/). Incomplete means that the container registry, pull secret and nodeSelector are not properly set and need to be filled.
 
 ### pullSecret
 
