@@ -126,6 +126,23 @@ var _ = AfterSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 })
 
+// goModDir returns the module cache directory of the given module. '-mod=mod' is
+// required because 'go list -m' reports an empty directory in vendor mode, and the
+// module's non-Go files (e.g. CRD manifests) are not copied into 'vendor/' anyway.
+func goModDir(module string) string {
+	out, err := exec.Command("go", "list", "-mod=mod", "-m", "-f", "{{.Dir}}", module).Output()
+	if err != nil {
+		panic(fmt.Sprintf("failed to resolve module directory for %s: %v", module, err))
+	}
+
+	dir := strings.TrimSpace(string(out))
+	if dir == "" {
+		panic(fmt.Sprintf("empty module directory for %s, run 'go mod download %s'", module, module))
+	}
+
+	return dir
+}
+
 // getFirstFoundEnvTestBinaryDir locates the first binary in the specified path.
 // ENVTEST-based tests depend on specific binaries, usually located in paths set by
 // controller-runtime. When running tests directly (e.g., via an IDE) without using
@@ -134,14 +151,6 @@ var _ = AfterSuite(func() {
 // This function streamlines the process by finding the required binaries, similar to
 // setting the 'KUBEBUILDER_ASSETS' environment variable. To ensure the binaries are
 // properly set up, run 'make setup-envtest' beforehand.
-func goModDir(module string) string {
-	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", module).Output()
-	if err != nil {
-		panic(fmt.Sprintf("failed to resolve module directory for %s: %v", module, err))
-	}
-	return strings.TrimSpace(string(out))
-}
-
 func getFirstFoundEnvTestBinaryDir() string {
 	basePath := filepath.Join("..", "..", "bin", "k8s")
 	entries, err := os.ReadDir(basePath)
