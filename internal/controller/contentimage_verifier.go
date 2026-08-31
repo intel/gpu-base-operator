@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path"
 	"strings"
 
 	"github.com/google/go-containerregistry/pkg/authn"
@@ -34,14 +35,44 @@ import (
 	core "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	v1alpha "github.com/intel/gpu-base-operator/api/v1alpha1"
 )
 
-// ContentImageVerifier checks whether the firmware content image is reachable and,
-// when checksums are declared, verifies each file's SHA256 against the image contents.
+// ContentImageVerifier checks whether an image is reachable and, when checksums are declared,
+// verifies each file's SHA256 against the image contents.
 type ContentImageVerifier interface {
-	Verify(ctx context.Context, spec *v1alpha.GPUFirmwareUpdateSpec) error
+	VerifyImage(ctx context.Context, req ImageVerifyRequest) error
+}
+
+// ImageVerifyRequest describes one image to check. Callers assemble it from wherever they keep
+// their image reference and pull settings, so a caller holding several images in unrelated fields
+// can ask for a different depth of check for each.
+type ImageVerifyRequest struct {
+	// Image is the reference to check.
+	Image string
+
+	// PullSecret names a dockerconfigjson Secret in the operator namespace, or "" to use the
+	// ambient keychain.
+	PullSecret string
+
+	// InsecureSkipTLSVerify disables registry certificate validation.
+	InsecureSkipTLSVerify bool
+
+	// Files, when non-empty must exist in the image, and are SHA256-verified wherever a checksum is declared.
+	// If no files are declared, only the image reference is checked for reachability and authentication.
+	Files []ImageFile
+}
+
+// ImageFile is a file the verifier expects to find in the image. It is deliberately not an API
+// type: the verifier only ever needs a name and an optional checksum, so callers convert from
+// whatever their CRD happens to call those fields.
+type ImageFile struct {
+	// Name is the file's path in the image's merged filesystem, e.g. "/fwupdate/gfx.bin".
+	// A leading "/" or "./" is optional.
+	Name string
+
+	// Checksum is the expected SHA256 as "sha256:<64 hex characters>". Empty means the file's
+	// existence is checked but its contents are not.
+	Checksum string
 }
 
 // DefaultContentImageVerifier implements ContentImageVerifier using the OCI registry API.
@@ -57,15 +88,16 @@ func newContentImageVerifier(k8sReader client.Reader, namespace string) ContentI
 	}
 }
 
-// Verify checks image reachability. All files are checked for existence. If a file declares a Checksum, the
-// checksum is verified against the /fwupdate/<filename> content.
-func (v *DefaultContentImageVerifier) Verify(ctx context.Context, spec *v1alpha.GPUFirmwareUpdateSpec) error {
-	ref, err := name.ParseReference(spec.Content.ContainerImage)
+// VerifyImage checks one image against the registry. With no Files it confirms only that the
+// reference parses, authenticates and resolves. With Files it additionally streams the merged
+// filesystem and checks each named file exists, verifying SHA256 where declared.
+func (v *DefaultContentImageVerifier) VerifyImage(ctx context.Context, req ImageVerifyRequest) error {
+	ref, err := name.ParseReference(req.Image)
 	if err != nil {
-		return fmt.Errorf("invalid content image reference %q: %w", spec.Content.ContainerImage, err)
+		return fmt.Errorf("invalid content image reference %q: %w", req.Image, err)
 	}
 
-	keychain, err := v.buildKeychain(ctx, spec.ImagePullSecret)
+	keychain, err := v.buildKeychain(ctx, req.PullSecret)
 	if err != nil {
 		return fmt.Errorf("failed to build registry auth: %w", err)
 	}
@@ -75,7 +107,7 @@ func (v *DefaultContentImageVerifier) Verify(ctx context.Context, spec *v1alpha.
 		remote.WithContext(ctx),
 	}
 
-	if spec.InsecureSkipTLSVerify {
+	if req.InsecureSkipTLSVerify {
 		defaultTransport, ok := http.DefaultTransport.(*http.Transport)
 		if !ok {
 			return fmt.Errorf("unexpected default transport type: %T", http.DefaultTransport)
@@ -94,10 +126,21 @@ func (v *DefaultContentImageVerifier) Verify(ctx context.Context, spec *v1alpha.
 		remoteOpts = append(remoteOpts, remote.WithTransport(insecureTransport))
 	}
 
+	// Reachability only: resolve the manifest and stop. Deliberately not remote.Image followed by
+	// an export — that would download every layer to answer a question the descriptor already
+	// answers, and the caller asking for this depth has no file it wants to look at.
+	if len(req.Files) == 0 {
+		if _, err := remote.Head(ref, remoteOpts...); err != nil {
+			return fmt.Errorf("failed to resolve content image %q: %w", req.Image, err)
+		}
+
+		return nil
+	}
+
 	// Full checksum verification: pull and stream the merged filesystem.
 	img, err := remote.Image(ref, remoteOpts...)
 	if err != nil {
-		return fmt.Errorf("failed to pull content image %q: %w", spec.Content.ContainerImage, err)
+		return fmt.Errorf("failed to pull content image %q: %w", req.Image, err)
 	}
 
 	pr, pw := io.Pipe()
@@ -112,7 +155,7 @@ func (v *DefaultContentImageVerifier) Verify(ctx context.Context, spec *v1alpha.
 		}
 	}()
 
-	verifyErr := verifyChecksumsFromExport(pr, spec.Content.Files)
+	verifyErr := verifyChecksumsFromExport(pr, req.Files)
 
 	// Closing the read end unblocks the export goroutine if it is still running.
 	if closeErr := pr.Close(); closeErr != nil && verifyErr == nil {
@@ -123,15 +166,21 @@ func (v *DefaultContentImageVerifier) Verify(ctx context.Context, spec *v1alpha.
 }
 
 // verifyChecksumsFromExport reads a merged-filesystem tar (as produced by crane.Export)
-// and checks that each firmware file is present. If a firmware file declares a Checksum,
-// it verifies the SHA256 of that file.
+// and checks that each file is present. If a file declares a Checksum, it verifies the
+// SHA256 of that file.
 // It returns a distinct error for a missing file versus a checksum mismatch.
-func verifyChecksumsFromExport(tarStream io.Reader, files []v1alpha.GPUFirmwareFile) error {
+func verifyChecksumsFromExport(tarStream io.Reader, files []ImageFile) error {
 	want := make(map[string]string, len(files))
 
 	for _, f := range files {
+		n := normalizeImagePath(f.Name)
+
+		if _, exists := want[n]; exists {
+			return fmt.Errorf("duplicate file %q in verification request", f.Name)
+		}
+
 		// Empty Checksum is treated as "not available"
-		want[f.FileName] = f.Checksum
+		want[n] = f.Checksum
 	}
 
 	found := map[string]bool{}
@@ -148,13 +197,7 @@ func verifyChecksumsFromExport(tarStream io.Reader, files []v1alpha.GPUFirmwareF
 			return fmt.Errorf("error reading image filesystem: %w", err)
 		}
 
-		// crane.Export paths look like "fwupdate/file.bin" or "./fwupdate/file.bin".
-		base := strings.TrimPrefix(hdr.Name, "./")
-		if !strings.HasPrefix(base, "fwupdate/") {
-			continue
-		}
-
-		base = strings.TrimPrefix(base, "fwupdate/")
+		base := normalizeImagePath(hdr.Name)
 
 		expected, ok := want[base]
 		if !ok {
@@ -163,7 +206,7 @@ func verifyChecksumsFromExport(tarStream io.Reader, files []v1alpha.GPUFirmwareF
 
 		if expected != "" {
 			if hdr.Typeflag != tar.TypeReg {
-				return fmt.Errorf("firmware file %q found in image but is not a regular file", base)
+				return fmt.Errorf("file %q found in image but is not a regular file", base)
 			}
 
 			h := sha256.New()
@@ -191,11 +234,18 @@ func verifyChecksumsFromExport(tarStream io.Reader, files []v1alpha.GPUFirmwareF
 
 	for filename := range want {
 		if !found[filename] {
-			return fmt.Errorf("firmware file %q not found under /fwupdate/ in the content image", filename)
+			return fmt.Errorf("file %q not found in the content image", filename)
 		}
 	}
 
 	return nil
+}
+
+// normalizeImagePath makes tar entry names and requested file names comparable. crane.Export
+// writes paths as "fwupdate/file.bin" or "./fwupdate/file.bin", while a caller naming a file in
+// the image is likely to write "/fwupdate/file.bin".
+func normalizeImagePath(p string) string {
+	return strings.TrimPrefix(path.Clean("/"+p), "/")
 }
 
 // dockerConfigJSON mirrors the .dockerconfigjson secret format.

@@ -310,8 +310,20 @@ func (r *GPUFirmwareUpdateReconciler) selectNodesToUpdate(ctx context.Context, f
 	return selected
 }
 
+// verifyContentImage checks that the firmware content image is reachable and that every declared
+// firmware file exists in it, verifying the SHA256 of the files that declare a checksum.
 func (r *GPUFirmwareUpdateReconciler) verifyContentImage(ctx context.Context, fu *intelcomv1alpha1.GPUFirmwareUpdate) error {
-	return r.imgVerify.Verify(ctx, &fu.Spec)
+	files := make([]ImageFile, 0, len(fu.Spec.Content.Files))
+	for _, fw := range fu.Spec.Content.Files {
+		files = append(files, ImageFile{Name: fmt.Sprintf("/fwupdate/%s", fw.FileName), Checksum: fw.Checksum})
+	}
+
+	return r.imgVerify.VerifyImage(ctx, ImageVerifyRequest{
+		Image:                 fu.Spec.Content.ContainerImage,
+		PullSecret:            fu.Spec.ImagePullSecret,
+		InsecureSkipTLSVerify: fu.Spec.InsecureSkipTLSVerify,
+		Files:                 files,
+	})
 }
 
 func (r *GPUFirmwareUpdateReconciler) beginUpdate(ctx context.Context, fu *intelcomv1alpha1.GPUFirmwareUpdate) (ctrl.Result, error) {
