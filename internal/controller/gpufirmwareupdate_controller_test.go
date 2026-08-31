@@ -306,9 +306,9 @@ var _ = Describe("GPUFirmwareUpdate Controller", func() {
 			// Create a fake client with a mock Update function
 			fakeClient = fake.NewClientBuilder().
 				WithScheme(scheme).
+				WithIndex(&core.Pod{}, podNodeNameIndex, indexPodByNodeName).
 				WithObjects(objs...).
 				WithObjects(nodes[0], nodes[1]).
-				WithIndex(&core.Pod{}, "spec.nodeName", podIndexerFunc).
 				WithStatusSubresource(&intelcomv1alpha1.GPUFirmwareUpdate{}).
 				Build()
 
@@ -671,6 +671,12 @@ var _ = Describe("GPUFirmwareUpdate Controller", func() {
 			err = fakeClient.Get(ctx, types.NamespacedName{Name: "pod-4", Namespace: "default"}, &core.Pod{})
 			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "Pod-4 on the draining node should be evicted")
 
+			// A firmware update drains GPU pods only. Pod-2 requests no GPU and holds no claim,
+			// so it must survive: gpuPodsOnNode is shared with a full-node drain and this pins
+			// which of the two policies the firmware update still uses.
+			Expect(fakeClient.Get(ctx, types.NamespacedName{Name: "pod-2", Namespace: "default"}, &core.Pod{})).
+				To(Succeed(), "Pod-2 requests no GPU and must not be evicted by a firmware update")
+
 			// DRAINING IN PROGRESS RECONCILE
 
 			ret, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -830,7 +836,7 @@ var _ = Describe("GPUFirmwareUpdate Controller Errors", func() {
 			// Create a fake client with a mock Update function
 			fakeClient = fake.NewClientBuilder().
 				WithScheme(scheme).
-				WithIndex(&core.Pod{}, "spec.nodeName", podIndexerFunc).
+				WithIndex(&core.Pod{}, podNodeNameIndex, indexPodByNodeName).
 				WithStatusSubresource(&intelcomv1alpha1.GPUFirmwareUpdate{}).
 				Build()
 
@@ -931,7 +937,7 @@ var _ = Describe("GPUFirmwareUpdate Controller Errors", func() {
 
 			fakeClient = fake.NewClientBuilder().
 				WithScheme(oldScheme).
-				WithIndex(&core.Pod{}, "spec.nodeName", podIndexerFunc).
+				WithIndex(&core.Pod{}, podNodeNameIndex, indexPodByNodeName).
 				WithObjects(nodes[0], nodes[1]).
 				WithStatusSubresource(&intelcomv1alpha1.GPUFirmwareUpdate{}).
 				WithInterceptorFuncs(
@@ -1138,7 +1144,7 @@ var _ = Describe("verifyContentImage via beginUpdate", func() {
 
 		fakeClient = fake.NewClientBuilder().
 			WithScheme(scheme).
-			WithIndex(&core.Pod{}, "spec.nodeName", podIndexerFunc).
+			WithIndex(&core.Pod{}, podNodeNameIndex, indexPodByNodeName).
 			WithStatusSubresource(&intelcomv1alpha1.GPUFirmwareUpdate{}).
 			Build()
 
