@@ -81,4 +81,12 @@ var _ = Describe("ContentImageVerifier", func() {
 			Expect(kc).To(BeNil())
 		})
 	})
+
+	Context("normalize image path", func() {
+		It("should normalize image path", func() {
+			Expect(normalizeImagePath("/fwupdate/file.bin")).To(Equal("fwupdate/file.bin"))
+			Expect(normalizeImagePath("./fwupdate/file.bin")).To(Equal("fwupdate/file.bin"))
+			Expect(normalizeImagePath("fwupdate/file.bin")).To(Equal("fwupdate/file.bin"))
+		})
+	})
 })

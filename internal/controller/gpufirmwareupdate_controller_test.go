@@ -269,12 +269,16 @@ func (mlr *MockLogRetriever) RetrieveLogsForPodContainer(ctx context.Context, po
 	}, nil
 }
 
-// fakeContentImageVerifier is a test double for ContentImageVerifier.
+// fakeContentImageVerifier is a test double for ContentImageVerifier. requests records the
+// VerifyImage calls so a test can assert on the depth of check that was asked for.
 type fakeContentImageVerifier struct {
-	err error
+	err      error
+	requests []ImageVerifyRequest
 }
 
-func (f *fakeContentImageVerifier) Verify(_ context.Context, _ *intelcomv1alpha1.GPUFirmwareUpdateSpec) error {
+func (f *fakeContentImageVerifier) VerifyImage(_ context.Context, req ImageVerifyRequest) error {
+	f.requests = append(f.requests, req)
+
 	return f.err
 }
 
@@ -1048,8 +1052,8 @@ var _ = Describe("verifyChecksumsFromExport", func() {
 
 	It("passes when all declared checksums match", func() {
 		content := []byte("firmware binary data")
-		files := []intelcomv1alpha1.GPUFirmwareFile{
-			{Type: "GFX", FileName: "gfx.bin", Checksum: sha256Of(content)},
+		files := []ImageFile{
+			{Name: "/fwupdate/gfx.bin", Checksum: sha256Of(content)},
 		}
 
 		err := verifyChecksumsFromExport(makeTar(map[string][]byte{"gfx.bin": content}), files)
@@ -1058,9 +1062,9 @@ var _ = Describe("verifyChecksumsFromExport", func() {
 
 	It("passes when some files have no checksum (those are skipped)", func() {
 		content := []byte("firmware binary data")
-		files := []intelcomv1alpha1.GPUFirmwareFile{
-			{Type: "GFX", FileName: "gfx.bin", Checksum: sha256Of(content)},
-			{Type: "GFX_DATA", FileName: "gfxdata.bin"}, // no checksum — skipped
+		files := []ImageFile{
+			{Name: "/fwupdate/gfx.bin", Checksum: sha256Of(content)},
+			{Name: "/fwupdate/gfxdata.bin"}, // no checksum — skipped
 		}
 		tarFiles := map[string][]byte{
 			"gfx.bin":     content,
@@ -1072,8 +1076,8 @@ var _ = Describe("verifyChecksumsFromExport", func() {
 	})
 
 	It("returns a mismatch error when checksum does not match", func() {
-		files := []intelcomv1alpha1.GPUFirmwareFile{
-			{Type: "GFX", FileName: "gfx.bin", Checksum: sha256Of([]byte("correct data"))},
+		files := []ImageFile{
+			{Name: "/fwupdate/gfx.bin", Checksum: sha256Of([]byte("correct data"))},
 		}
 
 		err := verifyChecksumsFromExport(makeTar(map[string][]byte{"gfx.bin": []byte("wrong data")}), files)
@@ -1083,8 +1087,8 @@ var _ = Describe("verifyChecksumsFromExport", func() {
 	})
 
 	It("returns a distinct error when a declared file is absent from the image", func() {
-		files := []intelcomv1alpha1.GPUFirmwareFile{
-			{Type: "GFX", FileName: "missing.bin", Checksum: sha256Of([]byte("data"))},
+		files := []ImageFile{
+			{Name: "/fwupdate/missing.bin", Checksum: sha256Of([]byte("data"))},
 		}
 
 		err := verifyChecksumsFromExport(makeTar(map[string][]byte{"other.bin": []byte("data")}), files)
@@ -1095,8 +1099,8 @@ var _ = Describe("verifyChecksumsFromExport", func() {
 
 	It("ignores files outside the fwupdate/ directory", func() {
 		content := []byte("firmware")
-		files := []intelcomv1alpha1.GPUFirmwareFile{
-			{Type: "GFX", FileName: "gfx.bin", Checksum: sha256Of(content)},
+		files := []ImageFile{
+			{Name: "/fwupdate/gfx.bin", Checksum: sha256Of(content)},
 		}
 		// Tar contains the file at the correct path AND a decoy at the wrong path.
 		buf := &bytes.Buffer{}
