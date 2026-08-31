@@ -69,6 +69,48 @@ type requeueReconcileErr struct {
 	error
 }
 
+// Is makes errors.Is(err, requeueReconcileErr{}) match any requeueReconcileErr, not just
+// the zero value. Without it errors.Is falls back to == comparison, so a
+// requeueReconcileErr wrapping a real error would never be recognised as a requeue
+// request and would be reported as a reconcile failure instead.
+func (requeueReconcileErr) Is(target error) bool {
+	_, ok := target.(requeueReconcileErr)
+
+	return ok
+}
+
+// Error tolerates a nil wrapped error. Sub-controllers return a bare requeueReconcileErr{}
+// when they only need another pass and have no failure to report, and the promoted Error
+// method would dereference that nil.
+func (e requeueReconcileErr) Error() string {
+	if e.error == nil {
+		return "sub-controller requested a requeue"
+	}
+
+	return e.error.Error()
+}
+
+// Unwrap exposes the wrapped cause to errors.As and errors.Unwrap. A bare requeue request
+// returns nil, which simply terminates the chain.
+func (e requeueReconcileErr) Unwrap() error {
+	return e.error
+}
+
+// logRequeue logs a sub-controller's requeue request under msg, appending the wrapped cause
+// when the request carried one. Without this the cause would be dropped: the requeue path
+// returns a nil error, so nothing else reports it.
+func logRequeue(err error, msg string) {
+	var requeueErr requeueReconcileErr
+
+	if errors.As(err, &requeueErr) && requeueErr.error != nil {
+		klog.Infof("%s: %v", msg, requeueErr.error)
+
+		return
+	}
+
+	klog.Info(msg)
+}
+
 type SubControllerInterface interface {
 	Reconcile(ctx context.Context, cp *v1alpha.ClusterPolicy) (ctrl.Result, error)
 }
@@ -216,7 +258,7 @@ func (r *ClusterPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		for _, subController := range subControllers {
 			if ret, err := subController.Reconcile(ctx, cp); err != nil {
 				if errors.Is(err, requeueReconcileErr{}) {
-					klog.Info("Requeueing deletion reconciliation after sub-controller request")
+					logRequeue(err, "Requeueing deletion reconciliation after sub-controller request")
 
 					return ret, nil
 				}
@@ -247,7 +289,8 @@ func (r *ClusterPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	for _, subController := range subControllers {
 		if ret, err := subController.Reconcile(ctx, cp); err != nil {
 			if errors.Is(err, requeueReconcileErr{}) {
-				klog.Info("Requeueing reconciliation after sub-controller request")
+				logRequeue(err, "Requeueing reconciliation after sub-controller request")
+
 				return ret, nil
 			}
 

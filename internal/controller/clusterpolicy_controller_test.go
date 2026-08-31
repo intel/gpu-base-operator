@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"time"
 
@@ -371,5 +372,68 @@ var _ = Describe("draPodToClusterPolicy", func() {
 
 		reqs := r.draPodToClusterPolicy(context.Background(), nil)
 		Expect(reqs).To(BeNil())
+	})
+})
+
+var _ = Describe("requeueReconcileErr", func() {
+	cause := stderrors.New("waiting for resource claims to drain")
+
+	Context("sentinel matching", func() {
+		It("matches a bare requeue request", func() {
+			Expect(stderrors.Is(error(requeueReconcileErr{}), requeueReconcileErr{})).To(BeTrue())
+		})
+
+		It("matches a requeue request carrying a cause", func() {
+			// Without the Is method errors.Is falls back to == against the zero value,
+			// so this would be misreported as a reconcile failure.
+			Expect(stderrors.Is(error(requeueReconcileErr{cause}), requeueReconcileErr{})).To(BeTrue())
+		})
+
+		It("matches through an additional wrap", func() {
+			err := fmt.Errorf("dra sub-controller: %w", requeueReconcileErr{cause})
+			Expect(stderrors.Is(err, requeueReconcileErr{})).To(BeTrue())
+		})
+
+		It("does not match an unrelated error", func() {
+			Expect(stderrors.Is(cause, requeueReconcileErr{})).To(BeFalse())
+		})
+	})
+
+	Context("Error", func() {
+		It("describes a bare requeue request without dereferencing the nil cause", func() {
+			err := error(requeueReconcileErr{})
+
+			Expect(err.Error()).NotTo(BeEmpty())
+			// fmt recovers a panicking Error method and renders a PANIC marker instead
+			// of crashing, so assert on the formatted output rather than on a panic.
+			Expect(fmt.Sprintf("%v", err)).NotTo(ContainSubstring("PANIC"))
+		})
+
+		It("reports the cause when one was wrapped", func() {
+			Expect(error(requeueReconcileErr{cause}).Error()).To(Equal(cause.Error()))
+		})
+	})
+
+	Context("Unwrap", func() {
+		It("returns nil for a bare requeue request", func() {
+			Expect(stderrors.Unwrap(error(requeueReconcileErr{}))).To(Succeed())
+		})
+
+		It("exposes the cause to errors.As", func() {
+			var requeueErr requeueReconcileErr
+
+			err := fmt.Errorf("dra sub-controller: %w", requeueReconcileErr{cause})
+
+			Expect(stderrors.As(err, &requeueErr)).To(BeTrue())
+			Expect(requeueErr.Unwrap()).To(Equal(cause))
+		})
+	})
+
+	Context("logRequeue", func() {
+		It("handles a requeue request with and without a cause", func() {
+			Expect(func() { logRequeue(requeueReconcileErr{}, "requeueing") }).NotTo(Panic())
+			Expect(func() { logRequeue(requeueReconcileErr{cause}, "requeueing") }).NotTo(Panic())
+			Expect(func() { logRequeue(cause, "requeueing") }).NotTo(Panic())
+		})
 	})
 })
