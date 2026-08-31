@@ -30,4 +30,12 @@ resources:
   webhooks:
     validation: true
     webhookVersion: v1
+- api:
+    crdVersion: v1
+    namespaced: false
+  controller: true
+  domain: intel.com
+  kind: GPURecoveryPlan
+  path: github.com/intel/gpu-base-operator/api/v1alpha1
+  version: v1alpha1
 version: "3"

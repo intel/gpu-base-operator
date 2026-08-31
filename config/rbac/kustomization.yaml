@@ -24,6 +24,9 @@ resources:
 # default, aiding admins in cluster management. Those roles are
 # not used by the intel-gpu-base-operator itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
+- gpurecoveryplan_admin_role.yaml
+- gpurecoveryplan_editor_role.yaml
+- gpurecoveryplan_viewer_role.yaml
 - gpufirmwareupdate_admin_role.yaml
 - gpufirmwareupdate_editor_role.yaml
 - gpufirmwareupdate_viewer_role.yaml

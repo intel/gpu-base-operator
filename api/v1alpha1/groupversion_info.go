@@ -42,6 +42,8 @@ func addKnownTypes(s *runtime.Scheme) error {
 		&ClusterPolicyList{},
 		&GPUFirmwareUpdate{},
 		&GPUFirmwareUpdateList{},
+		&GPURecoveryPlan{},
+		&GPURecoveryPlanList{},
 	)
 	metav1.AddToGroupVersion(s, GroupVersion)
 

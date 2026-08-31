@@ -4,6 +4,7 @@
 resources:
 - bases/intel.com_clusterpolicies.yaml
 - bases/intel.com_gpufirmwareupdates.yaml
+- bases/intel.com_gpurecoveryplans.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

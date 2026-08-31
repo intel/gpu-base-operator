@@ -1,0 +1,88 @@
+apiVersion: intel.com/v1alpha1
+kind: GPURecoveryPlan
+metadata:
+  labels:
+    app.kubernetes.io/name: intel-gpu-base-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: gpurecoveryplan-sample
+spec:
+  deviceId: "0xe20b"
+
+  # Mandatory. Which reset works is a property of the platform, not of the fault: use slot — the
+  # PCIe slot power cycle, also called the PM reset — where the slots support hot-plug, and amc
+  # where they do not. The DRA driver only reports "needs a reset", so this is the operator's only
+  # way to know which one to run, and getting it wrong is silent: the Job runs a reset the platform
+  # cannot perform, exits 0, and the event succeeds with the GPU still broken.
+  # sbr is not accepted here — it is the per-card backup, reached through an approval's override
+  # when the platform's normal reset does not revive one particular GPU.
+  defaultResetType: "slot"
+
+  # The node drain that runs before a reset. None of it applies to a reflash: that writes firmware to
+  # a card which is already unusable without driving the PCIe bus, so it never drains.
+  drain:
+    # Turning the drain off means a reset can hit the bus while workloads are still running on the
+    # node. Prefer namespacesToSkip below if the problem is one namespace that will not drain.
+    # enable: true
+
+    # How long a reset waits for the node to empty. When it expires the event fails with
+    # drain-timeout and status.events[].podsBlockingDrain names what it was still waiting on.
+    # timeoutSeconds: 300
+
+    # Namespaces the drain leaves alone: their pods are neither evicted nor waited for. Intended for
+    # node-level infrastructure that is fine to keep running through a reset and that would otherwise
+    # stall the drain — a PodDisruptionBudget with nowhere to reschedule, or a pod no controller
+    # recreates. The operator's own namespace is always skipped and does not need listing, and
+    # DaemonSet and static pods are skipped regardless of namespace.
+    #
+    # This exempts a namespace from the *drain*, not from the reset: its pods stay on the node
+    # through the PCIe reset. So do not list namespaces that run GPU workloads — including ones
+    # holding a GPU through a DRA claim, which is not waited for either when the only pods reserving
+    # it are ones this list keeps on the node.
+    # namespacesToSkip:
+    #   - kube-system
+    #   - cert-manager
+
+  # How long a recovery Job itself may run before Kubernetes kills it (the Job's
+  # activeDeadlineSeconds). Separate from drain.timeoutSeconds above, which bounds only the wait for
+  # the node to empty. How long the hardware takes is a property of the platform — a chassis slow to
+  # re-enumerate a power-cycled slot, an FDO flash over a slow SPI part — and a deadline that expires
+  # early is not a harmless retry: the Job is killed mid-operation and the event fails over a card
+  # that was in fact recovering. Raising these only costs time before a genuine failure is reported,
+  # so err high where the numbers are uncertain.
+  # timeouts:
+  #   resetSeconds: 300     # sbr, slot, amc
+  #   reflashSeconds: 600   # includes copying the firmware out of the firmware image
+
+  # The xpu-smi image every recovery Job runs, for both the resets and the reflash.
+  xpuSmi:
+    image: "docker.io/intel/gpu-fwupdater-mock:devel"
+    pullPolicy: "Always"
+
+    # Skip registry certificate validation for the operator's pre-flight check on the image
+    # above. Needed where the registry serves a self-signed or private-CA certificate — but only
+    # for the operator's own check: the node still has to trust that registry (or have it listed
+    # as an insecure one) for the kubelet to pull the image.
+    # insecureSkipTLSVerify: false
+
+  # The image to flash onto a GPU that has entered FDO mode. Always flashed as firmware type
+  # FDO — the only type that can revive such a card — so no type is configurable here.
+  firmware:
+    source:
+      containerSource:
+        name: "docker.io/intel/intel-gpu-fw-binaries:devel"
+
+        # Same as spec.xpuSmi.insecureSkipTLSVerify, and separate from it because the known good
+        # firmware for one card model often lives on an internal registry while xpu-smi comes
+        # from a public one.
+        # insecureSkipTLSVerify: false
+
+    file: "gpu_firmware.bin"
+
+  # Both images above are resolved against their registry before any recovery Job is created, so
+  # an unpullable reference holds the event at waiting-approval — with its approval retained and
+  # the reason in that event's status.events[].stateMessage, as well as in the plan-wide
+  # status.messages — instead of producing a Job that reports in-progress from
+  # ImagePullBackOff. The check runs once per spec version: correcting the plan is what makes the
+  # operator look again. Set this only where the nodes hold pull credentials the operator cannot
+  # see, which would make the check stricter than the pull it predicts.
+  # skipImageVerification: false
