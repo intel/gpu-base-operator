@@ -403,6 +403,7 @@ endif
 crdsync: generate manifests
 	cp config/crd/bases/intel.com_clusterpolicies.yaml charts/gpu-base-operator/crds/clusterpolicies.yaml
 	cp config/crd/bases/intel.com_gpufirmwareupdates.yaml charts/gpu-base-operator/crds/gpufirmwareupdates.yaml
+	cp config/crd/bases/intel.com_gpurecoveryplans.yaml charts/gpu-base-operator/crds/gpurecoveryplans.yaml
 
 .PHONY: check-generated-files
 check-generated-files: crdsync

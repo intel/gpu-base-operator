@@ -1,0 +1,550 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.18.0
+  name: gpurecoveryplans.intel.com
+spec:
+  group: intel.com
+  names:
+    kind: GPURecoveryPlan
+    listKind: GPURecoveryPlanList
+    plural: gpurecoveryplans
+    singular: gpurecoveryplan
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.deviceId
+      name: DeviceID
+      type: string
+    - jsonPath: .status.state
+      name: State
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: GPURecoveryPlan is the Schema for the gpurecoveryplans API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: GPURecoveryPlanSpec defines the desired state of GPURecoveryPlan.
+            properties:
+              approvals:
+                description: |-
+                  Approvals contains admin-provided authorisations for specific or grouped recovery events.
+                  The operator generates an ID for any entry that is missing one.
+                items:
+                  description: |-
+                    RecoveryApproval authorises one or more recovery events.
+                    Exactly one of EventID or Selector must be set.
+                    An approval is active as long as it exists in the list and Consumed is false.
+                  properties:
+                    comment:
+                      description: Comment is an optional human-readable note about
+                        why this approval was granted.
+                      type: string
+                    consumed:
+                      description: |-
+                        Consumed is set to true by the operator after a non-persistent approval has been
+                        matched and acted upon. Persistent approvals are never consumed.
+                      type: boolean
+                    eventId:
+                      description: |-
+                        EventID references a specific event by its status.events[].id.
+                        Mutually exclusive with Selector.
+                      type: string
+                    id:
+                      description: |-
+                        ID is the unique identifier for this approval entry.
+                        The operator generates an ID when this field is empty.
+                      type: string
+                    override:
+                      description: |-
+                        Override substitutes a different recovery type than the system recommendation.
+                        When set on an EventID approval, the system records the original suggestion in
+                        status.events[].recoveryType.suggestedType for audit purposes.
+                      properties:
+                        recoveryType:
+                          allOf:
+                          - enum:
+                            - sbr
+                            - slot
+                            - amc
+                            - reflash
+                          - enum:
+                            - sbr
+                            - slot
+                            - amc
+                            - reflash
+                          description: RecoveryType is the recovery operation to use
+                            instead of the system suggestion.
+                          type: string
+                      required:
+                      - recoveryType
+                      type: object
+                    persistent:
+                      description: |-
+                        Persistent keeps this approval alive after matched events are processed so that
+                        future events matching the Selector are approved automatically.
+                        Only meaningful when Selector is set.
+                      type: boolean
+                    selector:
+                      description: |-
+                        Selector applies this approval to all currently matching events.
+                        Mutually exclusive with EventID.
+                      properties:
+                        nodeName:
+                          description: NodeName selects events on a specific node.
+                          type: string
+                        nodeSelector:
+                          additionalProperties:
+                            type: string
+                          description: NodeSelector selects events on nodes that have
+                            all given labels.
+                          type: object
+                        recoveryType:
+                          allOf:
+                          - enum:
+                            - sbr
+                            - slot
+                            - amc
+                            - reflash
+                          - enum:
+                            - sbr
+                            - slot
+                            - amc
+                            - reflash
+                          description: RecoveryType selects events whose suggested
+                            recovery type matches.
+                          type: string
+                      type: object
+                  type: object
+                type: array
+              defaultResetType:
+                allOf:
+                - enum:
+                  - sbr
+                  - slot
+                  - amc
+                  - reflash
+                - enum:
+                  - slot
+                  - amc
+                description: |-
+                  DefaultResetType is the reset the operator runs for every reset-type recovery event it
+                  creates on this plan. Either "slot" (PCIe slot power cycle, also called the PM reset) or
+                  "amc" (out-of-band reset through the card's AMC).
+                type: string
+              deviceId:
+                description: 'DeviceID is the mandatory PCI device ID of the target
+                  GPU. Format: ''0x'' followed by 4 hex digits.'
+                pattern: ^0x[0-9a-fA-F]{4}$
+                type: string
+              drain:
+                default:
+                  enable: true
+                  timeoutSeconds: 300
+                description: Drain configures the node drain that precedes a reset-type
+                  recovery.
+                properties:
+                  enable:
+                    default: true
+                    description: Enable controls whether the node is drained before
+                      a reset.
+                    type: boolean
+                  namespacesToSkip:
+                    description: |-
+                      NamespacesToSkip lists namespaces the drain leaves alone: their pods are neither evicted
+                      nor waited for. Use it for cluster infrastructure that is fine to keep running through a
+                      reset and that a whole-node drain would otherwise have to evict.
+                    items:
+                      maxLength: 63
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    maxItems: 64
+                    type: array
+                  timeoutSeconds:
+                    default: 300
+                    description: |-
+                      TimeoutSeconds bounds how long a reset waits for the node to drain before the event is
+                      failed.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                type: object
+              firmware:
+                description: |-
+                  Firmware holds configuration for reflash-type recovery operations.
+                  These fields are protected: changes are rejected while any reflash event is active.
+                properties:
+                  file:
+                    description: |-
+                      File is the filename of the FDO firmware image to flash, relative to the root of the
+                      source (no path components).
+                    type: string
+                  source:
+                    description: Source specifies where the firmware file can be found.
+                    properties:
+                      containerSource:
+                        description: ContainerSource specifies a container image that
+                          holds the firmware file.
+                        properties:
+                          insecureSkipTLSVerify:
+                            description: |-
+                              InsecureSkipTLSVerify disables TLS certificate verification when the operator contacts the
+                              registry to verify this image and the firmware file inside it. Use it where the registry
+                              serves a self-signed or private-CA certificate.
+                            type: boolean
+                          name:
+                            description: Name is the container image reference (e.g.
+                              registry/image:tag).
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      volumeSource:
+                        description: |-
+                          VolumeSource specifies a Kubernetes volume that holds the firmware file.
+
+                          NOT YET SUPPORTED. The field is validated but not acted upon: a reflash event on a plan
+                          whose source sets only volumeSource stays in the missing-firmware state, because the
+                          reflash Job copies firmware from a container image. Use containerSource until this is
+                          implemented.
+                        properties:
+                          name:
+                            description: Name is the name of the PersistentVolumeClaim.
+                            type: string
+                        required:
+                        - name
+                        type: object
+                    type: object
+                required:
+                - file
+                - source
+                type: object
+              maxRetries:
+                default: 3
+                description: |-
+                  MaxRetries is the maximum number of times a failed recovery event is automatically
+                  re-queued for approval and retried while its device taint persists. Once this limit
+                  is reached the event stays in the failed state and requires manual intervention
+                  (e.g. delete the event entry or increase MaxRetries). Setting 0 disables automatic
+                  retries entirely.
+                format: int32
+                minimum: 0
+                type: integer
+              skipImageVerification:
+                description: |-
+                  SkipImageVerification disables the pre-flight registry check on the images a recovery Job
+                  needs (spec.xpuSmi.image, and the firmware image for a reflash).
+                type: boolean
+              subDeviceId:
+                description: 'SubDeviceID is the optional PCI sub-device ID. Format:
+                  ''0x'' followed by 4 hex digits.'
+                pattern: ^0x[0-9a-fA-F]{4}$
+                type: string
+              subVendorId:
+                description: 'SubVendorID is the optional PCI sub-vendor ID. Format:
+                  ''0x'' followed by 4 hex digits.'
+                pattern: ^0x[0-9a-fA-F]{4}$
+                type: string
+              timeouts:
+                default:
+                  reflashSeconds: 600
+                  resetSeconds: 300
+                description: Timeouts bounds how long the recovery Jobs themselves
+                  may run.
+                properties:
+                  reflashSeconds:
+                    default: 600
+                    description: ReflashSeconds bounds a reflash recovery Job.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  resetSeconds:
+                    default: 300
+                    description: ResetSeconds bounds a reset-type recovery Job (SBR,
+                      slot power cycle, AMC reset).
+                    format: int32
+                    minimum: 1
+                    type: integer
+                type: object
+              tolerations:
+                description: |-
+                  Tolerations are added to recovery Job pods on top of the blanket toleration the operator
+                  always sets, for cases where a cluster needs an extra entry.
+                items:
+                  description: |-
+                    The pod this Toleration is attached to tolerates any taint that matches
+                    the triple <key,value,effect> using the matching operator <operator>.
+                  properties:
+                    effect:
+                      description: |-
+                        Effect indicates the taint effect to match. Empty means match all taint effects.
+                        When specified, allowed values are NoSchedule, PreferNoSchedule and NoExecute.
+                      type: string
+                    key:
+                      description: |-
+                        Key is the taint key that the toleration applies to. Empty means match all taint keys.
+                        If the key is empty, operator must be Exists; this combination means to match all values and all keys.
+                      type: string
+                    operator:
+                      description: |-
+                        Operator represents a key's relationship to the value.
+                        Valid operators are Exists, Equal, Lt, and Gt. Defaults to Equal.
+                        Exists is equivalent to wildcard for value, so that a pod can
+                        tolerate all taints of a particular category.
+                        Lt and Gt perform numeric comparisons (requires feature gate TaintTolerationComparisonOperators).
+                      type: string
+                    tolerationSeconds:
+                      description: |-
+                        TolerationSeconds represents the period of time the toleration (which must be
+                        of effect NoExecute, otherwise this field is ignored) tolerates the taint. By default,
+                        it is not set, which means tolerate the taint forever (do not evict). Zero and
+                        negative values will be treated as 0 (evict immediately) by the system.
+                      format: int64
+                      type: integer
+                    value:
+                      description: |-
+                        Value is the taint value the toleration matches to.
+                        If the operator is Exists, the value should be empty, otherwise just a regular string.
+                      type: string
+                  type: object
+                type: array
+              xpuSmi:
+                default:
+                  pullPolicy: IfNotPresent
+                description: XpuSmi configures the container image providing the xpu-smi
+                  tool.
+                properties:
+                  image:
+                    description: |-
+                      Image is the container image providing the xpu-smi tool, used for both hardware resets
+                      and firmware reflash operations.
+                    type: string
+                  insecureSkipTLSVerify:
+                    description: |-
+                      InsecureSkipTLSVerify disables TLS certificate verification when the operator contacts the
+                      registry to check that Image resolves. Use it where the registry serves a self-signed or
+                      private-CA certificate.
+                    type: boolean
+                  pullPolicy:
+                    default: IfNotPresent
+                    description: PullPolicy controls the image pull policy for the
+                      xpu-smi container.
+                    enum:
+                    - Always
+                    - IfNotPresent
+                    - Never
+                    type: string
+                type: object
+            required:
+            - defaultResetType
+            - deviceId
+            - maxRetries
+            type: object
+          status:
+            description: GPURecoveryPlanStatus defines the observed state of GPURecoveryPlan.
+            properties:
+              events:
+                description: Events is the list of active and recently completed recovery
+                  needs (capped at 1000).
+                items:
+                  description: RecoveryEvent represents a single detected GPU recovery
+                    need and its lifecycle state.
+                  properties:
+                    approvalId:
+                      description: ApprovalID is the ID of the spec.approvals entry
+                        that matched and authorised this event.
+                      type: string
+                    approvalMatchedAt:
+                      description: ApprovalMatchedAt is the timestamp when an approval
+                        first matched this event.
+                      format: date-time
+                      type: string
+                    claimsBlockingReset:
+                      description: |-
+                        ClaimsBlockingReset names the ResourceClaims that still reserve this GPU, in
+                        "namespace/name" form. A non-empty list means the reset is held back because a workload
+                        has not released the device yet.
+                      items:
+                        type: string
+                      type: array
+                    drainStartedAt:
+                      description: |-
+                        DrainStartedAt is when the node drain for this event began. Reset from nil on each
+                        attempt so a retry gets a full drain timeout rather than inheriting the previous one.
+                      format: date-time
+                      type: string
+                    gpuBDF:
+                      description: GPUBDF is the PCI Bus:Device.Function address of
+                        the affected GPU (e.g. "0000:02:00.0").
+                      type: string
+                    id:
+                      description: ID is the operator-assigned unique event identifier
+                        (e.g. "evt-a3f2").
+                      type: string
+                    imageVerifyGeneration:
+                      description: |-
+                        ImageVerifyGeneration is the plan's metadata.generation at the time of the last failed
+                        pre-flight image verification for this event, and the reason the event is back in
+                        waiting-approval with its approval still in place.
+                        The failure itself is reported in StateMessage, which is what an admin reads; this field is
+                        only the bookkeeping that keeps the check from repeating. Both are cleared once verification
+                        succeeds.
+                      format: int64
+                      type: integer
+                    jobName:
+                      description: JobName is the name of the Kubernetes Job created
+                        to execute the recovery, if any.
+                      type: string
+                    lastUpdated:
+                      description: LastUpdated is the timestamp of the most recent
+                        state change for this event.
+                      format: date-time
+                      type: string
+                    nodeName:
+                      description: NodeName is the Kubernetes node hosting the affected
+                        GPU.
+                      type: string
+                    pastJobs:
+                      description: |-
+                        PastJobs is the names of all Jobs created for this event across all attempts.
+                        Jobs are retained alive until the event is removed (i.e. the device taint clears),
+                        so their Pods remain available for diagnostics throughout the event lifecycle.
+                      items:
+                        type: string
+                      type: array
+                    podsBlockingDrain:
+                      description: |-
+                        PodsBlockingDrain names the pods still keeping the node from being drained, in
+                        "namespace/name" form, so an admin can see what a stalled drain is waiting on without
+                        reading operator logs. Capped at a handful of entries.
+                      items:
+                        type: string
+                      type: array
+                    reason:
+                      description: Reason is the human-readable cause of this event
+                        (e.g. "gpu-wedged", "survivability-mode").
+                      type: string
+                    recoveryType:
+                      description: RecoveryType describes the recovery operation to
+                        perform.
+                      properties:
+                        suggestedType:
+                          allOf:
+                          - enum:
+                            - sbr
+                            - slot
+                            - amc
+                            - reflash
+                          - enum:
+                            - sbr
+                            - slot
+                            - amc
+                            - reflash
+                          description: |-
+                            SuggestedType is the recovery type originally recommended by the system before
+                            any admin override was applied. Recorded for audit purposes.
+                          type: string
+                        type:
+                          allOf:
+                          - enum:
+                            - sbr
+                            - slot
+                            - amc
+                            - reflash
+                          - enum:
+                            - sbr
+                            - slot
+                            - amc
+                            - reflash
+                          description: |-
+                            Type is the recovery operation to execute: a reset (SBR, slot power cycle, or
+                            AMC reset) or a firmware reflash.
+                          type: string
+                      required:
+                      - type
+                      type: object
+                    retryCount:
+                      description: RetryCount is the number of times this recovery
+                        has been retried after failure.
+                      format: int32
+                      type: integer
+                    state:
+                      allOf:
+                      - enum:
+                        - waiting-approval
+                        - missing-firmware
+                        - blocked
+                        - draining
+                        - in-progress
+                        - succeeded
+                        - failed
+                      - enum:
+                        - waiting-approval
+                        - missing-firmware
+                        - blocked
+                        - draining
+                        - in-progress
+                        - succeeded
+                        - failed
+                      description: State is the current lifecycle state of this recovery
+                        event.
+                      type: string
+                    stateMessage:
+                      description: |-
+                        StateMessage explains, in one sentence, why this event is in the state it is in, where the
+                        state alone does not say: which other recovery is holding the node, which spec field carries
+                        an image that cannot be pulled, what a timed-out drain was still waiting on, which Job
+                        failed and on which attempt, why an approved event is unapproved again.
+                      type: string
+                  required:
+                  - gpuBDF
+                  - id
+                  - lastUpdated
+                  - nodeName
+                  - recoveryType
+                  - retryCount
+                  - state
+                  type: object
+                type: array
+              messages:
+                description: Messages contains recent informational or error messages
+                  (most recent last, capped at ~50).
+                items:
+                  type: string
+                type: array
+              state:
+                description: State is the overall state of this recovery plan.
+                enum:
+                - idle
+                - error
+                - active
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
