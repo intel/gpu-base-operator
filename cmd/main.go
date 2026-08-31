@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"os"
@@ -344,6 +345,13 @@ func main() {
 		OpenShift:                      features[openshiftCluster],
 		KMMEnable:                      features[kmmCluster],
 		ModuleLoaderServiceAccountName: moduleLoaderSAName,
+	}
+
+	// Registered here rather than in a controller's SetupWithManager: the index is shared by
+	// every controller that drains a node, and controller-runtime allows only one registration.
+	if err := controller.SetupDrainIndices(context.Background(), mgr); err != nil {
+		setupLog.Error(err, "unable to set up drain cache indexes")
+		os.Exit(1)
 	}
 
 	if err := (&controller.ClusterPolicyReconciler{

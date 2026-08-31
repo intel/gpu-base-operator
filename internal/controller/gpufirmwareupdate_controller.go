@@ -26,7 +26,6 @@ import (
 
 	batch "k8s.io/api/batch/v1"
 	core "k8s.io/api/core/v1"
-	resv1 "k8s.io/api/resource/v1"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -207,6 +206,11 @@ func (r *GPUFirmwareUpdateReconciler) verifyGivenParameters(fu *intelcomv1alpha1
 	return nil
 }
 
+// taintAndDrainNodes taints each node and evicts the GPU pods on it, returning the nodes
+// that still had GPU pods and are therefore draining.
+//
+// This is the first eviction attempt, not the only one: checkForNodeDrainStatus retries on every
+// poll, because a PodDisruptionBudget can refuse an eviction that later succeeds.
 func (r *GPUFirmwareUpdateReconciler) taintAndDrainNodes(ctx context.Context, fu *intelcomv1alpha1.GPUFirmwareUpdate, nodesToProcess []string) ([]string, error) {
 	taintToBeAdded := taintTemplate
 	taintToBeAdded.Key = fu.Spec.UpdateTaint
@@ -218,28 +222,19 @@ func (r *GPUFirmwareUpdateReconciler) taintAndDrainNodes(ctx context.Context, fu
 	for _, nodeName := range nodesToProcess {
 		klog.Infof("Selected node \"%s\" for firmware update", nodeName)
 
-		node := &core.Node{}
-
-		if err := r.Get(ctx, client.ObjectKey{Name: nodeName}, node); err != nil {
-			lastErr = fmt.Errorf("failed to get node %s: %v", nodeName, err)
+		added, err := ensureNodeTaint(ctx, r.Client, nodeName, taintToBeAdded)
+		if err != nil {
+			lastErr = err
 
 			break
 		}
 
-		if slices.Contains(node.Spec.Taints, taintToBeAdded) {
+		if !added {
 			klog.Infof("Node \"%s\" already has taint %s, skipping\n", nodeName, fu.Spec.UpdateTaint)
-		} else {
-			node.Spec.Taints = append(node.Spec.Taints, taintToBeAdded)
-
-			if err := r.Update(ctx, node); err != nil {
-				lastErr = fmt.Errorf("failed to update node %s with taint: %v", nodeName, err)
-
-				break
-			}
 		}
 
-		if toEvict, err := r.getGPUPodsForNode(ctx, nodeName); err != nil {
-			lastErr = fmt.Errorf("failed to get GPU pods for node %s: %v", nodeName, err)
+		if toEvict, err := gpuPodsOnNode(ctx, r.Client, nodeName); err != nil {
+			lastErr = fmt.Errorf("failed to get GPU pods for node %s: %w", nodeName, err)
 		} else {
 			klog.Infof("Evicting %d pods from node %s\n", len(toEvict), nodeName)
 
@@ -247,16 +242,8 @@ func (r *GPUFirmwareUpdateReconciler) taintAndDrainNodes(ctx context.Context, fu
 				draining = append(draining, nodeName)
 			}
 
-			for _, pod := range toEvict {
-				if pod.DeletionTimestamp != nil {
-					continue
-				}
-
-				if err := r.Delete(ctx, pod); err != nil {
-					klog.Errorf("Failed to delete pod %s from node %s: %v", pod.Name, nodeName, err)
-				} else {
-					klog.Infof("Evicted pod %s from node %s", pod.Name, nodeName)
-				}
+			if err := evictPods(ctx, r.Client, toEvict); err != nil {
+				lastErr = fmt.Errorf("failed to evict GPU pods from node %s: %w", nodeName, err)
 			}
 		}
 	}
@@ -321,95 +308,6 @@ func (r *GPUFirmwareUpdateReconciler) selectNodesToUpdate(ctx context.Context, f
 	}
 
 	return selected
-}
-
-func (r *GPUFirmwareUpdateReconciler) checkClaimForIntelGPURequests(ctx context.Context, claims []core.PodResourceClaim, namespace string) (bool, error) {
-	for _, rc := range claims {
-		if rc.ResourceClaimName != nil {
-			resClaim := resv1.ResourceClaim{}
-
-			if err := r.Get(ctx, client.ObjectKey{Name: *rc.ResourceClaimName, Namespace: namespace}, &resClaim); err != nil {
-				return false, fmt.Errorf("failed to get ResourceClaim %s: %v", *rc.ResourceClaimName, err)
-			}
-
-			for _, req := range resClaim.Spec.Devices.Requests {
-				if req.Exactly != nil && req.Exactly.DeviceClassName == gpuDraDeviceClass {
-					return true, nil
-				}
-				for _, fa := range req.FirstAvailable {
-					if fa.DeviceClassName == gpuDraDeviceClass {
-						return true, nil
-					}
-				}
-			}
-		}
-		if rc.ResourceClaimTemplateName != nil {
-			resClaimTmpl := resv1.ResourceClaimTemplate{}
-
-			if err := r.Get(ctx, client.ObjectKey{Name: *rc.ResourceClaimTemplateName, Namespace: namespace}, &resClaimTmpl); err != nil {
-				return false, fmt.Errorf("failed to get ResourceClaimTemplate %s: %v", *rc.ResourceClaimTemplateName, err)
-			}
-
-			for _, req := range resClaimTmpl.Spec.Spec.Devices.Requests {
-				if req.Exactly != nil && req.Exactly.DeviceClassName == gpuDraDeviceClass {
-					return true, nil
-				}
-				for _, fa := range req.FirstAvailable {
-					if fa.DeviceClassName == gpuDraDeviceClass {
-						return true, nil
-					}
-				}
-			}
-		}
-	}
-
-	return false, nil
-}
-
-func (r *GPUFirmwareUpdateReconciler) getGPUPodsForNode(ctx context.Context, nodeName string) ([]*core.Pod, error) {
-	var pods core.PodList
-
-	listOpts := []client.ListOption{
-		client.InNamespace(core.NamespaceAll), // Search across all namespaces
-		client.MatchingFields{"spec.nodeName": nodeName},
-	}
-
-	if err := r.List(ctx, &pods, listOpts...); err != nil {
-		return nil, fmt.Errorf("failed to list pods on node %s: %v", nodeName, err)
-	}
-
-	gpuPods := []*core.Pod{}
-	for index := range pods.Items {
-		pod := pods.Items[index]
-
-		include := false
-
-		// Check for extended GPU resources.
-		for _, c := range pod.Spec.Containers {
-			if _, found := c.Resources.Limits[xeResource]; found {
-				include = true
-			} else if _, found := c.Resources.Limits[i915Resource]; found {
-				include = true
-			}
-		}
-
-		// Check for DRA resource claims.
-		if !include {
-			if len(pod.Spec.ResourceClaims) > 0 {
-				if isGpu, err := r.checkClaimForIntelGPURequests(ctx, pod.Spec.ResourceClaims, pod.Namespace); err != nil {
-					return nil, fmt.Errorf("failed to check ResourceClaims for pod %s: %v", pod.Name, err)
-				} else if isGpu {
-					include = true
-				}
-			}
-		}
-
-		if include {
-			gpuPods = append(gpuPods, &pods.Items[index])
-		}
-	}
-
-	return gpuPods, nil
 }
 
 func (r *GPUFirmwareUpdateReconciler) verifyContentImage(ctx context.Context, fu *intelcomv1alpha1.GPUFirmwareUpdate) error {
@@ -508,7 +406,7 @@ func (r *GPUFirmwareUpdateReconciler) checkForNodeDrainStatus(ctx context.Contex
 	var lastErr error
 
 	for _, nodeName := range fu.Status.NodeInfos.Draining {
-		pods, err := r.getGPUPodsForNode(ctx, nodeName)
+		pods, err := gpuPodsOnNode(ctx, r.Client, nodeName)
 		if err != nil {
 			lastErr = err
 
@@ -517,6 +415,16 @@ func (r *GPUFirmwareUpdateReconciler) checkForNodeDrainStatus(ctx context.Contex
 
 		if len(pods) != 0 {
 			remaining = append(remaining, nodeName)
+
+			// Retry the eviction rather than only observing it. A PodDisruptionBudget may have
+			// refused the first attempt, and nothing else would ever ask again. Pods that are
+			// already terminating are skipped inside evictPods, so a drain that is merely slow
+			// makes no API calls here.
+			if err := evictPods(ctx, r.Client, pods); err != nil {
+				lastErr = fmt.Errorf("failed to evict GPU pods from node %s: %w", nodeName, err)
+
+				break
+			}
 		}
 	}
 
@@ -873,27 +781,22 @@ func (r *GPUFirmwareUpdateReconciler) untaintNodesAndFinalize(ctx context.Contex
 	var lastErr error
 
 	for _, nodeName := range fu.Status.NodeInfos.All {
-		node := &core.Node{}
-		if err := r.Get(ctx, client.ObjectKey{Name: nodeName}, node); err != nil {
-			klog.Errorf("Failed to get node %s: %v", nodeName, err)
+		// removeNodeTaint matches on key/value/effect rather than on the whole struct. The
+		// previous slices.Index compared TimeAdded too, which the API server sets itself, so a
+		// taint could be reported as lost while it was still on the node.
+		removed, err := removeNodeTaint(ctx, r.Client, nodeName, taintToBeRemoved)
+		if err != nil {
+			klog.Errorf("Failed to remove taint from node %s: %v", nodeName, err)
 			lastErr = err
+
 			continue
 		}
 
-		tindex := slices.Index(node.Spec.Taints, taintToBeRemoved)
-
-		if tindex < 0 {
+		if !removed {
 			klog.Warningf("Node %s does not have taint %s, skipping\n", nodeName, fu.Spec.UpdateTaint)
 			fu.Status.Messages = append(fu.Status.Messages, fmt.Sprintf("Node %s lost taint %s, skipping", nodeName, fu.Spec.UpdateTaint))
 
 			continue
-		}
-
-		node.Spec.Taints = slices.Delete(node.Spec.Taints, tindex, tindex+1)
-
-		if err := r.Update(ctx, node); err != nil {
-			klog.Errorf("Failed to update node %s: %v", nodeName, err)
-			lastErr = err
 		}
 	}
 
@@ -1009,11 +912,6 @@ func (r *GPUFirmwareUpdateReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	return ctrl.Result{}, nil
 }
 
-func podIndexerFunc(rawObj client.Object) []string {
-	pod := rawObj.(*core.Pod)
-	return []string{pod.Spec.NodeName}
-}
-
 // SetupWithManager sets up the controller with the Manager.
 func (r *GPUFirmwareUpdateReconciler) SetupWithManager(mgr ctrl.Manager, copts ControllerOpts) error {
 	r.Opts = copts
@@ -1026,11 +924,6 @@ func (r *GPUFirmwareUpdateReconciler) SetupWithManager(mgr ctrl.Manager, copts C
 	}
 	r.logRet = newLogsRetriever(clientset)
 	r.imgVerify = newContentImageVerifier(mgr.GetAPIReader(), copts.Namespace)
-
-	pod := &core.Pod{}
-	if err := mgr.GetFieldIndexer().IndexField(context.Background(), pod, "spec.nodeName", podIndexerFunc); err != nil {
-		return err
-	}
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&intelcomv1alpha1.GPUFirmwareUpdate{}).
