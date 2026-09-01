@@ -113,6 +113,9 @@ var _ = BeforeSuite(func() {
 	err = SetupClusterPolicyWebhookWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
+	err = SetupGPURecoveryPlanWebhookWithManager(mgr)
+	Expect(err).NotTo(HaveOccurred())
+
 	// +kubebuilder:scaffold:webhook
 
 	go func() {
