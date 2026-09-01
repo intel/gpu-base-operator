@@ -8,9 +8,16 @@ metadata:
   name: intel-gpu-base-operator-metrics-certs
   namespace: {{ .Release.Namespace }}
 spec:
+  # config/certmanager/certificate-metrics.yaml carries SERVICE_NAME/SERVICE_NAMESPACE placeholders
+  # that kustomize substitutes; Helm does not, so they must be spelled out here against the metrics
+  # Service in metrics_service.yaml.
+  #
+  # NOTE: the manager does not mount this secret and is not started with --metrics-cert-path, so it
+  # still serves the self-signed cert it generates at startup and this Certificate goes unused. See
+  # config/default/cert_metrics_manager_patch.yaml for the mount the chart is missing.
   dnsNames:
-  - SERVICE_NAME.SERVICE_NAMESPACE.svc
-  - SERVICE_NAME.SERVICE_NAMESPACE.svc.cluster.local
+  - {{ .Release.Name }}-controller-manager-metrics-service.{{ .Release.Namespace }}.svc
+  - {{ .Release.Name }}-controller-manager-metrics-service.{{ .Release.Namespace }}.svc.cluster.local
   issuerRef:
     kind: Issuer
     name: intel-gpu-base-operator-selfsigned-issuer

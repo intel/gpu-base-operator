@@ -59,6 +59,12 @@ spec:
           - --health-probe-bind-address=:8081
           - --webhook-cert-path=/tmp/k8s-webhook-server/serving-certs
           - -v={{ .Values.operator.verbosity }}
+        {{- if .Values.metrics.enabled }}
+          # Without this flag --metrics-bind-address defaults to "0", which disables the
+          # endpoint entirely. The kustomize path sets it via config/default/manager_metrics_patch.yaml.
+          - --metrics-bind-address=:{{ .Values.metrics.port }}
+          - --metrics-secure={{ .Values.metrics.secure }}
+        {{- end }}
         env:
           - name: OPERATOR_NAMESPACE
             valueFrom:
@@ -77,6 +83,11 @@ spec:
         - containerPort: 9443
           name: webhook-server
           protocol: TCP
+        {{- if .Values.metrics.enabled }}
+        - containerPort: {{ .Values.metrics.port }}
+          name: metrics
+          protocol: TCP
+        {{- end }}
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:

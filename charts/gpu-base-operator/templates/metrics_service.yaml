@@ -1,0 +1,22 @@
+{{- if .Values.metrics.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-controller-manager-metrics-service
+  namespace: {{ .Release.Namespace }}
+  labels:
+    control-plane: {{ .Release.Name }}-controller-manager
+    app.kubernetes.io/name: intel-gpu-base-operator
+spec:
+  ports:
+  # Named "https" or "http" after the scheme actually in use, because the ServiceMonitor
+  # selects the endpoint by port *name*. A fixed name would leave the scrape mismatched
+  # whenever metrics.secure is flipped.
+  - name: {{ if .Values.metrics.secure }}https{{ else }}http{{ end }}
+    port: {{ .Values.metrics.port }}
+    protocol: TCP
+    targetPort: metrics
+  selector:
+    control-plane: {{ .Release.Name }}-controller-manager
+    app.kubernetes.io/name: intel-gpu-base-operator
+{{- end }}
