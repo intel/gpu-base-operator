@@ -19,6 +19,27 @@ operator:
       cpu: 100m
       memory: 256Mi
 
+metrics:
+  # Serve the operator's own metrics (the controller-runtime and workqueue metrics).
+  enabled: false
+  port: 8443
+  # Protect the endpoint with TLS and the authn/authz filter. When true, a scraper must present
+  # a bearer token and hold the <release>-metrics-reader ClusterRole.
+  secure: true
+  serviceMonitor:
+    # Off by default: a ServiceMonitor requires the Prometheus Operator CRDs, and applying one
+    # without monitoring.coreos.com installed fails the whole helm install on an unknown kind.
+    # Turn this on only when Prometheus Operator is present.
+    enabled: false
+    # Scrape interval. Empty means inherit the Prometheus default.
+    interval: ""
+    # Extra labels, for a Prometheus whose serviceMonitorSelector requires a specific label
+    # (e.g. release: kube-prometheus-stack) to pick the monitor up.
+    additionalLabels: {}
+    # Replaces the default insecureSkipVerify when metrics.secure is true. Set this only after
+    # pointing the manager's --metrics-cert-path at a real cert; see the template for details.
+    tlsConfig: {}
+
 privateRegistry:
   url: ""
   user: ""

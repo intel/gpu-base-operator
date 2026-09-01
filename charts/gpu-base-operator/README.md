@@ -39,6 +39,13 @@ See [Customizing the Chart Before Installing](https://helm.sh/docs/intro/using_h
 | `operator.resources.limits.memory` | 128Mi | Memory limit for operator pod |
 | `operator.resources.requests.cpu` | 10m | CPU request for operator pod |
 | `operator.resources.requests.memory` | 64Mi | Memory request for operator pod |
+| `metrics.enabled` | false | Serve the operator's own metrics endpoint |
+| `metrics.port` | 8443 | Port for the metrics endpoint |
+| `metrics.secure` | true | Serve metrics over HTTPS behind the authn/authz filter |
+| `metrics.serviceMonitor.enabled` | false | Create a ServiceMonitor for the operator's metrics. Requires the Prometheus Operator CRDs |
+| `metrics.serviceMonitor.interval` | "" | Scrape interval; empty inherits the Prometheus default |
+| `metrics.serviceMonitor.additionalLabels` | {} | Extra ServiceMonitor labels, for a Prometheus with a `serviceMonitorSelector` |
+| `metrics.serviceMonitor.tlsConfig` | {} | Replaces the default `insecureSkipVerify` when `metrics.secure` is true |
 | `privateRegistry.url` | "" | Private registry URL |
 | `privateRegistry.user` | "" | Private registry username |
 | `privateRegistry.token` | "" | Private registry authentication token |
