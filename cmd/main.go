@@ -379,6 +379,10 @@ func main() {
 			setupLog.Error(err, "unable to create webhook", "webhook", "ClusterPolicy")
 			os.Exit(1)
 		}
+		if err := intelcomv1alpha1.SetupGPURecoveryPlanWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "GPURecoveryPlan")
+			os.Exit(1)
+		}
 	}
 	// +kubebuilder:scaffold:builder
 
