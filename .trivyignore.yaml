@@ -36,6 +36,7 @@ misconfigurations:
       - dp/dp.yaml
       - dra/daemonset.yaml
       - xpum/xpum.yaml
+      - xpum/xpum-fwupdate-job.yaml
 
   - id: AVD-KSV-0025
     statement: "container_device_plugin_t is a valid SELinux profile"
@@ -88,6 +89,7 @@ misconfigurations:
     statement: "/sys is required for DRA"
     paths:
       - dra/daemonset.yaml
+      - xpum/xpum-fwupdate-job.yaml
 
   - id: AVD-DS-0002
     statement: ""
