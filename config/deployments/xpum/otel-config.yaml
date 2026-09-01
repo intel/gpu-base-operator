@@ -66,6 +66,26 @@ exporters:
   intel_xpu_info:
     endpoint: "/run/xpumd/intelxpuinfo.sock"
     hw_status_mappings:
+      # A wedged GPU and a card that has fallen into survivability (FDO) mode are both
+      # unusable, so report them as "failed" under their own health domains. Together with
+      # the "health-xpumd-" prefix the DRA driver adds, these become the
+      # health-xpumd-gpu.wedged / health-xpumd-gpu.survivability device taints.
+      #
+      # This has to come first: the mappings are first-match-wins (that is what makes the
+      # ecc filter-out entry below work), and the trailing "{{ .hw_type }}" rule carries no
+      # filters, so it matches every GPU state and would fold these two into its
+      # '"*": warning' bucket instead.
+      - health_domain: "gpu.{{ .hw_state }}"
+        filters:
+          - key: hw.type
+            values: [gpu]
+          - key: hw.state
+            values: [wedged, survivability]
+        state_mapping:
+          wedged:
+            severity: failed
+          survivability:
+            severity: failed
       - health_domain: "memory"
         filters:
           - key: hw.type

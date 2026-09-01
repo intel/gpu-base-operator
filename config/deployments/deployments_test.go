@@ -156,6 +156,32 @@ func TestOTelConfig(t *testing.T) {
 	}
 }
 
+// The wedged/survivability mapping is what turns an unusable GPU into a DRA device taint, and
+// it only works if it survives the parse into HWStatusMapping and stays ahead of the unfiltered
+// catch-all rule that would otherwise claim the same states.
+func TestOTelConfig_UnusableGPUStatesMapToFailed(t *testing.T) {
+	mappings := XpuManagerOTelConfig().Exporters.IntelXPUInfo.HWStatusMappings
+	if len(mappings) == 0 {
+		t.Fatal("no hw_status_mappings parsed from otel-config.yaml")
+	}
+
+	first := mappings[0]
+	if first.HealthDomain != "gpu.{{ .hw_state }}" {
+		t.Errorf("expected the per-state GPU mapping first, got health_domain %q", first.HealthDomain)
+	}
+
+	for _, state := range []string{"wedged", "survivability"} {
+		severity, ok := first.StateMapping[state]
+		if !ok {
+			t.Errorf("%s has no state_mapping entry", state)
+			continue
+		}
+		if severity.Severity != "failed" {
+			t.Errorf("%s maps to severity %q, want failed", state, severity.Severity)
+		}
+	}
+}
+
 func TestDevicePluginDaemonset_AutomountServiceAccountToken(t *testing.T) {
 	ds := DevicePluginDaemonset()
 	if ds.Spec.Template.Spec.AutomountServiceAccountToken == nil {

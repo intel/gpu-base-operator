@@ -91,6 +91,9 @@ type IntelXPUInfoExporter struct {
 }
 
 // HWStatusMapping maps a health domain to state severity entries.
+//
+// The embedded otel-config.yaml is parsed into these types and re-marshalled into the
+// ConfigMap, so a key missing here is silently dropped from what xpumd actually reads.
 type HWStatusMapping struct {
 	HealthDomain string                       `json:"health_domain"`
 	Filters      []KeyValues                  `json:"filters,omitempty"`
