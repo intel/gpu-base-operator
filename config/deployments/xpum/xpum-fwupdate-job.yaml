@@ -18,12 +18,21 @@ spec:
     - action: FailJob
       onPodConditions:
       - type: ConfigIssue
+  # A firmware update that has not finished in ten minutes is not going to. Fail the Job rather
+  # than leave the node tainted and the CR parked in "updating" indefinitely.
+  activeDeadlineSeconds: 600
   template:
     spec:
       volumes:
       - name: update
         emptyDir:
           sizeLimit: 64Mi
+      # The update script resolves the MEI device of the target GPU through
+      # /sys/bus/pci/devices/<bdf>/, so the updater needs the host's sysfs.
+      - name: host-sys
+        hostPath:
+          path: /sys
+          type: Directory
       automountServiceAccountToken: false
       initContainers:
       - name: fw-copy
@@ -68,6 +77,9 @@ spec:
         volumeMounts:
         - name: update
           mountPath: /update
+        - name: host-sys
+          mountPath: /sys
+          readOnly: false
       imagePullSecrets:
       restartPolicy: Never
 

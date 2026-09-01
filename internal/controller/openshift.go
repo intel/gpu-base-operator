@@ -128,10 +128,14 @@ func buildDRASCC(name string) *unstructured.Unstructured {
 
 // buildFWUpdateSCC returns the SCC for the GPU firmware update Job pods.
 // The updater container runs privileged as root to access GPU firmware interfaces.
+//
+// hostPath is allowed because xpum-fwupdate-job.yaml mounts /sys into the updater: the update
+// script resolves the target GPU's MEI device through sysfs. An SCC forbidding it would make
+// every firmware update fail at admission on OpenShift.
 func buildFWUpdateSCC(name string) *unstructured.Unstructured {
 	return buildSCC(name, map[string]interface{}{
 		"allowPrivilegedContainer": true,
-		"allowHostDirVolumePlugin": false,
+		"allowHostDirVolumePlugin": true,
 		"allowHostIPC":             false,
 		"allowHostNetwork":         false,
 		"allowHostPID":             false,
@@ -146,7 +150,7 @@ func buildFWUpdateSCC(name string) *unstructured.Unstructured {
 		"seLinuxContext":           map[string]interface{}{"type": "RunAsAny"},
 		"seccompProfiles":          []interface{}{"*"},
 		"supplementalGroups":       map[string]interface{}{"type": "RunAsAny"},
-		"volumes":                  []interface{}{"emptyDir"},
+		"volumes":                  []interface{}{"hostPath", "emptyDir"},
 		"users":                    []interface{}{},
 		"groups":                   []interface{}{},
 	})
