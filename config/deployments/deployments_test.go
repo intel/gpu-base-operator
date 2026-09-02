@@ -149,6 +149,85 @@ func TestXpuFwUpdateJob(t *testing.T) {
 	}
 }
 
+func TestXpuResetJob(t *testing.T) {
+	job := XpuManagerResetJob()
+	if job == nil {
+		t.Error("XpuManagerResetJob returned nil")
+	}
+}
+
+// The operator only ever overwrites the resetter container's image and args, so everything else
+// the reset needs has to be right in the template: the /sys mount the PCIe reset writes through,
+// and a restart policy that does not re-run a reset the Job controller already gave up on.
+func TestXpuResetJob_ResetterContainer(t *testing.T) {
+	job := XpuManagerResetJob()
+
+	c := findContainer(job.Spec.Template.Spec.Containers, "resetter")
+	if c == nil {
+		t.Fatal("resetter container not found")
+	}
+
+	found := false
+	for _, m := range c.VolumeMounts {
+		if m.MountPath == "/sys" {
+			found = true
+			if m.ReadOnly {
+				t.Error("/sys must be mounted writable: the reset is issued by writing to sysfs")
+			}
+		}
+	}
+	if !found {
+		t.Error("resetter has no /sys mount")
+	}
+
+	if job.Spec.Template.Spec.RestartPolicy != core.RestartPolicyNever {
+		t.Errorf("restartPolicy: got %v, want Never", job.Spec.Template.Spec.RestartPolicy)
+	}
+
+	if job.Spec.Template.Spec.AutomountServiceAccountToken == nil {
+		t.Fatal("automountServiceAccountToken must be set (non-nil)")
+	}
+	if *job.Spec.Template.Spec.AutomountServiceAccountToken != false {
+		t.Error("automountServiceAccountToken must be false")
+	}
+}
+
+func TestXpuResetJob_ResetterSecurityContext(t *testing.T) {
+	job := XpuManagerResetJob()
+
+	c := findContainer(job.Spec.Template.Spec.Containers, "resetter")
+	if c == nil {
+		t.Fatal("resetter container not found")
+	}
+	if c.SecurityContext == nil {
+		t.Fatal("SecurityContext must be set on resetter")
+	}
+	// Privileged is deliberate here, unlike everywhere else in this file: resetting a GPU means
+	// writing to the device's PCIe config space through sysfs.
+	if c.SecurityContext.Privileged == nil || !*c.SecurityContext.Privileged {
+		t.Error("resetter must be privileged to issue a PCIe reset")
+	}
+	if c.SecurityContext.SeccompProfile == nil {
+		t.Fatal("SeccompProfile must be set on resetter")
+	}
+	if c.SecurityContext.SeccompProfile.Type != core.SeccompProfileTypeRuntimeDefault {
+		t.Errorf("SeccompProfile.Type: got %v, want RuntimeDefault on resetter", c.SecurityContext.SeccompProfile.Type)
+	}
+	if c.SecurityContext.Capabilities == nil {
+		t.Fatal("Capabilities must be set on resetter")
+	}
+	found := false
+	for _, cap := range c.SecurityContext.Capabilities.Drop {
+		if cap == allCaps {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("capabilities.drop must contain ALL on resetter")
+	}
+}
+
 func TestOTelConfig(t *testing.T) {
 	cfg := XpuManagerOTelConfig()
 	if cfg == nil {

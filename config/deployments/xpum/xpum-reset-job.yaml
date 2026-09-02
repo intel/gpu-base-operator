@@ -1,0 +1,69 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# @file xpum-reset-job.yaml
+#
+# Template for GPU hardware reset recovery Jobs.
+# The operator fills in: spec.template.spec.nodeName, containers[resetter].image,
+# and containers[resetter].args with the appropriate xpu-smi reset command.
+#
+# Supported commands (set by the operator from the event's recoveryType):
+#   sbr:   xpu-smi config -d <BDF> --reset
+#   slot:  xpu-smi config -d <BDF> --coldreset
+#   amc:   xpu-smi amc --gpureset -d <BDF> -y
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: intel-reset-job
+spec:
+  podFailurePolicy:
+    rules:
+    - action: FailJob
+      onExitCodes:
+        containerName: resetter
+        operator: NotIn
+        values: [0]
+    - action: FailJob
+      onPodConditions:
+      - type: ConfigIssue
+  activeDeadlineSeconds: 300
+  template:
+    spec:
+      volumes:
+      - name: host-sys
+        hostPath:
+          path: /sys
+          type: Directory
+      automountServiceAccountToken: false
+      containers:
+      - name: resetter
+        image: intel/gpu-fwupdater-mock:devel # replaced by the operator (spec.xpuSmi.image)
+        imagePullPolicy: IfNotPresent
+        command: [ "/usr/local/bin/xpu-smi" ]
+        args:
+          - "config"
+          - "-d"
+          - "0000:00:00.0"  # replaced by the operator
+          - "--reset"       # replaced by the operator
+        resources:
+          requests:
+            cpu: 50m
+            memory: 32Mi
+          limits:
+            cpu: 100m
+            memory: 64Mi
+        securityContext:
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: true
+          runAsUser: 0
+          privileged: true
+          seccompProfile:
+            type: RuntimeDefault
+          capabilities:
+            drop: [ "ALL" ]
+        volumeMounts:
+        - name: host-sys
+          mountPath: /sys
+          readOnly: false
+      imagePullSecrets:
+      restartPolicy: Never
