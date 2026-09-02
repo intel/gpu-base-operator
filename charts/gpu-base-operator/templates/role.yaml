@@ -80,10 +80,19 @@ rules:
   resources:
   - clusterpolicies/status
   - gpufirmwareupdates/status
+  - gpurecoveryplans/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - intel.com
+  resources:
+  - gpurecoveryplans
+  verbs:
+  - get
+  - list
+  - watch
 - apiGroups:
   - kmm.sigs.x-k8s.io
   resources:
