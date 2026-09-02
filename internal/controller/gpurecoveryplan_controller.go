@@ -18,12 +18,16 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
-	"unicode/utf8"
 
+	batch "k8s.io/api/batch/v1"
+	core "k8s.io/api/core/v1"
 	resv1 "k8s.io/api/resource/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -31,10 +35,12 @@ import (
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	intelv1a1 "github.com/intel/gpu-base-operator/api/v1alpha1"
+	"github.com/intel/gpu-base-operator/config/deployments"
 )
 
 type GPURecoveryPlanReconciler struct {
@@ -43,18 +49,24 @@ type GPURecoveryPlanReconciler struct {
 	Opts   ControllerOpts
 }
 
-// +kubebuilder:rbac:groups=intel.com,resources=gpurecoveryplans,verbs=get;list;watch
+// +kubebuilder:rbac:groups=intel.com,resources=gpurecoveryplans,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=intel.com,resources=gpurecoveryplans/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=intel.com,resources=gpurecoveryplans/finalizers,verbs=update
 // +kubebuilder:rbac:groups=resource.k8s.io,resources=resourceslices,verbs=get;list;watch
+
+// Node labels decide whether a selector approval covers the node an event is on.
+// +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
 
 // Reconcile is the main reconciliation loop for GPURecoveryPlan.
 //
-// The loop is triggered either by a change to a GPURecoveryPlan or by a ResourceSlice event
-// routed through resourceSliceToPlans.
+// The loop is triggered by a change to a GPURecoveryPlan (an admin adding an approval, or the
+// operator's own status write), by a recovery Job the plan owns reaching a new state, or by a
+// ResourceSlice event routed through resourceSliceToPlans.
 //
-// Detection only, for now: it reflects the GPUs the DRA driver has tainted into status.events
-// and derives status.state from them. Nothing is acted upon — every event it creates waits for
-// an admin approval that no later phase yet consumes.
+// The phases run in a fixed order, each reading what the one before it wrote: detection mirrors
+// the tainted GPUs into status.events, approvals turn the approved ones into recovery Jobs, and
+// the Job sync reports what those Jobs did. status.state is derived once, at the end, from the
+// event states all of them have settled on.
 func (r *GPURecoveryPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (retRes ctrl.Result, retErr error) {
 	klog.V(2).Infof("Reconciling GPURecoveryPlan %s", req.Name)
 
@@ -78,53 +90,162 @@ func (r *GPURecoveryPlanReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		}
 	}()
 
+	// Finalizer management.
+	if done, err := r.handleFinalizer(ctx, plan); err != nil || done {
+		// Deletion is blocked on an in-flight recovery Job: poll rather than fail. The status
+		// update in the deferred block still runs, so the "waiting for N active Job(s)" message
+		// reaches the CR before it disappears.
+		if errors.Is(err, requeueReconcileErr{}) {
+			return ctrl.Result{RequeueAfter: r.Opts.RequeueDelay}, nil
+		}
+
+		return ctrl.Result{}, err
+	}
+
 	// Reflect the current cluster GPU state into status.events.
 	if err := r.syncRecoveryEventsFromSlices(ctx, plan); err != nil {
 		return ctrl.Result{}, fmt.Errorf("syncRecoveryEventsFromSlices: %w", err)
 	}
 
+	// Start the recovery of every event an admin has approved.
+	r.processApprovals(ctx, plan)
+
+	// Update event states from the outcomes of the Jobs they are running.
+	if err := r.syncJobStatuses(ctx, plan); err != nil {
+		return ctrl.Result{}, fmt.Errorf("syncJobStatuses: %w", err)
+	}
+
+	// Drop consumed approvals no event refers to any more.
+	pruneConsumedApprovals(plan)
+
 	// Derive status.state from the resulting event states.
-	r.updatePlanState(plan)
+	updatePlanState(plan)
+
+	// Requeue while a Job is in flight. A reconcile is also triggered by Job changes.
+	if hasActiveJobs(plan) {
+		return ctrl.Result{RequeueAfter: r.Opts.RequeueDelay}, nil
+	}
 
 	return ctrl.Result{}, nil
 }
 
-// persistPlan writes back whatever the reconcile phases changed on plan's status. It is called
-// from Reconcile's defer and returns the error encountered, so the caller can fail the reconcile
-// and get a retry with backoff.
+// persistPlan writes back whatever the reconcile phases changed on plan: status first, then spec.
+// It is called from Reconcile's defer and returns the first error encountered, so the caller can
+// fail the reconcile and get a retry with backoff.
+//
+// Write ordering: status must land BEFORE spec, because the spec write (consuming a one-shot
+// approval) triggers an immediate new reconcile. If that reconcile saw the old status it would
+// still read the event as waiting-approval and could act on it twice.
 func (r *GPURecoveryPlanReconciler) persistPlan(ctx context.Context, key types.NamespacedName, orig, plan *intelv1a1.GPURecoveryPlan) error {
-	if reflect.DeepEqual(orig.Status, plan.Status) {
+	statusChanged := !reflect.DeepEqual(orig.Status, plan.Status)
+	specChanged := !reflect.DeepEqual(orig.Spec, plan.Spec)
+
+	if !statusChanged && !specChanged {
 		return nil
 	}
 
 	wantStatus := plan.Status.DeepCopy()
+	wantSpec := plan.Spec.DeepCopy()
 
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		if err := r.Get(ctx, key, plan); err != nil {
-			return err
+	var firstErr error
+
+	if statusChanged {
+		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			if err := r.Get(ctx, key, plan); err != nil {
+				return err
+			}
+
+			plan.Status = *wantStatus.DeepCopy()
+
+			return r.Status().Update(ctx, plan)
+		})
+		if err != nil {
+			klog.Errorf("GPURecoveryPlan %s: failed to update status: %v", plan.Name, err)
+
+			firstErr = fmt.Errorf("updating status: %w", err)
 		}
-
-		plan.Status = *wantStatus.DeepCopy()
-
-		return r.Status().Update(ctx, plan)
-	})
-	if err != nil {
-		klog.Errorf("GPURecoveryPlan %s: failed to update status: %v", plan.Name, err)
-
-		return fmt.Errorf("updating status: %w", err)
 	}
 
-	return nil
+	// Attempted even when the status write failed: an approval that has already produced a Job
+	// must be marked consumed, or the next pass creates a second Job for the same GPU. The
+	// reconcile still fails, so the lost status is rewritten on the retry.
+	if specChanged {
+		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			if err := r.Get(ctx, key, plan); err != nil {
+				return err
+			}
+
+			plan.Spec = *wantSpec.DeepCopy()
+
+			return r.Update(ctx, plan)
+		})
+		if err != nil {
+			klog.Errorf("GPURecoveryPlan %s: failed to update spec: %v", plan.Name, err)
+
+			if firstErr == nil {
+				firstErr = fmt.Errorf("updating spec: %w", err)
+			}
+		}
+	}
+
+	return firstErr
+}
+
+// handleFinalizer keeps the finalizer on a live plan and carries out the plan's own teardown when
+// it is deleted. Returns done=true when the caller must stop reconciling: either the plan is on
+// its way out, or the finalizer was just added and the resulting Update has already queued
+// another pass.
+func (r *GPURecoveryPlanReconciler) handleFinalizer(ctx context.Context, plan *intelv1a1.GPURecoveryPlan) (done bool, err error) {
+	if !plan.DeletionTimestamp.IsZero() {
+		// A recovery Job may be mid-flight through a PCIe reset. Letting the CR go now would
+		// delete the Job's owner and, with it, a reset nobody is watching any more.
+		running, err := runningRecoveryJobs(r.Client, ctx, r.Opts.Namespace, plan)
+		if err != nil {
+			return true, fmt.Errorf("listing recovery jobs during deletion: %w", err)
+		}
+
+		if len(running) > 0 {
+			klog.Infof("GPURecoveryPlan %s: deletion blocked, waiting for %d active recovery Job(s): %s",
+				plan.Name, len(running), strings.Join(running, ", "))
+			appendMessage(plan, fmt.Sprintf("Deletion waiting for %d active recovery Job(s): %s",
+				len(running), strings.Join(running, ", ")))
+
+			// Requeue-not-an-error: Reconcile returns this with a nil error.
+			return true, requeueReconcileErr{fmt.Errorf("waiting for %d active recovery job(s)", len(running))}
+		}
+
+		// Delete the Jobs explicitly rather than leaving them to the garbage collector, so their
+		// pods are gone by the time the CR is.
+		r.deleteAllJobs(ctx, plan)
+
+		controllerutil.RemoveFinalizer(plan, recoveryPlanFinalizer)
+
+		if err := r.Update(ctx, plan); err != nil {
+			return true, fmt.Errorf("removing finalizer: %w", err)
+		}
+
+		return true, nil
+	}
+
+	if !controllerutil.ContainsFinalizer(plan, recoveryPlanFinalizer) {
+		controllerutil.AddFinalizer(plan, recoveryPlanFinalizer)
+
+		if err := r.Update(ctx, plan); err != nil {
+			return true, fmt.Errorf("adding finalizer: %w", err)
+		}
+
+		// The Update triggers a new reconcile; nothing further to do in this cycle.
+		return true, nil
+	}
+
+	return false, nil
 }
 
 // syncRecoveryEventsFromSlices scans all ResourceSlices for GPU devices that match this
 // plan's spec.deviceId and carry recovery-related device taints, then reconciles
-// status.events against what it found: events whose taint has cleared are removed, and newly
-// tainted devices get an event (or have their existing one escalated).
-//
-// The taint keys it recognises are deviceTaintKeyReset, deviceTaintKeyReflash and
-// deviceTaintKeyXpumdReflash; see taintToDeviceNeed, which resolves the first against
-// plan.Spec.DefaultResetType.
+// status.events against what it found: failed events whose taint persists are re-queued for
+// another attempt, events whose taint has cleared are removed, and newly tainted devices get an
+// event (or have their existing one escalated).
 func (r *GPURecoveryPlanReconciler) syncRecoveryEventsFromSlices(ctx context.Context, plan *intelv1a1.GPURecoveryPlan) error {
 	sliceList := &resv1.ResourceSliceList{}
 
@@ -180,12 +301,15 @@ func (r *GPURecoveryPlanReconciler) syncRecoveryEventsFromSlices(ctx context.Con
 		}
 	}
 
+	// Send failed events round again while their taint persists and their retry budget lasts.
+	requeueFailedEvents(plan, activeKeys)
+
 	// Remove events whose taint has cleared. This runs before the add loop so that resolved
 	// events free up room under maxStatusEvents in the same pass.
-	r.removeResolvedEvents(plan, activeKeys)
+	r.removeResolvedEvents(ctx, plan, activeKeys)
 
 	// Add new events for newly tainted devices.
-	r.addNewEvents(plan, activeKeys)
+	addNewEvents(plan, activeKeys)
 
 	// status.state is deliberately NOT set here: Reconcile derives it once, after every phase
 	// that can move an event has run.
@@ -193,140 +317,422 @@ func (r *GPURecoveryPlanReconciler) syncRecoveryEventsFromSlices(ctx context.Con
 	return nil
 }
 
-// findEventForDevice returns the index into status.events of the existing event for the
-// given node+BDF, or -1 if there is none.
-//
-// This enforces a single-event-per-device invariant: at most one recovery may run against a GPU at a
-// time, so a new event is only created once the previous one has been removed (the taint cleared) and
-// the first match is the only match. A device whose taints escalate is handled by escalateEvent
-// rather than by adding a second event.
-func (r *GPURecoveryPlanReconciler) findEventForDevice(plan *intelv1a1.GPURecoveryPlan, nodeName, bdf string) int {
+// processApprovals starts the recovery of every event an admin has authorised: one in
+// waiting-approval that spec.approvals covers, or a permanently failed one an admin has named
+// explicitly.
+func (r *GPURecoveryPlanReconciler) processApprovals(ctx context.Context, plan *intelv1a1.GPURecoveryPlan) {
+	// consumedIDs collects the one-shot approvals used this cycle. Marking them is deferred until
+	// after the loop so that a single selector approval matches every event currently waiting —
+	// three GPUs all needing an sbr, say — rather than being spent on the first one reached.
+	consumedIDs := make(map[string]bool)
+
 	for i := range plan.Status.Events {
-		if plan.Status.Events[i].NodeName == nodeName && plan.Status.Events[i].GPUBDF == bdf {
-			return i
+		evt := &plan.Status.Events[i]
+
+		// Re-approval path: an event that has spent its retry budget can be restarted by an admin
+		// adding an approval that names it.
+		if evt.State == intelv1a1.RecoveryEventStateFailed {
+			approval, ok := r.findExplicitApprovalForEvent(plan, evt)
+			if !ok {
+				continue
+			}
+
+			now := setEventState(evt, intelv1a1.RecoveryEventStateWaitingApproval,
+				"manually re-approved via approval %s after exhausting its retries; retry budget reset",
+				approval.ID)
+			evt.RetryCount = 0
+			evt.ApprovalID = approval.ID
+			evt.ApprovalMatchedAt = &now
+
+			appendMessage(plan, fmt.Sprintf("Event %s manually re-approved via approval %s; retry budget reset",
+				evt.ID, approval.ID))
+			klog.Infof("GPURecoveryPlan %s: event %s re-approved via %s, retry budget reset",
+				plan.Name, evt.ID, approval.ID)
+
+			// State is waiting-approval now; fall through so the Job is created in this same cycle.
 		}
-	}
 
-	return -1
-}
+		if evt.State != intelv1a1.RecoveryEventStateWaitingApproval {
+			continue
+		}
 
-// addNewEvents creates a RecoveryEvent for every tainted device that does not have one
-// yet, up to maxStatusEvents entries in status.events.
-func (r *GPURecoveryPlanReconciler) addNewEvents(plan *intelv1a1.GPURecoveryPlan, active map[deviceKey]deviceNeed) {
-	skipped := 0
-
-	for dk, need := range active {
-		// A device that already has an event does not get a second one, but its taints may
-		// since have escalated to a more severe recovery type.
-		if i := r.findEventForDevice(plan, dk.node, dk.bdf); i >= 0 {
-			r.escalateEvent(plan, &plan.Status.Events[i], need)
+		approval, ok := r.findMatchingApproval(ctx, plan, evt)
+		if !ok {
+			klog.V(2).Infof("GPURecoveryPlan %s: no matching approval for event %s", plan.Name, evt.ID)
 
 			continue
 		}
 
-		if len(plan.Status.Events) >= maxStatusEvents {
-			skipped++
+		// Record which approval authorised this event, and when.
+		if evt.ApprovalID != approval.ID {
+			now := metav1.NewTime(time.Now())
+			evt.ApprovalID = approval.ID
+			evt.ApprovalMatchedAt = &now
+			evt.LastUpdated = &now
+
+			appendMessage(plan, fmt.Sprintf("Event %s matched approval %s", evt.ID, approval.ID))
+		}
+
+		// Apply any override before creating the Job.
+		r.applyOverride(plan, evt, approval)
+
+		if err := r.createRecoveryJob(ctx, plan, evt); err != nil {
+			klog.Errorf("GPURecoveryPlan %s: failed to create job for event %s: %v", plan.Name, evt.ID, err)
+			appendMessage(plan, fmt.Sprintf("Event %s: failed to create recovery job: %v", evt.ID, err))
+
+			// State unchanged — the event keeps its approval and is retried on the next pass; only
+			// the reason it has not started yet is recorded.
+			setEventState(evt, evt.State, "the recovery Job could not be created: %v", err)
 
 			continue
 		}
 
-		r.addRecoveryEvent(plan, dk.node, dk.bdf, need)
+		// Only consume a one-shot approval once the event has actually left waiting-approval.
+		if !approval.Persistent && evt.State == intelv1a1.RecoveryEventStateInProgress {
+			consumedIDs[approval.ID] = true
+		}
 	}
 
-	if skipped > 0 {
-		msg := fmt.Sprintf("status.events is at its %d-entry limit: %d newly detected device(s) not recorded",
-			maxStatusEvents, skipped)
-
-		r.appendMessage(plan, msg)
-		klog.Warningf("GPURecoveryPlan %s: %s", plan.Name, msg)
+	for id := range consumedIDs {
+		setApprovalConsumed(plan, id)
 	}
 }
 
-// addRecoveryEvent appends a new RecoveryEvent in waiting-approval state to the plan status.
-func (r *GPURecoveryPlanReconciler) addRecoveryEvent(plan *intelv1a1.GPURecoveryPlan, nodeName, bdf string, need deviceNeed) {
-	id := generateEventID(nodeName, bdf, need.rt)
+// findMatchingApproval returns the first spec.approvals entry that authorises the given event.
+// An approval matches when:
+//   - it names the event through eventId (a single approval), or
+//   - its selector matches the event's recovery type, node name and node labels (a group
+//     approval). Every field set on the selector must match; unset fields mean "any".
+func (r *GPURecoveryPlanReconciler) findMatchingApproval(ctx context.Context, plan *intelv1a1.GPURecoveryPlan,
+	evt *intelv1a1.RecoveryEvent) (intelv1a1.RecoveryApproval, bool) {
+	evtType := evt.RecoveryType.Type
+	if evtType == "" {
+		klog.Warningf("GPURecoveryPlan %s: event %s has no recovery type; skipping approval matching",
+			plan.Name, evt.ID)
 
-	evt := intelv1a1.RecoveryEvent{
-		ID:           id,
-		NodeName:     nodeName,
-		GPUBDF:       bdf,
-		Reason:       need.reason,
-		RecoveryType: intelv1a1.RecoveryTypeSpec{Type: need.rt},
-		RetryCount:   0,
+		return intelv1a1.RecoveryApproval{}, false
 	}
 
-	// No message: reason, nodeName, gpuBDF and recoveryType already say everything about a new
-	// event, and restating them would only train an admin to ignore the field.
-	setEventState(&evt, intelv1a1.RecoveryEventStateWaitingApproval, "")
+	nodeCache := newNodeLabelCache(ctx, r)
 
-	plan.Status.Events = append(plan.Status.Events, evt)
+	for _, a := range plan.Spec.Approvals {
+		if a.Consumed {
+			continue
+		}
 
-	r.appendMessage(plan, fmt.Sprintf("New recovery event %s for %s on %s (reason: %s, type: %s)",
-		id, bdf, nodeName, need.reason, need.rt))
+		// A single approval, naming one event.
+		if a.EventID == evt.ID {
+			return a, true
+		}
 
-	klog.Infof("GPURecoveryPlan %s: added recovery event %s for device %s on node %s (reason: %s)",
-		plan.Name, id, bdf, nodeName, need.reason)
+		// A group approval, describing a set of events.
+		if a.Selector != nil {
+			if a.Selector.RecoveryType != "" && a.Selector.RecoveryType != evtType {
+				continue
+			}
+
+			if a.Selector.NodeName != "" && a.Selector.NodeName != evt.NodeName {
+				continue
+			}
+
+			if !nodeSelectorMatches(a.Selector.NodeSelector, evt.NodeName, nodeCache) {
+				continue
+			}
+
+			return a, true
+		}
+	}
+
+	return intelv1a1.RecoveryApproval{}, false
 }
 
-// escalateEvent up-levels an existing event in place when the device's taints now call for a more
-// severe recovery than the event was created for. In practice that is the wedged -> survivability
-// transition (reset -> reflash): the DRA driver applies the survivability taint alongside the wedged
-// one, so a GPU that was merely stuck can turn out to need a firmware reflash while its reset event
-// is still pending.
-//
-// Escalation is in-place rather than a second event because only one recovery may run against a GPU
-// at a time; two approvable events for one device would let a reset and a reflash Job race on the
-// same hardware.
-//
-// Escalation is one-way: the reverse (survivability clears, wedged remains) does not downgrade,
-// mirroring higherPriorityNeed's "act on the worst condition" rule. Being monotonic also bounds it —
-// reflash is the top of the ordering, so a device escalates at most once per event lifetime and
-// flapping taints cannot drive a loop.
-func (r *GPURecoveryPlanReconciler) escalateEvent(plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent, need deviceNeed) {
-	if recoveryTypePriority(need.rt) <= recoveryTypePriority(evt.RecoveryType.Type) {
+// findExplicitApprovalForEvent returns an unconsumed approval that names the event through eventId.
+func (r *GPURecoveryPlanReconciler) findExplicitApprovalForEvent(plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent) (intelv1a1.RecoveryApproval, bool) {
+	for _, a := range plan.Spec.Approvals {
+		if a.EventID == evt.ID && !a.Consumed {
+			return a, true
+		}
+	}
+
+	return intelv1a1.RecoveryApproval{}, false
+}
+
+// applyOverride re-aims evt's reset type at approval.Override.RecoveryType, if set. The DRA driver
+// cannot tell which reset mechanism a platform needs (see taintToDeviceNeed), so this is where an
+// admin's choice of a different reset is honoured.
+func (r *GPURecoveryPlanReconciler) applyOverride(plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent, approval intelv1a1.RecoveryApproval) {
+	if approval.Override == nil {
 		return
 	}
 
-	oldID := evt.ID
-	oldType := evt.RecoveryType.Type
+	if evt.RecoveryType.IsReflash() {
+		klog.Warningf("GPURecoveryPlan %s: approval %s specifies an override but event %s is not a reset-type event; ignoring",
+			plan.Name, approval.ID, evt.ID)
 
-	// The ID embeds the recovery type, so it has to be regenerated. That also invalidates
-	// any spec.approvals entry naming the old ID, which is the point: an admin who approved
-	// a slot reset has not approved a firmware reflash, and re-using the ID would silently
-	// promote the narrower approval to the more destructive operation. A selector approval
-	// for the new type still matches, since that is an explicit standing decision.
-	evt.ID = generateEventID(evt.NodeName, evt.GPUBDF, need.rt)
-	evt.RecoveryType = intelv1a1.RecoveryTypeSpec{Type: need.rt}
+		return
+	}
 
-	// The cause changed too — the device is in survivability mode now, not merely wedged.
-	evt.Reason = need.reason
+	newType := approval.Override.RecoveryType
+	if newType == intelv1a1.RecoveryTypeReflash {
+		klog.Warningf("GPURecoveryPlan %s: approval %s cannot override reset event %s to reflash; ignoring",
+			plan.Name, approval.ID, evt.ID)
 
-	// Back to square one: unapproved, with a fresh retry budget, because the escalated operation is
-	// not the one the previous attempts were spending that budget on.
-	evt.RetryCount = 0
-	evt.ApprovalID = ""
-	evt.ApprovalMatchedAt = nil
+		return
+	}
 
-	// Back in waiting-approval with a different ID than the admin last saw, which needs saying: an
-	// approval that was granted has stopped applying, and nothing else on the event explains why.
-	setEventState(evt, intelv1a1.RecoveryEventStateWaitingApproval,
-		"escalated from %s to %s (%s); the approval for the previous type no longer applies",
-		oldType, need.rt, need.reason)
+	if evt.RecoveryType.Type == newType {
+		return
+	}
 
-	klog.Infof("GPURecoveryPlan %s: escalated event %s -> %s for %s/%s (%s -> %s); awaiting approval",
-		plan.Name, oldID, evt.ID, evt.NodeName, evt.GPUBDF, oldType, need.rt)
-	r.appendMessage(plan, fmt.Sprintf("Event %s escalated to %s on %s/%s (was %s, now %s); previous approval no longer applies",
-		oldID, evt.ID, evt.NodeName, evt.GPUBDF, oldType, need.rt))
+	if evt.RecoveryType.SuggestedType == "" {
+		evt.RecoveryType.SuggestedType = evt.RecoveryType.Type
+	}
+
+	klog.Infof("GPURecoveryPlan %s: event %s reset type overridden %s -> %s via approval %s",
+		plan.Name, evt.ID, evt.RecoveryType.Type, newType, approval.ID)
+	appendMessage(plan, fmt.Sprintf("Event %s: reset type overridden from %s to %s via approval %s",
+		evt.ID, evt.RecoveryType.SuggestedType, newType, approval.ID))
+
+	evt.RecoveryType.Type = newType
 }
 
-// removeResolvedEvents removes events whose device taint has cleared: nothing has been done to
-// the GPU yet, so a cleared taint means whatever healed it (a node reboot, an admin) has made
-// the recovery unnecessary, and keeping the event would leave the plan asking for approval to
-// reset a healthy card.
-func (r *GPURecoveryPlanReconciler) removeResolvedEvents(
-	plan *intelv1a1.GPURecoveryPlan,
-	active map[deviceKey]deviceNeed,
-) {
+// prepareRecoveryJob applies the naming, labelling, ownership, node-pinning and pull settings
+// every recovery Job needs, and returns the Job name.
+func (r *GPURecoveryPlanReconciler) prepareRecoveryJob(job *batch.Job, plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent) string {
+	// The attempt index (how many Jobs this event has already run) goes in the name, so each retry
+	// gets a name of its own and every attempt stays readable until the event is removed.
+	jobName := recoveryJobName(evt.ID, len(evt.PastJobs))
+	job.Name = jobName
+	job.Namespace = r.Opts.Namespace
+
+	if job.Labels == nil {
+		job.Labels = make(map[string]string)
+	}
+
+	job.Labels[recoveryJobLabelPlan] = plan.Name
+	job.Labels[recoveryJobLabelEvent] = evt.ID
+
+	// Own the Job so that (a) its status changes wake this controller through the
+	// Owns(&batch.Job{}) watch instead of waiting out a full RequeueDelay, and (b) any Job that
+	// deleteAllJobs misses is garbage-collected with the plan rather than leaking.
+	if err := ctrl.SetControllerReference(plan, job, r.Scheme); err != nil {
+		warning := fmt.Sprintf("Event %s: failed to set controller reference on Job %s: %v", evt.ID, jobName, err)
+		appendMessage(plan, warning)
+		klog.Warning(warning)
+	}
+
+	// Pin the pod to the node hosting the affected GPU.
+	job.Spec.Template.Spec.NodeName = evt.NodeName
+
+	// Tolerate every taint.
+	job.Spec.Template.Spec.Tolerations = append(
+		[]core.Toleration{{Operator: core.TolerationOpExists}},
+		plan.Spec.Tolerations...,
+	)
+
+	if plan.Spec.XpuSmi.PullPolicy != "" {
+		job.Spec.Template.Spec.Containers[0].ImagePullPolicy = core.PullPolicy(plan.Spec.XpuSmi.PullPolicy)
+	}
+
+	if r.Opts.SecretName != "" {
+		job.Spec.Template.Spec.ImagePullSecrets = []core.LocalObjectReference{{Name: r.Opts.SecretName}}
+	}
+
+	return jobName
+}
+
+// createRecoveryJob creates the Job that carries out the event's recovery and moves the event to
+// in-progress.
+func (r *GPURecoveryPlanReconciler) createRecoveryJob(ctx context.Context, plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent) error {
+	if evt.RecoveryType.IsReflash() {
+		// A reflash writes firmware over a card that is already in survivability mode rather than
+		// resetting the PCIe bus, so it is a different Job built from different inputs — a firmware
+		// image and a file within it — which this version does not assemble yet. The event keeps
+		// its state and its approval, so it starts as soon as the operator can carry it out.
+		setEventState(evt, evt.State, "a firmware reflash is not carried out by this version of the operator")
+
+		klog.Warningf("GPURecoveryPlan %s: event %s calls for a firmware reflash, which is not implemented; leaving it in %s",
+			plan.Name, evt.ID, evt.State)
+
+		return nil
+	}
+
+	return r.createResetJob(ctx, plan, evt)
+}
+
+// createResetJob creates the PCIe-reset Job for a reset event and moves the event to in-progress.
+func (r *GPURecoveryPlanReconciler) createResetJob(ctx context.Context, plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent) error {
+	rt := evt.RecoveryType.Type
+
+	args := recoveryTypeToArgs(evt.GPUBDF, rt)
+	if args == nil {
+		klog.Warningf("GPURecoveryPlan %s: unsupported recovery type %s for event %s; skipping", plan.Name, rt, evt.ID)
+
+		return nil
+	}
+
+	job := deployments.XpuManagerResetJob()
+	jobName := r.prepareRecoveryJob(job, plan, evt)
+
+	// Inject the xpu-smi image and the reset command from the plan and the event.
+	for i := range job.Spec.Template.Spec.Containers {
+		if job.Spec.Template.Spec.Containers[i].Name == "resetter" {
+			if plan.Spec.XpuSmi.Image != "" {
+				job.Spec.Template.Spec.Containers[i].Image = plan.Spec.XpuSmi.Image
+			}
+
+			job.Spec.Template.Spec.Containers[i].Args = args
+
+			break
+		}
+	}
+
+	if err := r.Create(ctx, job); err != nil {
+		if !k8serrors.IsAlreadyExists(err) {
+			return fmt.Errorf("creating recovery Job %s: %w", jobName, err)
+		}
+
+		// The Job is already there: an earlier pass created it and lost its status write. Adopting
+		// it is right — the name embeds the event ID and the attempt index, so this is the very
+		// Job this attempt wanted.
+		klog.V(2).Infof("GPURecoveryPlan %s: Job %s already exists", plan.Name, jobName)
+	}
+
+	evt.JobName = jobName
+
+	setEventState(evt, intelv1a1.RecoveryEventStateInProgress, "")
+
+	appendMessage(plan, fmt.Sprintf("Event %s: recovery Job %s created (type: %s, node: %s, bdf: %s)",
+		evt.ID, jobName, rt, evt.NodeName, evt.GPUBDF))
+
+	klog.Infof("GPURecoveryPlan %s: created recovery Job %s for event %s (type: %s, node: %s, bdf: %s)",
+		plan.Name, jobName, evt.ID, rt, evt.NodeName, evt.GPUBDF)
+
+	return nil
+}
+
+// syncJobStatuses polls the Job of every in-progress event and moves the event to succeeded or
+// failed once the Job has finished.
+func (r *GPURecoveryPlanReconciler) syncJobStatuses(ctx context.Context, plan *intelv1a1.GPURecoveryPlan) error { // nolint:unparam
+	for i := range plan.Status.Events {
+		evt := &plan.Status.Events[i]
+		if evt.State != intelv1a1.RecoveryEventStateInProgress || evt.JobName == "" {
+			continue
+		}
+
+		job := &batch.Job{}
+
+		if err := r.Get(ctx, types.NamespacedName{Name: evt.JobName, Namespace: r.Opts.Namespace}, job); err != nil {
+			klog.Warningf("GPURecoveryPlan %s: failed to get Job %s for event %s: %v",
+				plan.Name, evt.JobName, evt.ID, err)
+
+			continue
+		}
+
+		for _, cond := range job.Status.Conditions {
+			if cond.Status != core.ConditionTrue {
+				continue
+			}
+
+			switch cond.Type {
+			case batch.JobComplete:
+				klog.Infof("GPURecoveryPlan %s: Job %s succeeded for event %s", plan.Name, evt.JobName, evt.ID)
+				appendMessage(plan, fmt.Sprintf("Event %s: recovery Job %s succeeded — pods retained until taint clears",
+					evt.ID, evt.JobName))
+
+				evt.PastJobs = append(evt.PastJobs, evt.JobName)
+				evt.JobName = ""
+
+				// No message: the state is the whole story, and the Job that produced it is the
+				// last entry in pastJobs.
+				setEventState(evt, intelv1a1.RecoveryEventStateSucceeded, "")
+
+			case batch.JobFailed:
+				klog.Warningf("GPURecoveryPlan %s: Job %s failed for event %s", plan.Name, evt.JobName, evt.ID)
+				appendMessage(plan, fmt.Sprintf("Event %s: recovery Job %s failed (retries: %d) — pods retained until taint clears",
+					evt.ID, evt.JobName, evt.RetryCount))
+
+				failedJob := evt.JobName
+
+				evt.PastJobs = append(evt.PastJobs, evt.JobName)
+				evt.JobName = ""
+				evt.RetryCount++
+
+				// Record which attempt this was, since that says whether the operator will try
+				// again, plus the Job's own verdict: BackoffLimitExceeded and DeadlineExceeded are
+				// different problems, and the pod is gone once the event is removed.
+				setEventState(evt, intelv1a1.RecoveryEventStateFailed,
+					"recovery Job %s failed on attempt %d of %d: %s",
+					failedJob, evt.RetryCount, plan.Spec.MaxRetries, jobFailureDetail(cond))
+			}
+		}
+	}
+
+	return nil
+}
+
+// deleteEventJobs deletes the event's current Job, if any, and every Job it has already run.
+func (r *GPURecoveryPlanReconciler) deleteEventJobs(ctx context.Context, planName string, evt intelv1a1.RecoveryEvent) {
+	if evt.JobName != "" {
+		r.deleteJobByName(ctx, planName, evt.JobName)
+	}
+
+	for _, name := range evt.PastJobs {
+		r.deleteJobByName(ctx, planName, name)
+	}
+}
+
+// deleteAllJobs deletes every Job belonging to the plan.
+func (r *GPURecoveryPlanReconciler) deleteAllJobs(ctx context.Context, plan *intelv1a1.GPURecoveryPlan) {
+	jobList := &batch.JobList{}
+
+	if err := r.List(ctx, jobList,
+		client.InNamespace(r.Opts.Namespace),
+		client.MatchingLabels{recoveryJobLabelPlan: plan.Name},
+	); err != nil {
+		klog.Warningf("GPURecoveryPlan %s: failed to list recovery Jobs for deletion: %v", plan.Name, err)
+	}
+
+	for i := range jobList.Items {
+		r.deleteJobByName(ctx, plan.Name, jobList.Items[i].Name)
+	}
+
+	for _, evt := range plan.Status.Events {
+		r.deleteEventJobs(ctx, plan.Name, evt)
+	}
+}
+
+// deleteJobByName deletes a single Job by name, cascading to its pods through Background
+// propagation.
+func (r *GPURecoveryPlanReconciler) deleteJobByName(ctx context.Context, planName, jobName string) {
+	job := &batch.Job{}
+
+	if err := r.Get(ctx, types.NamespacedName{Name: jobName, Namespace: r.Opts.Namespace}, job); err != nil {
+		if !k8serrors.IsNotFound(err) {
+			klog.Warningf("GPURecoveryPlan %s: failed to get Job %s for deletion: %v", planName, jobName, err)
+		}
+
+		return
+	}
+
+	bg := metav1.DeletePropagationBackground
+
+	if err := r.Delete(ctx, job, &client.DeleteOptions{PropagationPolicy: &bg}); err != nil {
+		if !k8serrors.IsNotFound(err) {
+			klog.Warningf("GPURecoveryPlan %s: failed to delete Job %s: %v", planName, jobName, err)
+		}
+
+		return
+	}
+
+	klog.Infof("GPURecoveryPlan %s: deleted Job %s", planName, jobName)
+}
+
+// removeResolvedEvents removes events whose device taint has cleared, and deletes the Jobs they
+// ran. A cleared taint means the GPU no longer needs recovering: either the recovery worked, or
+// something else (a node reboot, an admin) healed it, and keeping the event would leave the plan
+// asking for approval to reset a healthy card.
+func (r *GPURecoveryPlanReconciler) removeResolvedEvents(ctx context.Context, plan *intelv1a1.GPURecoveryPlan, active map[deviceKey]deviceNeed) {
 	kept := plan.Status.Events[:0]
 
 	for _, evt := range plan.Status.Events {
@@ -337,110 +743,27 @@ func (r *GPURecoveryPlanReconciler) removeResolvedEvents(
 			continue
 		}
 
+		if evt.State == intelv1a1.RecoveryEventStateInProgress {
+			klog.V(2).Infof("GPURecoveryPlan %s: taint cleared on %s/%s but event %s still has Job %s in flight; keeping it",
+				plan.Name, evt.NodeName, evt.GPUBDF, evt.ID, evt.JobName)
+
+			kept = append(kept, evt)
+
+			continue
+		}
+
 		klog.Infof("GPURecoveryPlan %s: removing resolved event %s (taint cleared on %s/%s, state: %s)",
 			plan.Name, evt.ID, evt.NodeName, evt.GPUBDF, evt.State)
 
-		r.appendMessage(plan, fmt.Sprintf("Event %s cleared: taint resolved on %s/%s",
+		appendMessage(plan, fmt.Sprintf("Event %s cleared: taint resolved on %s/%s",
 			evt.ID, evt.NodeName, evt.GPUBDF))
+
+		// The Jobs were kept alive for as long as the event was, so their pods could be read for
+		// diagnostics. This is where that ends.
+		r.deleteEventJobs(ctx, plan.Name, evt)
 	}
 
 	plan.Status.Events = kept
-}
-
-// setEventState records the state an event is moving to together with the sentence that explains it,
-// and stamps LastUpdated. Every state write goes through it, so status.events[].stateMessage always
-// describes the state next to it.
-//
-// Returns the timestamp the event now carries, so a caller that has another clock to set uses the
-// same instant rather than reading the wall clock twice.
-//
-// nolint:unparam // detection only ever parks an event in waiting-approval; the states the
-// recovery phases move it through are the reason this takes the state as a parameter.
-func setEventState(evt *intelv1a1.RecoveryEvent, state intelv1a1.RecoveryEventState, format string, args ...any) metav1.Time {
-	msg := ""
-	if format != "" {
-		msg = capString(fmt.Sprintf(format, args...), maxStateMessageLen)
-	}
-
-	if evt.State == state && evt.StateMessage == msg && evt.LastUpdated != nil {
-		return *evt.LastUpdated
-	}
-
-	now := metav1.NewTime(time.Now())
-	evt.State = state
-	evt.StateMessage = msg
-	evt.LastUpdated = &now
-
-	return now
-}
-
-// capString truncates a single string for storage in status, marking it when anything was cut so a
-// reader can tell a complete message from a clipped one. Counted in bytes rather than runes, since
-// the limit exists to bound the size of the stored object.
-func capString(s string, limit int) string {
-	const marker = "..."
-
-	if len(s) <= limit {
-		return s
-	}
-
-	// Back off to a rune boundary so the result stays valid UTF-8; the API server would otherwise
-	// reject the status write outright.
-	cut := limit - len(marker)
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-
-	return s[:cut] + marker
-}
-
-// updatePlanState derives the overall plan state from the current events and sets status.state,
-// the value shown in the "State" print column of `kubectl get gpurecoveryplan`.
-func (r *GPURecoveryPlanReconciler) updatePlanState(plan *intelv1a1.GPURecoveryPlan) {
-	anyActive := false
-	anyStuck := false
-
-	for _, evt := range plan.Status.Events {
-		switch evt.State {
-		case intelv1a1.RecoveryEventStateWaitingApproval,
-			intelv1a1.RecoveryEventStateBlocked,
-			intelv1a1.RecoveryEventStateDraining,
-			intelv1a1.RecoveryEventStateInProgress:
-			// blocked is active, not stuck: it clears on its own once the node frees up.
-			anyActive = true
-
-		case intelv1a1.RecoveryEventStateMissingFirmware:
-			// Blocked on operator configuration, not on hardware or an admin decision:
-			// the reflash cannot even be attempted until spec.firmware is filled in.
-			anyStuck = true
-
-		case intelv1a1.RecoveryEventStateFailed:
-			// A failure within the retry budget is re-queued for another approval, so only an
-			// event that has spent its budget needs an admin.
-			if evt.RetryCount >= plan.Spec.MaxRetries {
-				anyStuck = true
-			}
-		}
-	}
-
-	switch {
-	case anyStuck:
-		plan.Status.State = intelv1a1.PlanStateError
-	case anyActive:
-		plan.Status.State = intelv1a1.PlanStateActive
-	default:
-		plan.Status.State = intelv1a1.PlanStateIdle
-	}
-}
-
-// appendMessage appends a message to status.messages, evicting the oldest entry if the
-// cap (maxStatusMessages) has been reached.
-func (r *GPURecoveryPlanReconciler) appendMessage(plan *intelv1a1.GPURecoveryPlan, msg string) {
-	plan.Status.Messages = append(plan.Status.Messages, msg)
-
-	for len(plan.Status.Messages) > maxStatusMessages {
-		plan.Status.Messages = plan.Status.Messages[1:]
-	}
 }
 
 // resourceSliceToPlans maps a ResourceSlice event to reconcile requests for all
@@ -497,6 +820,11 @@ func (r *GPURecoveryPlanReconciler) SetupWithManager(mgr ctrl.Manager, opts Cont
 			&resv1.ResourceSlice{},
 			handler.EnqueueRequestsFromMapFunc(r.resourceSliceToPlans),
 		).
+		// Recovery Jobs are owned by the plan, so a Job reaching Complete or Failed wakes this
+		// controller immediately instead of waiting out the RequeueAfter poll. The owner reference
+		// is cross-scope (cluster-scoped plan, namespaced Job), which is why the request the
+		// handler produces carries only the plan's name.
+		Owns(&batch.Job{}).
 		Named("gpurecoveryplan").
 		Complete(r)
 }

@@ -6,6 +6,7 @@ misconfigurations:
       NOTE: FW update could also use monitoring/admin access from GPU DP or DRA, and then drop privileged access.
     paths:
       - xpum/xpum-fwupdate-job.yaml
+      - xpum/xpum-reset-job.yaml
 
   - id: AVD-KSV-0005
     statement: "XPUM requires SYS_ADMIN for some GPU metrics"
@@ -19,11 +20,13 @@ misconfigurations:
       - dp/dp.yaml
       - xpum/xpum.yaml
       - xpum/xpum-fwupdate-job.yaml
+      - xpum/xpum-reset-job.yaml
 
   - id: AVD-KSV-0017
     statement: "DP levelzero & fwupdate requires privileged access / allowPrivilegeEscalation"
     paths:
       - xpum/xpum-fwupdate-job.yaml
+      - xpum/xpum-reset-job.yaml
 
   - id: AVD-KSV-0022
     statement: "XPUM requires SYS_ADMIN for some GPU metrics"
@@ -37,6 +40,7 @@ misconfigurations:
       - dra/daemonset.yaml
       - xpum/xpum.yaml
       - xpum/xpum-fwupdate-job.yaml
+      - xpum/xpum-reset-job.yaml
 
   - id: AVD-KSV-0025
     statement: "container_device_plugin_t is a valid SELinux profile"
@@ -68,6 +72,7 @@ misconfigurations:
       - dp/dp.yaml
       - xpum/xpum.yaml
       - xpum/xpum-fwupdate-job.yaml
+      - xpum/xpum-reset-job.yaml
 
   - id: AVD-KSV-0118
     statement: "DP is not deployed to default NS but to where-ever the operator is deployed"
@@ -76,6 +81,7 @@ misconfigurations:
       - dra/daemonset.yaml
       - xpum/xpum.yaml
       - xpum/xpum-fwupdate-job.yaml
+      - xpum/xpum-reset-job.yaml
 
   - id: AVD-KSV-0125
     statement: "Dockerhub.io is ok"
@@ -84,12 +90,14 @@ misconfigurations:
       - xpum/xpum.yaml
       - dra/daemonset.yaml
       - xpum/xpum-fwupdate-job.yaml
+      - xpum/xpum-reset-job.yaml
 
   - id: AVD-KSV-0121
     statement: "/sys is required for DRA"
     paths:
       - dra/daemonset.yaml
       - xpum/xpum-fwupdate-job.yaml
+      - xpum/xpum-reset-job.yaml
 
   - id: AVD-DS-0002
     statement: ""

@@ -73,6 +73,7 @@ rules:
   resources:
   - clusterpolicies/finalizers
   - gpufirmwareupdates/finalizers
+  - gpurecoveryplans/finalizers
   verbs:
   - update
 - apiGroups:
@@ -92,6 +93,8 @@ rules:
   verbs:
   - get
   - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - kmm.sigs.x-k8s.io

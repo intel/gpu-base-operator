@@ -17,6 +17,19 @@ limitations under the License.
 package controller
 
 const (
+	// recoveryPlanFinalizer is set on every live GPURecoveryPlan. It holds the object in place
+	// while a recovery Job is still running, so the Jobs are cleaned up rather than orphaned.
+	recoveryPlanFinalizer = "gpurecoveryplan.intel.com/finalizer"
+
+	// recoveryJobLabelPlan is the label key placed on every recovery Job; its value is the name
+	// of the owning GPURecoveryPlan. It is what finds a plan's Jobs when status.events no longer
+	// names them.
+	recoveryJobLabelPlan = "gpurecoveryplan.intel.com/plan"
+
+	// recoveryJobLabelEvent is the label key placed on every recovery Job; its value is the ID of
+	// the RecoveryEvent the Job was created for.
+	recoveryJobLabelEvent = "gpurecoveryplan.intel.com/event"
+
 	// DRA's device attributes
 	// deviceAttrDeviceID is the ResourceSlice device attribute name for the PCI device ID.
 	deviceAttrDeviceID = "pciId"
