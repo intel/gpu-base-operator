@@ -101,7 +101,9 @@ var _ = BeforeSuite(func() {
 	}
 
 	testEnv.ControlPlane.APIServer = &envtest.APIServer{}
-	testEnv.ControlPlane.APIServer.Configure().Append("feature-gates", "DynamicResourceAllocation=true")
+	// DRADeviceTaints is what makes the API server keep ResourceSlice device taints instead of
+	// pruning them, and those taints are the recovery trigger the GPURecoveryPlan tests drive.
+	testEnv.ControlPlane.APIServer.Configure().Append("feature-gates", "DynamicResourceAllocation=true,DRADeviceTaints=true")
 	testEnv.ControlPlane.APIServer.Configure().Append("runtime-config", "resource.k8s.io/v1beta1=true,resource.k8s.io/v1alpha3=true")
 
 	// Retrieve the first found binary directory to allow running tests from IDEs
