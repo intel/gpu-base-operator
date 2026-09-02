@@ -169,6 +169,13 @@ func XpuManagerFWUpdateJob() *batch.Job {
 	return getJob(xpumFWUpdateJob).DeepCopy()
 }
 
+//go:embed xpum/xpum-reset-job.yaml
+var xpumResetJob []byte
+
+func XpuManagerResetJob() *batch.Job {
+	return getJob(xpumResetJob).DeepCopy()
+}
+
 // generic functions
 
 func getDaemonset(content []byte) *apps.DaemonSet {
