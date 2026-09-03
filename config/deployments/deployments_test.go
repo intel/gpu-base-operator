@@ -543,3 +543,34 @@ func TestDRAClusterRole_NoWildcardsAndNoSecrets(t *testing.T) {
 		}
 	}
 }
+
+func TestUnmarshalFailurePanics(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		get  func([]byte)
+	}{
+		{"getService", func(b []byte) { _ = getService(b) }},
+		{"getServiceAccount", func(b []byte) { _ = getServiceAccount(b) }},
+		{"getDaemonset", func(b []byte) { _ = getDaemonset(b) }},
+		{"getClusterRole", func(b []byte) { _ = getClusterRole(b) }},
+		{"getClusterRoleBinding", func(b []byte) { _ = getClusterRoleBinding(b) }},
+		{"getAdmissionPolicy", func(b []byte) { _ = getAdmissionPolicy(b) }},
+		{"getAdmissionPolicyBinding", func(b []byte) { _ = getAdmissionPolicyBinding(b) }},
+		{"getDeviceClass", func(b []byte) { _ = getDeviceClass(b) }},
+		{"getResourceClaimTemplate", func(b []byte) { _ = getResourceClaimTemplate(b) }},
+		{"getNodeFeatureRule", func(b []byte) { _ = getNodeFeatureRule(b) }},
+		{"getServiceMonitor", func(b []byte) { _ = getServiceMonitor(b) }},
+		{"getJob", func(b []byte) { _ = getJob(b) }},
+		{"getOTelConfig", func(b []byte) { _ = getOTelConfig(b) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Errorf("expected panic when %s unmarshals invalid YAML", tc.name)
+				}
+			}()
+
+			tc.get([]byte("["))
+		})
+	}
+}
