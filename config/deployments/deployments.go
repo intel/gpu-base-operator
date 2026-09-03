@@ -32,8 +32,10 @@ import (
 )
 
 const (
-	vfioExpression   = `device.attributes["gpu.intel.com"].driver == 'vfio-pci'`
-	xeVfioExpression = `device.attributes["gpu.intel.com"].driver == 'xe-vfio-pci'`
+	vfioDriverExpression   = `device.attributes["gpu.intel.com"].driver == 'vfio-pci'`
+	xeVfioDriverExpression = `device.attributes["gpu.intel.com"].driver == 'xe-vfio-pci'`
+	i915DriverExpressions  = `device.attributes["gpu.intel.com"].driver == 'i915'`
+	xeDriverExpressions    = `device.attributes["gpu.intel.com"].driver == 'xe'`
 )
 
 // XPU Manager
@@ -94,8 +96,18 @@ func DynamicResourceAllocationServiceAccount() *core.ServiceAccount {
 //go:embed dra/device-class.yaml
 var contentDRADC []byte
 
-func DynamicResourceAllocationDeviceClass() *resv1.DeviceClass {
-	return getDeviceClass(contentDRADC).DeepCopy()
+func DynamicResourceAllocationDeviceClass(limitToKMDs bool) *resv1.DeviceClass {
+	dc := getDeviceClass(contentDRADC).DeepCopy()
+
+	if limitToKMDs {
+		dc.Spec.Selectors = append(dc.Spec.Selectors, resv1.DeviceSelector{
+			CEL: &resv1.CELDeviceSelector{
+				Expression: fmt.Sprintf("%s || %s", i915DriverExpressions, xeDriverExpressions),
+			},
+		})
+	}
+
+	return dc
 }
 
 //go:embed dra/device-class-vfio.yaml
@@ -108,7 +120,7 @@ func DynamicResourceAllocationDeviceClassVfio(limitToVfio bool) *resv1.DeviceCla
 	if limitToVfio {
 		dc.Spec.Selectors = append(dc.Spec.Selectors, resv1.DeviceSelector{
 			CEL: &resv1.CELDeviceSelector{
-				Expression: fmt.Sprintf("%s || %s", vfioExpression, xeVfioExpression),
+				Expression: fmt.Sprintf("%s || %s", vfioDriverExpression, xeVfioDriverExpression),
 			},
 		})
 	}

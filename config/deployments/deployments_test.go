@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	core "k8s.io/api/core/v1"
+	resv1 "k8s.io/api/resource/v1"
 )
 
 const (
@@ -86,17 +87,27 @@ func TestDynamicResourceAllocationServiceAccount(t *testing.T) {
 	}
 }
 
-func TestDynamicResourceAllocationDeviceClass(t *testing.T) {
-	dc := DynamicResourceAllocationDeviceClass()
-	if dc == nil {
-		t.Error("DynamicResourceAllocationDeviceClass returned nil")
-	}
-}
-
-func TestDynamicResourceAllocationDeviceClassVfio(t *testing.T) {
-	dc := DynamicResourceAllocationDeviceClassVfio(false)
-	if dc == nil {
-		t.Error("DynamicResourceAllocationDeviceClassVfio returned nil")
+func TestDeviceClassDriverSelectors(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		get       func(bool) *resv1.DeviceClass
+		limit     bool
+		selectors int
+	}{
+		{"DeviceClass without driver limit", DynamicResourceAllocationDeviceClass, false, 1},
+		{"DeviceClass with driver limit", DynamicResourceAllocationDeviceClass, true, 2},
+		{"vfio DeviceClass without driver limit", DynamicResourceAllocationDeviceClassVfio, false, 1},
+		{"vfio DeviceClass with driver limit", DynamicResourceAllocationDeviceClassVfio, true, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dc := tc.get(tc.limit)
+			if dc == nil {
+				t.Fatal("device class getter returned nil")
+			}
+			if len(dc.Spec.Selectors) != tc.selectors {
+				t.Errorf("expected %d selector(s), got %d", tc.selectors, len(dc.Spec.Selectors))
+			}
+		})
 	}
 }
 
