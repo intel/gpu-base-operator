@@ -223,6 +223,7 @@ var _ = Describe("ClusterPolicy Controller for DRA", func() {
 			for _, dc := range dcList.Items {
 				switch dc.Name {
 				case "gpu.intel.com":
+					Expect(dc.Spec.Selectors).To(HaveLen(2))
 				case "gpu-vfio.intel.com":
 					Expect(dc.Spec.Selectors).To(HaveLen(2))
 				default:
@@ -247,6 +248,7 @@ var _ = Describe("ClusterPolicy Controller for DRA", func() {
 			for _, dc := range dcList.Items {
 				switch dc.Name {
 				case "gpu.intel.com":
+					Expect(dc.Spec.Selectors).To(HaveLen(1))
 				case "gpu-vfio.intel.com":
 					Expect(dc.Spec.Selectors).To(HaveLen(1))
 				default:

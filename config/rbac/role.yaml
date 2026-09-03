@@ -165,24 +165,6 @@ rules:
   - resource.k8s.io
   resources:
   - deviceclasses
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - update
-  - watch
-- apiGroups:
-  - resource.k8s.io
-  resources:
-  - resourceclaims
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - resource.k8s.io
-  resources:
   - resourceclaimtemplates
   - resourceslices
   verbs:
@@ -192,6 +174,14 @@ rules:
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - resource.k8s.io
+  resources:
+  - resourceclaims
+  verbs:
+  - get
+  - list
   - watch
 - apiGroups:
   - security.openshift.io

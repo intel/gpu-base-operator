@@ -84,11 +84,13 @@ func (r *DRAReconciler) createDependencyComponentsIfMissing(ctx context.Context,
 	crb.RoleRef.Name = objName
 	objects = append(objects, crb)
 
-	// Device classes
-	objects = append(objects, deployments.DynamicResourceAllocationDeviceClass())
-
-	// Device Class for VFIO and configure it based on the ManageBinding setting in the CR.
+	// Device classes are configured via ManageBinding setting in the CR.
 	mb := cp.Spec.DynamicResourceAllocationSpec.ManageBinding
+
+	// DRM device class
+	objects = append(objects, deployments.DynamicResourceAllocationDeviceClass(!mb))
+
+	// VFIO device class
 	objects = append(objects, deployments.DynamicResourceAllocationDeviceClassVfio(!mb))
 
 	// Validating admission policy
@@ -120,6 +122,22 @@ func (r *DRAReconciler) createDependencyComponentsIfMissing(ctx context.Context,
 	return nil
 }
 
+func (r *DRAReconciler) ensureDrmDeviceClass(ctx context.Context, manageBinding bool) {
+	desired := deployments.DynamicResourceAllocationDeviceClass(!manageBinding)
+
+	selectors := desired.Spec.Selectors
+
+	if ret, err := controllerutil.CreateOrPatch(ctx, r.Client, desired, func() error {
+		desired.Spec.Selectors = selectors
+
+		return nil
+	}); err != nil {
+		klog.Error(err, "unable to create or patch DRM device class")
+	} else {
+		klog.V(4).Infof("DRM device class %s %s", desired.Name, ret)
+	}
+}
+
 func (r *DRAReconciler) ensureVfioDeviceClass(ctx context.Context, manageBinding bool) {
 	desired := deployments.DynamicResourceAllocationDeviceClassVfio(!manageBinding)
 
@@ -131,7 +149,6 @@ func (r *DRAReconciler) ensureVfioDeviceClass(ctx context.Context, manageBinding
 		return nil
 	}); err != nil {
 		klog.Error(err, "unable to create or patch VFIO device class")
-		return
 	} else {
 		klog.V(4).Infof("VFIO device class %s %s", desired.Name, ret)
 	}
@@ -472,7 +489,10 @@ func (r *DRAReconciler) Reconcile(ctx context.Context, cp *v1alpha.ClusterPolicy
 		return ctrl.Result{}, err
 	}
 
-	r.ensureVfioDeviceClass(ctx, cp.Spec.DynamicResourceAllocationSpec.ManageBinding)
+	manageBinding := cp.Spec.DynamicResourceAllocationSpec.ManageBinding
+
+	r.ensureDrmDeviceClass(ctx, manageBinding)
+	r.ensureVfioDeviceClass(ctx, manageBinding)
 
 	ds := r.buildDraDaemonset(cp)
 
