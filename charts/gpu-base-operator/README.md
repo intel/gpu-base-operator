@@ -39,6 +39,7 @@ See [Customizing the Chart Before Installing](https://helm.sh/docs/intro/using_h
 | `operator.resources.limits.memory` | 128Mi | Memory limit for operator pod |
 | `operator.resources.requests.cpu` | 10m | CPU request for operator pod |
 | `operator.resources.requests.memory` | 64Mi | Memory request for operator pod |
+| `operator.tolerations` | [] | Extra tolerations for the operator pod, added on top of the built-in one for `gpurecoveryplan.intel.com/recovery`. Needed for `GPUFirmwareUpdate`, whose taint key is set by `spec.updateTaint`. |
 | `metrics.enabled` | false | Serve the operator's own metrics endpoint |
 | `metrics.port` | 8443 | Port for the metrics endpoint |
 | `metrics.secure` | true | Serve metrics over HTTPS behind the authn/authz filter |
