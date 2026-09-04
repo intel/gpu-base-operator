@@ -18,6 +18,13 @@ operator:
     requests:
       cpu: 100m
       memory: 256Mi
+  # Extra tolerations for the operator pod, on top of the built-in one for the recovery taint
+  # it applies itself. Set this when using GPUFirmwareUpdate, whose taint key is whatever
+  # spec.updateTaint says and so cannot be tolerated by default:
+  #   - key: gpu-update-in-progress
+  #     operator: Exists
+  #     effect: NoSchedule
+  tolerations: []
 
 metrics:
   # Serve the operator's own metrics (the controller-runtime and workqueue metrics).

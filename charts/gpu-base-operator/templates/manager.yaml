@@ -40,6 +40,25 @@ spec:
       #             operator: In
       #             values:
       #               - linux
+      # The operator must tolerate the taints it applies itself, because it is the only thing
+      # that removes them. A GPURecoveryPlan reset cordons the node it is recovering; if that
+      # reset wedges the host and the operator pod is later evicted, its replacement has to be
+      # schedulable somewhere. On a single-node cluster — or one where every other node is full
+      # or tainted — the only candidate is the cordoned node itself, and without this toleration
+      # the operator can never come back to lift its own taint.
+      #
+      # NoSchedule only: the drain deliberately never evicts the operator's own namespace, so
+      # this covers scheduling a *replacement* pod rather than protecting the running one.
+      #
+      # GPUFirmwareUpdate's taint key comes from spec.updateTaint and has no fixed value, so it
+      # cannot be listed here — add it via operator.tolerations when using that CRD.
+      tolerations:
+      - key: gpurecoveryplan.intel.com/recovery
+        operator: Exists
+        effect: NoSchedule
+      {{- with .Values.operator.tolerations }}
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
       securityContext:
         # Projects are configured by default to adhere to the "restricted" Pod Security Standards.
         # This ensures that deployments meet the highest security requirements for Kubernetes.
