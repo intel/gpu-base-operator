@@ -16,6 +16,8 @@ limitations under the License.
 
 package controller
 
+import "time"
+
 const (
 	// recoveryPlanFinalizer is set on every live GPURecoveryPlan. It holds the object in place
 	// while a recovery Job is still running, so the Jobs are cleaned up rather than orphaned.
@@ -63,6 +65,17 @@ const (
 
 	// maxStateMessageLen caps status.events[].stateMessage.
 	maxStateMessageLen = 200
+
+	// maxPodsBlockingDrainReported caps status.events[].podsBlockingDrain and
+	// status.events[].claimsBlockingReset. A node can hold hundreds of pods, and the field exists
+	// to tell an admin what to go and look at, not to mirror the whole node into the CR.
+	maxPodsBlockingDrainReported = 10
+
+	// recoveryTaintKey is the node taint the operator applies to the node for GPU reset.
+	recoveryTaintKey = "gpurecoveryplan.intel.com/recovery"
+
+	// defaultDrainTimeout mirrors the CRD default for spec.drain.timeoutSeconds.
+	defaultDrainTimeout = 300 * time.Second
 
 	// maxRecoveryNameLen is the hard ceiling on a recovery Job name, and therefore on the
 	// event ID it is built from.

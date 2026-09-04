@@ -371,6 +371,140 @@ func capString(s string, limit int) string {
 	return s[:cut] + marker
 }
 
+// capStrings truncates a list for storage in status, appending a marker when entries were dropped
+// so the count is never silently understated. Returns nil for an empty input so the field is
+// omitted.
+func capStrings(items []string, limit int) []string {
+	if len(items) == 0 {
+		return nil
+	}
+
+	if len(items) <= limit {
+		return items
+	}
+
+	capped := make([]string, 0, limit+1)
+	capped = append(capped, items[:limit]...)
+	capped = append(capped, fmt.Sprintf("... and %d more", len(items)-limit))
+
+	return capped
+}
+
+// recoveryTaint returns the node taint this plan uses while draining. The plan name goes in the
+// value, so two plans draining the same node do not clobber each other's taint.
+func recoveryTaint(planName string) core.Taint {
+	return core.Taint{
+		Key:    recoveryTaintKey,
+		Value:  planName,
+		Effect: core.TaintEffectNoSchedule,
+	}
+}
+
+// needsDrain reports whether an event's recovery has to empty the node before it runs.
+func needsDrain(plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent) bool {
+	if !plan.Spec.Drain.Enabled() {
+		return false
+	}
+
+	return !evt.RecoveryType.IsReflash()
+}
+
+// beginDrain moves an approved event into draining and starts the deadline clock. Called instead
+// of createRecoveryJob for an event whose recovery needs the node emptied first.
+func beginDrain(plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent) {
+	// No message: the state names what is happening, podsBlockingDrain says what it is waiting on,
+	// and drainStartedAt says since when.
+	now := setEventState(evt, intelv1a1.RecoveryEventStateDraining, "")
+	evt.DrainStartedAt = &now
+
+	appendMessage(plan, fmt.Sprintf("Event %s: draining node %s before %s reset",
+		evt.ID, evt.NodeName, evt.RecoveryType.Type))
+	klog.Infof("GPURecoveryPlan %s: event %s draining node %s before %s reset",
+		plan.Name, evt.ID, evt.NodeName, evt.RecoveryType.Type)
+}
+
+// drainDeadlineExceeded reports whether the event has been draining for longer than
+// spec.drain.timeoutSeconds allows.
+func drainDeadlineExceeded(plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent) bool {
+	if evt.DrainStartedAt == nil {
+		now := metav1.NewTime(time.Now())
+		evt.DrainStartedAt = &now
+
+		return false
+	}
+
+	timeout := time.Duration(plan.Spec.Drain.TimeoutSeconds) * time.Second
+	// Shouldn't ever happen, value checked at admission.
+	if timeout <= 0 {
+		timeout = defaultDrainTimeout
+	}
+
+	return time.Since(evt.DrainStartedAt.Time) > timeout
+}
+
+// drainBlockerDetail describes what a drain is still waiting for, for the sentence failDrain
+// records on the event.
+func drainBlockerDetail(blocking, claims []string) string {
+	detail := fmt.Sprintf("%d pod(s) still present", len(blocking))
+	if len(claims) > 0 {
+		detail += fmt.Sprintf(", %d ResourceClaim(s) still reserving the GPU", len(claims))
+	}
+
+	return detail
+}
+
+// failDrain gives up on an event that has sat in draining past its deadline, and records the cause
+// the caller observed on the pass that ran out of time.
+func failDrain(plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent, cause string) {
+	evt.RetryCount++
+	evt.DrainStartedAt = nil
+
+	// The state alone does not say which kind of failure this is: no reset was attempted, so the
+	// GPU is in the same condition as before and what has to change is the workload or the cluster,
+	// not the plan.
+	setEventState(evt, intelv1a1.RecoveryEventStateFailed,
+		"drain of node %s timed out after %ds (%s); reset not attempted",
+		evt.NodeName, plan.Spec.Drain.TimeoutSeconds, cause)
+
+	msg := fmt.Sprintf("Event %s: %s", evt.ID, evt.StateMessage)
+
+	appendMessage(plan, msg)
+	klog.Warningf("GPURecoveryPlan %s: %s (pods: %s; claims: %s)",
+		plan.Name, msg,
+		strings.Join(evt.PodsBlockingDrain, ", "), strings.Join(evt.ClaimsBlockingReset, ", "))
+}
+
+// poolDevice identifies a DRA device the way an allocation result does: by the pool it belongs to
+// plus its name within that pool. The device name alone is only unique per pool.
+type poolDevice struct{ pool, device string }
+
+// claimHoldsDevice reports whether an allocated claim holds one of the given devices for exclusive
+// use.
+func claimHoldsDevice(claim *resv1.ResourceClaim, devices map[poolDevice]struct{}) bool {
+	for _, res := range claim.Status.Allocation.Devices.Results {
+		if res.Driver != gpuDeviceClass {
+			continue
+		}
+
+		if _, match := devices[poolDevice{pool: res.Pool, device: res.Device}]; !match {
+			continue
+		}
+
+		// Per result, not per claim: a claim with both an admin request and a normal one still
+		// holds the device through the normal one.
+		if res.AdminAccess != nil && *res.AdminAccess {
+			klog.V(2).Infof("claim %s/%s has admin access to device %s, which is not an exclusive hold",
+				claim.Namespace, claim.Name, res.Device)
+
+			continue
+		}
+
+		return true
+	}
+
+	return false
+}
+
 // findEventForDevice returns the index into status.events of the existing event for the
 // given node+BDF, or -1 if there is none.
 func findEventForDevice(plan *intelv1a1.GPURecoveryPlan, nodeName, bdf string) int {
@@ -408,7 +542,8 @@ func addRecoveryEvent(plan *intelv1a1.GPURecoveryPlan, nodeName, bdf string, nee
 // hasActiveJobs reports whether any event still has a Job in flight.
 func hasActiveJobs(plan *intelv1a1.GPURecoveryPlan) bool {
 	for _, evt := range plan.Status.Events {
-		if evt.State == intelv1a1.RecoveryEventStateInProgress {
+		if evt.State == intelv1a1.RecoveryEventStateInProgress ||
+			evt.State == intelv1a1.RecoveryEventStateDraining {
 			return true
 		}
 	}
@@ -484,8 +619,13 @@ func pruneConsumedApprovals(plan *intelv1a1.GPURecoveryPlan) {
 }
 
 // appendMessage appends a message to status.messages, evicting the oldest entry if the
-// cap (maxStatusMessages) has been reached.
+// cap (maxStatusMessages) has been reached. Avoid repeating the same message over and over.
 func appendMessage(plan *intelv1a1.GPURecoveryPlan, msg string) {
+	if len(plan.Status.Messages) > 0 && plan.Status.Messages[len(plan.Status.Messages)-1] == msg {
+		// Avoid repeating the same message over and over.
+		return
+	}
+
 	plan.Status.Messages = append(plan.Status.Messages, msg)
 
 	for len(plan.Status.Messages) > maxStatusMessages {

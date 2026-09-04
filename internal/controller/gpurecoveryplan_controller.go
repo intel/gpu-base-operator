@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -54,8 +55,13 @@ type GPURecoveryPlanReconciler struct {
 // +kubebuilder:rbac:groups=intel.com,resources=gpurecoveryplans/finalizers,verbs=update
 // +kubebuilder:rbac:groups=resource.k8s.io,resources=resourceslices,verbs=get;list;watch
 
-// Node labels decide whether a selector approval covers the node an event is on.
-// +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
+// Node labels decide whether a selector approval covers the node an event is on, and the drain
+// taints the node it is clearing (update, because a taint is written through node.spec).
+// +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch;update
+
+// The drain reads the pods on a node and the claims that still reserve the GPU being reset.
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups=resource.k8s.io,resources=resourceclaims,verbs=get;list;watch
 
 // Reconcile is the main reconciliation loop for GPURecoveryPlan.
 //
@@ -64,9 +70,10 @@ type GPURecoveryPlanReconciler struct {
 // ResourceSlice event routed through resourceSliceToPlans.
 //
 // The phases run in a fixed order, each reading what the one before it wrote: detection mirrors
-// the tainted GPUs into status.events, approvals turn the approved ones into recovery Jobs, and
-// the Job sync reports what those Jobs did. status.state is derived once, at the end, from the
-// event states all of them have settled on.
+// the tainted GPUs into status.events, approvals send the approved ones into a node drain, the
+// drain phase creates the recovery Job for every node that has come clear, and the Job sync
+// reports what those Jobs did. status.state is derived once, at the end, from the event states all
+// of them have settled on.
 func (r *GPURecoveryPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (retRes ctrl.Result, retErr error) {
 	klog.V(2).Infof("Reconciling GPURecoveryPlan %s", req.Name)
 
@@ -107,8 +114,14 @@ func (r *GPURecoveryPlanReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, fmt.Errorf("syncRecoveryEventsFromSlices: %w", err)
 	}
 
-	// Start the recovery of every event an admin has approved.
+	// Move every event an admin has approved forward: into a node drain for a reset, or straight
+	// into a recovery Job for anything that does not need the node emptied.
 	r.processApprovals(ctx, plan)
+
+	// Advance the events that are draining, creating the recovery Job for each node that is clear.
+	if err := r.processDrains(ctx, plan); err != nil {
+		return ctrl.Result{}, fmt.Errorf("processDrains: %w", err)
+	}
 
 	// Update event states from the outcomes of the Jobs they are running.
 	if err := r.syncJobStatuses(ctx, plan); err != nil {
@@ -118,10 +131,14 @@ func (r *GPURecoveryPlanReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// Drop consumed approvals no event refers to any more.
 	pruneConsumedApprovals(plan)
 
+	// Lift the drain taint from every node that no longer needs to be held. Runs after the phases
+	// that decide what happens to each event, so it sees their final states.
+	r.reconcileDrainTaints(ctx, plan)
+
 	// Derive status.state from the resulting event states.
 	updatePlanState(plan)
 
-	// Requeue while a Job is in flight. A reconcile is also triggered by Job changes.
+	// Requeue while a drain or a Job is in flight. A reconcile is also triggered by Job changes.
 	if hasActiveJobs(plan) {
 		return ctrl.Result{RequeueAfter: r.Opts.RequeueDelay}, nil
 	}
@@ -217,6 +234,11 @@ func (r *GPURecoveryPlanReconciler) handleFinalizer(ctx context.Context, plan *i
 		// Delete the Jobs explicitly rather than leaving them to the garbage collector, so their
 		// pods are gone by the time the CR is.
 		r.deleteAllJobs(ctx, plan)
+
+		// No event survives the CR, so no node may be left unschedulable on its behalf. This is
+		// the last chance to do it: once the finalizer is gone nothing reconciles the plan again,
+		// and the taint carries the plan's own name, which nothing else knows to look for.
+		r.releaseAllDrainTaints(ctx, plan)
 
 		controllerutil.RemoveFinalizer(plan, recoveryPlanFinalizer)
 
@@ -373,22 +395,30 @@ func (r *GPURecoveryPlanReconciler) processApprovals(ctx context.Context, plan *
 			appendMessage(plan, fmt.Sprintf("Event %s matched approval %s", evt.ID, approval.ID))
 		}
 
-		// Apply any override before creating the Job.
+		// Apply any override before the recovery type decides whether the node has to be drained.
 		r.applyOverride(plan, evt, approval)
 
-		if err := r.createRecoveryJob(ctx, plan, evt); err != nil {
-			klog.Errorf("GPURecoveryPlan %s: failed to create job for event %s: %v", plan.Name, evt.ID, err)
-			appendMessage(plan, fmt.Sprintf("Event %s: failed to create recovery job: %v", evt.ID, err))
-
+		// A reset needs the node emptied first, which spans several reconciles; its Job is created
+		// by processDrains once the node is clear. Anything that resets nothing goes straight to
+		// the Job.
+		if needsDrain(plan, evt) {
+			beginDrain(plan, evt)
+		} else if err := r.createRecoveryJob(ctx, plan, evt); err != nil {
 			// State unchanged — the event keeps its approval and is retried on the next pass; only
 			// the reason it has not started yet is recorded.
 			setEventState(evt, evt.State, "the recovery Job could not be created: %v", err)
 
+			klog.Errorf("GPURecoveryPlan %s: failed to create job for event %s: %v", plan.Name, evt.ID, err)
+			appendMessage(plan, fmt.Sprintf("Event %s: failed to create recovery job: %v", evt.ID, err))
+
 			continue
 		}
 
-		// Only consume a one-shot approval once the event has actually left waiting-approval.
-		if !approval.Persistent && evt.State == intelv1a1.RecoveryEventStateInProgress {
+		// Only consume a one-shot approval once the event has actually left waiting-approval —
+		// into draining, or straight to in-progress.
+		if !approval.Persistent &&
+			(evt.State == intelv1a1.RecoveryEventStateInProgress ||
+				evt.State == intelv1a1.RecoveryEventStateDraining) {
 			consumedIDs[approval.ID] = true
 		}
 	}
@@ -494,6 +524,301 @@ func (r *GPURecoveryPlanReconciler) applyOverride(plan *intelv1a1.GPURecoveryPla
 		evt.ID, evt.RecoveryType.SuggestedType, newType, approval.ID))
 
 	evt.RecoveryType.Type = newType
+}
+
+// processDrains advances every event sitting in the draining state: it taints the node, evicts what
+// is on it, and creates the recovery Job once the node is clear and the GPU is released.
+func (r *GPURecoveryPlanReconciler) processDrains(ctx context.Context, plan *intelv1a1.GPURecoveryPlan) error { // nolint:unparam
+	for i := range plan.Status.Events {
+		evt := &plan.Status.Events[i]
+
+		if evt.State != intelv1a1.RecoveryEventStateDraining {
+			continue
+		}
+
+		// stall indicates any drain issue. Empty means the pass moved the event on.
+		stall := ""
+
+		ready, err := r.drainNodeForEvent(ctx, plan, evt)
+
+		switch {
+		case err != nil:
+			stall = fmt.Sprintf("the drain of node %s is not progressing: %v", evt.NodeName, err)
+
+			// The event stays in draining and the deadline keeps running; the message is what
+			// distinguishes a drain that is waiting from one that cannot proceed at all.
+			setEventState(evt, intelv1a1.RecoveryEventStateDraining, "%s", stall)
+
+			// Reported and carried on to the next event: one unreachable node must not stop the
+			// other GPUs in the cluster from being recovered.
+			klog.Errorf("GPURecoveryPlan %s: event %s drain of node %s failed: %v",
+				plan.Name, evt.ID, evt.NodeName, err)
+			appendMessage(plan, fmt.Sprintf("Event %s: drain of node %s failed: %v",
+				evt.ID, evt.NodeName, err))
+
+		case !ready:
+			// Waiting on the pods and claims drainNodeForEvent has just recorded on the event.
+			stall = drainBlockerDetail(evt.PodsBlockingDrain, evt.ClaimsBlockingReset)
+
+		default:
+			if err := r.createRecoveryJob(ctx, plan, evt); err != nil {
+				stall = fmt.Sprintf("node %s is drained but the recovery Job could not be created: %v",
+					evt.NodeName, err)
+
+				// Stays in draining: the node is already empty and tainted, so the next pass finds
+				// it clear again and only has to retry the Job — until the deadline below gives up,
+				// which it must, because whatever is refusing the Job may never come back on a node
+				// this drain has emptied.
+				setEventState(evt, intelv1a1.RecoveryEventStateDraining, "%s", stall)
+
+				klog.Errorf("GPURecoveryPlan %s: failed to create job for event %s: %v",
+					plan.Name, evt.ID, err)
+				appendMessage(plan, fmt.Sprintf("Event %s: failed to create recovery job: %v", evt.ID, err))
+			}
+		}
+
+		if stall != "" && drainDeadlineExceeded(plan, evt) {
+			failDrain(plan, evt, stall)
+		}
+	}
+
+	return nil
+}
+
+// drainNodeForEvent performs one pass of the drain for a single event and reports whether the reset
+// may now proceed.
+func (r *GPURecoveryPlanReconciler) drainNodeForEvent(ctx context.Context, plan *intelv1a1.GPURecoveryPlan,
+	evt *intelv1a1.RecoveryEvent) (bool, error) {
+	if _, err := ensureNodeTaint(ctx, r.Client, evt.NodeName, recoveryTaint(plan.Name)); err != nil {
+		return false, err
+	}
+
+	toEvict, toAwait, err := podsBlockingDrain(
+		ctx, r.Client, evt.NodeName, r.Opts.Namespace, plan.Spec.Drain.NamespacesToSkip)
+	if err != nil {
+		return false, err
+	}
+
+	if err := evictPods(ctx, r.Client, toEvict); err != nil {
+		// Not fatal to the drain: a pod that could not be evicted is still in the blocking list
+		// below, the next pass asks again, and the drain deadline is the backstop.
+		klog.Warningf("GPURecoveryPlan %s: event %s could not evict every pod on node %s: %v",
+			plan.Name, evt.ID, evt.NodeName, err)
+	}
+
+	blocking := make([]string, 0, len(toEvict)+len(toAwait))
+
+	for _, pod := range append(toEvict, toAwait...) {
+		blocking = append(blocking, pod.Namespace+"/"+pod.Name)
+	}
+
+	// Sorted so a status write only happens when the set of blockers actually changes; List order
+	// would otherwise reshuffle the reported list and churn the CR on every poll.
+	slices.Sort(blocking)
+
+	claims, err := r.claimsHoldingDevice(ctx, plan, evt)
+	if err != nil {
+		return false, err
+	}
+
+	evt.PodsBlockingDrain = capStrings(blocking, maxPodsBlockingDrainReported)
+	evt.ClaimsBlockingReset = capStrings(claims, maxPodsBlockingDrainReported)
+
+	// This pass got all the way through, so clear any message a previous one left about a drain.
+	setEventState(evt, intelv1a1.RecoveryEventStateDraining, "")
+
+	if len(blocking) == 0 && len(claims) == 0 {
+		klog.Infof("GPURecoveryPlan %s: event %s node %s drained; proceeding with %s",
+			plan.Name, evt.ID, evt.NodeName, evt.RecoveryType.Type)
+
+		return true, nil
+	}
+
+	klog.V(2).Infof("GPURecoveryPlan %s: event %s waiting on %d pod(s) and %d claim(s) on node %s",
+		plan.Name, evt.ID, len(blocking), len(claims), evt.NodeName)
+
+	return false, nil
+}
+
+// reconcileDrainTaints removes this plan's drain taint from every node that no longer needs it.
+func (r *GPURecoveryPlanReconciler) reconcileDrainTaints(ctx context.Context, plan *intelv1a1.GPURecoveryPlan) {
+	wanted := make(map[string]struct{})
+
+	for i := range plan.Status.Events {
+		if plan.Status.Events[i].State == intelv1a1.RecoveryEventStateDraining ||
+			plan.Status.Events[i].State == intelv1a1.RecoveryEventStateInProgress {
+			// Included without re-checking needsDrain. A recovery that never drained has no taint
+			// on its node from this plan, so listing it costs nothing, whereas re-deriving the
+			// answer would let a mid-flight flip of spec.drain.enable untaint a node while its
+			// reset is still running.
+			wanted[plan.Status.Events[i].NodeName] = struct{}{}
+		}
+	}
+
+	r.untaintNodesExcept(ctx, plan, wanted)
+}
+
+// releaseAllDrainTaints removes this plan's drain taint from every node. Called on plan deletion.
+func (r *GPURecoveryPlanReconciler) releaseAllDrainTaints(ctx context.Context, plan *intelv1a1.GPURecoveryPlan) {
+	r.untaintNodesExcept(ctx, plan, nil)
+}
+
+// untaintNodesExcept drops this plan's drain taint from every tainted node not named in keep.
+func (r *GPURecoveryPlanReconciler) untaintNodesExcept(ctx context.Context, plan *intelv1a1.GPURecoveryPlan,
+	keep map[string]struct{}) {
+	taint := recoveryTaint(plan.Name)
+
+	tainted, err := nodesWithTaint(ctx, r.Client, taint)
+	if err != nil {
+		klog.Errorf("GPURecoveryPlan %s: failed to list nodes carrying the drain taint: %v", plan.Name, err)
+
+		return
+	}
+
+	for _, nodeName := range tainted {
+		if _, keepIt := keep[nodeName]; keepIt {
+			continue
+		}
+
+		if _, err := removeNodeTaint(ctx, r.Client, nodeName, taint); err != nil {
+			klog.Errorf("GPURecoveryPlan %s: failed to remove drain taint from node %s: %v", plan.Name, nodeName, err)
+			appendMessage(plan, fmt.Sprintf("Failed to remove drain taint from node %s: %v", nodeName, err))
+
+			continue
+		}
+
+		klog.Infof("GPURecoveryPlan %s: removed drain taint from node %s", plan.Name, nodeName)
+	}
+}
+
+// claimsHoldingDevice returns the ResourceClaims that still reserve the GPU this event targets, as
+// "namespace/name" strings.
+func (r *GPURecoveryPlanReconciler) claimsHoldingDevice(ctx context.Context, plan *intelv1a1.GPURecoveryPlan,
+	evt *intelv1a1.RecoveryEvent) ([]string, error) {
+	devices, err := r.devicesForBDF(ctx, evt.NodeName, evt.GPUBDF)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(devices) == 0 {
+		return nil, nil
+	}
+
+	claimList := &resv1.ResourceClaimList{}
+
+	if err := r.List(ctx, claimList); err != nil {
+		return nil, fmt.Errorf("listing ResourceClaims: %w", err)
+	}
+
+	holding := make([]string, 0, len(claimList.Items))
+
+	for i := range claimList.Items {
+		claim := &claimList.Items[i]
+
+		// An allocated claim nobody has reserved holds no device: the scheduler allocated it and
+		// then the pod went away. Only reservedFor proves a live consumer.
+		if claim.Status.Allocation == nil || len(claim.Status.ReservedFor) == 0 {
+			continue
+		}
+
+		if !claimHoldsDevice(claim, devices) {
+			continue
+		}
+
+		undrainable, holder, err := r.claimHeldOnlyByUndrainablePods(ctx, plan, claim)
+		if err != nil {
+			return nil, err
+		}
+
+		if undrainable {
+			klog.V(2).Infof("GPURecoveryPlan %s: event %s not waiting for claim %s/%s: %s",
+				plan.Name, evt.ID, claim.Namespace, claim.Name, holder)
+
+			continue
+		}
+
+		holding = append(holding, claim.Namespace+"/"+claim.Name)
+	}
+
+	slices.Sort(holding)
+
+	return holding, nil
+}
+
+// claimHeldOnlyByUndrainablePods reports whether every consumer reserving a claim is a pod the
+// drain will never evict.
+func (r *GPURecoveryPlanReconciler) claimHeldOnlyByUndrainablePods(ctx context.Context,
+	plan *intelv1a1.GPURecoveryPlan, claim *resv1.ResourceClaim) (bool, string, error) {
+	holder := ""
+
+	for _, consumer := range claim.Status.ReservedFor {
+		if consumer.APIGroup != "" || consumer.Resource != "pods" {
+			return false, "", nil
+		}
+
+		// A ResourceClaim is only usable by pods in its own namespace, so the consumer name is
+		// resolved there.
+		pod := &core.Pod{}
+
+		if err := r.Get(ctx, types.NamespacedName{Namespace: claim.Namespace, Name: consumer.Name}, pod); err != nil {
+			if k8serrors.IsNotFound(err) {
+				return false, "", nil
+			}
+
+			return false, "", fmt.Errorf("failed to get pod %s/%s reserving claim %s: %w",
+				claim.Namespace, consumer.Name, claim.Name, err)
+		}
+
+		// The UID is what makes it the same pod: a StatefulSet replacement reuses the name, and
+		// classifying the reservation by the new pod's owner references would answer a question
+		// about a pod that no longer exists.
+		if pod.UID != consumer.UID {
+			return false, "", nil
+		}
+
+		reason, never := drainNeverEvicts(pod, r.Opts.Namespace, plan.Spec.Drain.NamespacesToSkip)
+		if !never {
+			return false, "", nil
+		}
+
+		if holder == "" {
+			holder = fmt.Sprintf("reserved by pod %s/%s, which the drain leaves in place (%s)",
+				pod.Namespace, pod.Name, reason)
+		}
+	}
+
+	return holder != "", holder, nil
+}
+
+// devicesForBDF returns the DRA pool/device identities on a node whose published pciAddress matches
+// bdf. Normally one, but a device can appear in more than one slice of a pool.
+func (r *GPURecoveryPlanReconciler) devicesForBDF(ctx context.Context,
+	nodeName, bdf string) (map[poolDevice]struct{}, error) {
+	sliceList := &resv1.ResourceSliceList{}
+
+	if err := r.List(ctx, sliceList); err != nil {
+		return nil, fmt.Errorf("listing ResourceSlices: %w", err)
+	}
+
+	devices := make(map[poolDevice]struct{})
+
+	for i := range sliceList.Items {
+		slice := &sliceList.Items[i]
+
+		if slice.Spec.NodeName == nil || *slice.Spec.NodeName != nodeName {
+			continue
+		}
+
+		for _, dev := range slice.Spec.Devices {
+			if deviceAttributeString(dev.Attributes, deviceAttrBDF) != bdf {
+				continue
+			}
+
+			devices[poolDevice{pool: slice.Spec.Pool.Name, device: dev.Name}] = struct{}{}
+		}
+	}
+
+	return devices, nil
 }
 
 // prepareRecoveryJob applies the naming, labelling, ownership, node-pinning and pull settings

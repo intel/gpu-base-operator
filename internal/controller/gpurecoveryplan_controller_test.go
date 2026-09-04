@@ -27,10 +27,12 @@ import (
 	. "github.com/onsi/gomega"
 	batch "k8s.io/api/batch/v1"
 	core "k8s.io/api/core/v1"
+	policy "k8s.io/api/policy/v1"
 	resv1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/ptr"
@@ -110,6 +112,39 @@ func (w *failingSubResourceWriter) Update(
 	ctx context.Context, obj client.Object, opts ...client.SubResourceUpdateOption,
 ) error {
 	return fmt.Errorf("synthetic status update failure")
+}
+
+// jobRejectingClient refuses to create a batch Job, the way a cluster whose Job admission webhook
+// has no endpoint does.
+//
+// That is not a contrived failure: on a single-node cluster the drain itself causes it. Evicting the
+// node's pods takes the webhook's own pod with them, and from then on every Job creation is refused —
+// on a node the drain has already emptied, so nothing about the drain looks wrong.
+type jobRejectingClient struct {
+	client.Client
+}
+
+func (c *jobRejectingClient) Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
+	if _, isJob := obj.(*batch.Job); isJob {
+		return fmt.Errorf(`Internal error occurred: failed calling webhook "mjob.kb.io": ` +
+			`no endpoints available for service "kueue-webhook-service"`)
+	}
+
+	return c.Client.Create(ctx, obj, opts...)
+}
+
+// nodeWriteRejectingClient refuses to write a Node, so the drain cannot even cordon what it is
+// clearing — an RBAC change or a broken API path, from the drain's point of view.
+type nodeWriteRejectingClient struct {
+	client.Client
+}
+
+func (c *nodeWriteRejectingClient) Update(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+	if _, isNode := obj.(*core.Node); isNode {
+		return fmt.Errorf("nodes is forbidden: synthetic node write failure")
+	}
+
+	return c.Client.Update(ctx, obj, opts...)
 }
 
 // recordingClient notes the order in which the status and spec sub-writes reach the API server.
@@ -1167,7 +1202,7 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 			p := &intelv1a1.GPURecoveryPlan{}
 
 			for i := 0; i < maxStatusMessages+10; i++ {
-				appendMessage(p, "msg")
+				appendMessage(p, fmt.Sprintf("msg - %d", i))
 			}
 
 			Expect(p.Status.Messages).To(HaveLen(maxStatusMessages))
@@ -2182,6 +2217,11 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 					DeviceID:         "0xabcd",
 					MaxRetries:       3,
 					XpuSmi:           intelv1a1.XpuSmiSpec{Image: "registry/xpu-smi:latest"},
+					// The subject here is which approval fires and when it is spent, so the drain
+					// is switched off: with it on, an approved event stops at draining and the
+					// answer would depend on Node and Pod fixtures that say nothing about
+					// approvals. The drain's own effect on consumption is covered with the drain.
+					Drain: intelv1a1.DrainSpec{Enable: ptr.To(false)},
 					Approvals: []intelv1a1.RecoveryApproval{
 						{
 							ID:         "sel-nonpersist",
@@ -2252,6 +2292,7 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 					DeviceID:         "0xabcd",
 					MaxRetries:       3,
 					XpuSmi:           intelv1a1.XpuSmiSpec{Image: "registry/xpu-smi:latest"},
+					Drain:            intelv1a1.DrainSpec{Enable: ptr.To(false)},
 					Approvals: []intelv1a1.RecoveryApproval{
 						{
 							ID:       "sel-batch",
@@ -2307,6 +2348,7 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 					DefaultResetType: intelv1a1.RecoveryTypeSlot,
 					DeviceID:         "0xabcd",
 					MaxRetries:       3,
+					Drain:            intelv1a1.DrainSpec{Enable: ptr.To(false)},
 					Approvals: []intelv1a1.RecoveryApproval{
 						{
 							ID:         "sel-persistent",
@@ -2400,6 +2442,9 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 					DefaultResetType: intelv1a1.RecoveryTypeSlot,
 					DeviceID:         "0xabcd",
 					MaxRetries:       2,
+					// The drain is off so the re-approved event lands straight in in-progress;
+					// what is under test is the retry counter and the approval, not the drain.
+					Drain: intelv1a1.DrainSpec{Enable: ptr.To(false)},
 					Approvals: []intelv1a1.RecoveryApproval{
 						{ID: "reapp-001", EventID: "evt-exhausted"},
 					},
@@ -2989,6 +3034,16 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 			// name a real cloud provider hands out.
 			const longNode = "ip-10-0-134-22.us-west-2.compute.internal.example-cluster.prod"
 
+			// The Node has to exist for the pre-reset drain to taint it. Nothing here is about
+			// draining — the node carries no pods, so the drain converges on its first pass — but
+			// without the object the drain errors and the event never reaches a Job, which would
+			// fail this spec for an unrelated reason.
+			node := &core.Node{ObjectMeta: metav1.ObjectMeta{Name: longNode}}
+			Expect(k8sClient.Create(ctx, node)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, node)
+			})
+
 			slice := &resv1.ResourceSlice{
 				ObjectMeta: metav1.ObjectMeta{Name: "slice-long-node"},
 				Spec: resv1.ResourceSliceSpec{
@@ -3197,6 +3252,1320 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 			Expect(p.Status.Events).To(HaveLen(1),
 				"dropping the event now would leave its Job collected by nothing")
 			Expect(p.Status.Messages).To(BeEmpty())
+		})
+	})
+
+	// An SBR or slot reset acts on the PCIe bus and can wedge the host, so the node is emptied
+	// before the reset runs and the reset waits for the GPU to actually be released. Before this,
+	// a reset fired the moment an approval matched — underneath running workloads, including ones
+	// still holding the device through a ResourceClaim.
+	//
+	// The primitives themselves (taints, eviction, pod classification) are covered against a fake
+	// client in drain_test.go; what these specs pin is the recovery state machine built on them.
+	Context("Reconcile: node drain before a reset", func() {
+		const (
+			drainNode = "drain-node-1"
+			drainBDF  = "0000:31:00.0"
+			drainPool = "drain-pool"
+
+			// Workload pods must not live in the operator namespace ("default" here, per
+			// newTestReconciler): classifyPodForDrain skips that namespace wholesale, so a fixture
+			// pod placed there would be ignored and every drain assertion below would pass for the
+			// wrong reason.
+			drainWorkloadNS = "drain-workloads"
+		)
+
+		BeforeEach(func() {
+			ns := &core.Namespace{ObjectMeta: metav1.ObjectMeta{Name: drainWorkloadNS}}
+			if err := k8sClient.Create(ctx, ns); err != nil {
+				Expect(errors.IsAlreadyExists(err)).To(BeTrue())
+			}
+		})
+
+		// makeDrainNode creates the Node the drain operates on. Its taints are cleared before the
+		// delete so a leftover drain taint cannot follow the name into a later spec.
+		makeDrainNode := func(name string) *core.Node {
+			node := &core.Node{ObjectMeta: metav1.ObjectMeta{Name: name}}
+			Expect(k8sClient.Create(ctx, node)).To(Succeed())
+			DeferCleanup(func() {
+				fresh := &core.Node{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: name}, fresh); err == nil {
+					fresh.Spec.Taints = nil
+					_ = k8sClient.Update(ctx, fresh)
+					_ = k8sClient.Delete(ctx, fresh)
+				}
+			})
+
+			return node
+		}
+
+		// makeDrainSlice publishes a tainted GPU on the node so syncRecoveryEventsFromSlices
+		// creates an event for it.
+		makeDrainSlice := func(name, nodeName, bdf, taintKey string) {
+			slice := &resv1.ResourceSlice{
+				ObjectMeta: metav1.ObjectMeta{Name: name},
+				Spec: resv1.ResourceSliceSpec{
+					Driver:   gpuDeviceClass,
+					NodeName: ptr.To(nodeName),
+					Pool:     resv1.ResourcePool{Name: drainPool, ResourceSliceCount: 1},
+					Devices: []resv1.Device{{
+						Name: "dev-drain-0",
+						Attributes: map[resv1.QualifiedName]resv1.DeviceAttribute{
+							deviceAttrDeviceID: {StringValue: ptr.To("0x1234")},
+							deviceAttrBDF:      {StringValue: ptr.To(bdf)},
+						},
+						Taints: []resv1.DeviceTaint{
+							{Key: taintKey, Effect: resv1.DeviceTaintEffectNoSchedule},
+						},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, slice)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, slice)
+			})
+		}
+
+		// makeDrainPlan creates a plan with a blanket approval for the given recovery type, so the
+		// event is approved on the first reconcile and the drain is what the spec is left
+		// observing. rt must match what the plan's defaultResetType produces for a reset taint.
+		makeDrainPlan := func(name string, rt intelv1a1.RecoveryType) types.NamespacedName {
+			p := &intelv1a1.GPURecoveryPlan{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Finalizers: []string{recoveryPlanFinalizer}},
+				Spec: intelv1a1.GPURecoveryPlanSpec{
+					DefaultResetType: intelv1a1.RecoveryTypeSlot,
+					DeviceID:         "0x1234",
+					MaxRetries:       3,
+					// Spelled out rather than left to CRD defaulting: these specs are about what
+					// the drain does, so what it was asked to do belongs in the fixture.
+					Drain: intelv1a1.DrainSpec{
+						Enable:         ptr.To(true),
+						TimeoutSeconds: 300,
+					},
+					Approvals: []intelv1a1.RecoveryApproval{{
+						ID:       "app-drain",
+						Selector: &intelv1a1.ApprovalSelector{RecoveryType: rt},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, p)).To(Succeed())
+			DeferCleanup(func() {
+				fresh := &intelv1a1.GPURecoveryPlan{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: name}, fresh); err == nil {
+					fresh.Finalizers = nil
+					_ = k8sClient.Update(ctx, fresh)
+					_ = k8sClient.Delete(ctx, fresh)
+				}
+			})
+
+			return types.NamespacedName{Name: name}
+		}
+
+		// makeWorkloadPod puts an evictable pod on the node. A bare pod with no owner is the case
+		// a drain must actually evict.
+		makeWorkloadPod := func(name, nodeName string) *core.Pod {
+			pod := &core.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: drainWorkloadNS},
+				Spec: core.PodSpec{
+					NodeName:   nodeName,
+					Containers: []core.Container{{Name: "c", Image: "busybox"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, pod, client.GracePeriodSeconds(0))
+			})
+
+			return pod
+		}
+
+		fetch := func(key types.NamespacedName) *intelv1a1.GPURecoveryPlan {
+			updated := &intelv1a1.GPURecoveryPlan{}
+			Expect(k8sClient.Get(ctx, key, updated)).To(Succeed())
+
+			return updated
+		}
+
+		nodeTaints := func(name string) []core.Taint {
+			node := &core.Node{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name}, node)).To(Succeed())
+
+			return node.Spec.Taints
+		}
+
+		It("should hold a reset in draining while a workload pod is still on the node", func() {
+			makeDrainNode(drainNode)
+			makeDrainSlice("slice-drain-hold", drainNode, drainBDF, deviceTaintKeyReset)
+			makeWorkloadPod("drain-victim", drainNode)
+			key := makeDrainPlan("plan-drain-hold", intelv1a1.RecoveryTypeSlot)
+
+			res, err := reconcilePlan(ctx, key.Name)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Nothing else re-triggers a reconcile when the last pod finally goes away, so a drain
+			// that does not requeue stalls until an unrelated event happens along.
+			Expect(res.RequeueAfter).To(BeNumerically(">", 0),
+				"a draining event must requeue or the drain never progresses")
+
+			updated := fetch(key)
+			Expect(updated.Status.Events).To(HaveLen(1))
+
+			evt := updated.Status.Events[0]
+			Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateDraining),
+				"the reset must not start while a pod is still on the node; messages: %v", updated.Status.Messages)
+			Expect(evt.JobName).To(BeEmpty(), "no Job may exist before the node is drained")
+			Expect(evt.PodsBlockingDrain).To(ContainElement(drainWorkloadNS+"/drain-victim"),
+				"an admin needs to see what the drain is waiting on")
+			Expect(evt.DrainStartedAt).NotTo(BeNil(), "the deadline clock must start with the drain")
+
+			// The taint is what stops the scheduler refilling the node behind the eviction.
+			Expect(nodeTaints(drainNode)).To(ContainElement(recoveryTaint(key.Name)))
+
+			// The drain must actually request the eviction, not merely report the pod as blocking.
+			// Reporting alone waits for something else to remove the pod, which nothing will do —
+			// the event would sit in draining until its deadline expired. envtest runs no kubelet
+			// to confirm the delete, so the pod lingers with a deletionTimestamp rather than
+			// disappearing.
+			victim := &core.Pod{}
+			Expect(k8sClient.Get(ctx,
+				types.NamespacedName{Name: "drain-victim", Namespace: drainWorkloadNS}, victim)).To(Succeed())
+			Expect(victim.DeletionTimestamp).NotTo(BeNil(),
+				"the drain must evict the pod, not just name it in status")
+
+			// A one-shot approval is spent once its event leaves waiting-approval, which is now
+			// draining rather than in-progress. Leaving it unspent would let it authorise a second
+			// event later on.
+			Expect(updated.Spec.Approvals[0].Consumed).To(BeTrue(),
+				"reaching draining is the approval being acted on")
+
+			// status.state must read as active: a draining plan is working, not idle.
+			Expect(updated.Status.State).To(Equal(intelv1a1.PlanStateActive))
+		})
+
+		It("should create the reset Job once the node is clear", func() {
+			makeDrainNode(drainNode)
+			makeDrainSlice("slice-drain-clear", drainNode, drainBDF, deviceTaintKeyReset)
+			key := makeDrainPlan("plan-drain-clear", intelv1a1.RecoveryTypeSlot)
+
+			// No pods on the node at all, so the drain converges immediately and the Job is
+			// created in the same reconcile that started the drain.
+			_, err := reconcilePlan(ctx, key.Name)
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := fetch(key)
+			Expect(updated.Status.Events).To(HaveLen(1))
+
+			evt := updated.Status.Events[0]
+			Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateInProgress),
+				"an empty node needs no waiting; messages: %v", updated.Status.Messages)
+			Expect(evt.JobName).NotTo(BeEmpty())
+			Expect(evt.PodsBlockingDrain).To(BeEmpty())
+
+			// The taint stays for the duration of the Job: dropping it here would let the
+			// scheduler refill the node with pods that then sit through the PCIe reset.
+			Expect(nodeTaints(drainNode)).To(ContainElement(recoveryTaint(key.Name)),
+				"the node must stay unschedulable while the reset runs")
+
+			job := &batch.Job{}
+			Expect(k8sClient.Get(ctx,
+				types.NamespacedName{Name: evt.JobName, Namespace: "default"}, job)).To(Succeed())
+
+			// Recovery pods bypass the scheduler via NodeName, so a NoSchedule taint would not
+			// have stopped them — but the taint manager evicts a pod that does not tolerate
+			// NoExecute however it was placed, which would kill the pod mid-reset.
+			Expect(job.Spec.Template.Spec.Tolerations).To(ContainElement(
+				core.Toleration{Operator: core.TolerationOpExists}),
+				"a recovery Job must tolerate the taints on the broken node it has to run on")
+		})
+
+		It("should not drain for a reflash", func() {
+			makeDrainNode(drainNode)
+			makeDrainSlice("slice-drain-reflash", drainNode, drainBDF, deviceTaintKeyXpumdReflash)
+			makeWorkloadPod("reflash-bystander", drainNode)
+			key := makeDrainPlan("plan-drain-reflash", intelv1a1.RecoveryTypeReflash)
+
+			_, err := reconcilePlan(ctx, key.Name)
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := fetch(key)
+			Expect(updated.Status.Events).To(HaveLen(1))
+
+			// A reflash writes firmware to a device already in survivability mode, without
+			// resetting the bus. There is nothing on the node for a drain to protect, so evicting
+			// unrelated workloads would be pure disruption. This version parks the reflash instead
+			// of carrying it out, which is what the state message says — but the point here is
+			// that the node was never touched on the way to that decision.
+			evt := updated.Status.Events[0]
+			Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateWaitingApproval),
+				"a reflash must not enter draining; messages: %v", updated.Status.Messages)
+			Expect(evt.StateMessage).To(ContainSubstring("reflash"))
+			Expect(evt.DrainStartedAt).To(BeNil())
+
+			Expect(nodeTaints(drainNode)).NotTo(ContainElement(recoveryTaint(key.Name)),
+				"a reflash must not cordon the node")
+
+			pod := &core.Pod{}
+			Expect(k8sClient.Get(ctx,
+				types.NamespacedName{Name: "reflash-bystander", Namespace: drainWorkloadNS}, pod)).To(Succeed())
+			Expect(pod.DeletionTimestamp).To(BeNil(), "a reflash must not evict unrelated pods")
+		})
+
+		It("should skip the drain when spec.drain.enable is false", func() {
+			makeDrainNode(drainNode)
+			makeDrainSlice("slice-drain-skip", drainNode, drainBDF, deviceTaintKeyReset)
+			makeWorkloadPod("skip-bystander", drainNode)
+			key := makeDrainPlan("plan-drain-skip", intelv1a1.RecoveryTypeSlot)
+
+			p := fetch(key)
+			p.Spec.Drain.Enable = ptr.To(false)
+			Expect(k8sClient.Update(ctx, p)).To(Succeed())
+
+			_, err := reconcilePlan(ctx, key.Name)
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := fetch(key)
+			Expect(updated.Status.Events).To(HaveLen(1))
+			Expect(updated.Status.Events[0].State).To(Equal(intelv1a1.RecoveryEventStateInProgress),
+				"a disabled drain must go straight to the Job; messages: %v", updated.Status.Messages)
+
+			Expect(nodeTaints(drainNode)).NotTo(ContainElement(recoveryTaint(key.Name)),
+				"a disabled drain must not cordon the node either")
+
+			pod := &core.Pod{}
+			Expect(k8sClient.Get(ctx,
+				types.NamespacedName{Name: "skip-bystander", Namespace: drainWorkloadNS}, pod)).To(Succeed())
+			Expect(pod.DeletionTimestamp).To(BeNil(), "a disabled drain must not evict anything")
+		})
+
+		It("should leave DaemonSet and operator-namespace pods alone", func() {
+			makeDrainNode(drainNode)
+			makeDrainSlice("slice-drain-skips", drainNode, drainBDF, deviceTaintKeyReset)
+			key := makeDrainPlan("plan-drain-skips", intelv1a1.RecoveryTypeSlot)
+
+			// A DaemonSet pod carries an automatic NoSchedule toleration, so evicting it brings it
+			// straight back and the drain would never converge. Placed in the workload namespace,
+			// not the operator one, so the DaemonSet rule is what is under test rather than the
+			// namespace skip.
+			dsPod := &core.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "ds-pod",
+					Namespace: drainWorkloadNS,
+					OwnerReferences: []metav1.OwnerReference{{
+						APIVersion: "apps/v1",
+						Kind:       "DaemonSet",
+						Name:       "some-ds",
+						UID:        "11111111-1111-1111-1111-111111111111",
+					}},
+				},
+				Spec: core.PodSpec{
+					NodeName:   drainNode,
+					Containers: []core.Container{{Name: "c", Image: "busybox"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, dsPod)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, dsPod, client.GracePeriodSeconds(0))
+			})
+
+			// An ordinary, evictable pod in the operator's own namespace ("default", per
+			// newTestReconciler). Evicting there is self-destruction: the namespace holds the
+			// operator pod, whose eviction aborts the very reconcile driving the drain, and the
+			// recovery Jobs, which run *on* the node being drained.
+			opPod := &core.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "operator-ns-pod", Namespace: "default"},
+				Spec: core.PodSpec{
+					NodeName:   drainNode,
+					Containers: []core.Container{{Name: "c", Image: "busybox"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, opPod)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, opPod, client.GracePeriodSeconds(0))
+			})
+
+			// A pod that has already reached a terminal phase holds no devices and cannot be
+			// evicted meaningfully — the eviction API accepts the call and nothing changes, so
+			// treating it as a blocker means the drain waits out its full deadline. Completed Job
+			// pods linger on nodes as a matter of course, so this is the likeliest of the three
+			// skip rules to fire in practice.
+			donePod := &core.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "succeeded-pod", Namespace: drainWorkloadNS},
+				Spec: core.PodSpec{
+					NodeName:      drainNode,
+					RestartPolicy: core.RestartPolicyNever,
+					Containers:    []core.Container{{Name: "c", Image: "busybox"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, donePod)).To(Succeed())
+			donePod.Status.Phase = core.PodSucceeded
+			Expect(k8sClient.Status().Update(ctx, donePod)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, donePod, client.GracePeriodSeconds(0))
+			})
+
+			_, err := reconcilePlan(ctx, key.Name)
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := fetch(key)
+			Expect(updated.Status.Events).To(HaveLen(1))
+			Expect(updated.Status.Events[0].State).To(Equal(intelv1a1.RecoveryEventStateInProgress),
+				"pods a drain must ignore cannot keep it from converging; messages: %v", updated.Status.Messages)
+			Expect(updated.Status.Events[0].PodsBlockingDrain).To(BeEmpty(),
+				"an ignored pod must not be reported as blocking either")
+
+			pod := &core.Pod{}
+			Expect(k8sClient.Get(ctx,
+				types.NamespacedName{Name: "ds-pod", Namespace: drainWorkloadNS}, pod)).To(Succeed())
+			Expect(pod.DeletionTimestamp).To(BeNil(), "a DaemonSet pod must not be evicted")
+
+			Expect(k8sClient.Get(ctx,
+				types.NamespacedName{Name: "operator-ns-pod", Namespace: "default"}, pod)).To(Succeed())
+			Expect(pod.DeletionTimestamp).To(BeNil(), "the operator's own namespace must not be drained")
+
+			Expect(k8sClient.Get(ctx,
+				types.NamespacedName{Name: "succeeded-pod", Namespace: drainWorkloadNS}, pod)).To(Succeed())
+			Expect(pod.Status.Phase).To(Equal(core.PodSucceeded),
+				"fixture check: the phase must survive, or this asserts nothing")
+		})
+
+		// spec.drain.namespacesToSkip: cluster infrastructure an admin is content to leave running
+		// through a reset — cert-manager, kube-system and the like — rather than evict off every
+		// node a GPU is recovered on.
+		//
+		// Both halves are asserted in one spec on purpose. Ignoring the field altogether and
+		// treating every namespace as skipped are both green against half of it: the first evicts
+		// the infra pod, the second lets the reset start with an ordinary workload still on the
+		// node.
+		It("should leave a namespace in spec.drain.namespacesToSkip alone", func() {
+			const skipNS = "drain-infra"
+
+			ns := &core.Namespace{ObjectMeta: metav1.ObjectMeta{Name: skipNS}}
+			if err := k8sClient.Create(ctx, ns); err != nil {
+				Expect(errors.IsAlreadyExists(err)).To(BeTrue())
+			}
+
+			makeDrainNode(drainNode)
+			makeDrainSlice("slice-drain-nsskip", drainNode, drainBDF, deviceTaintKeyReset)
+			key := makeDrainPlan("plan-drain-nsskip", intelv1a1.RecoveryTypeSlot)
+
+			infraPod := &core.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "infra-pod", Namespace: skipNS},
+				Spec: core.PodSpec{
+					NodeName:   drainNode,
+					Containers: []core.Container{{Name: "c", Image: "busybox"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, infraPod)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, infraPod, client.GracePeriodSeconds(0))
+			})
+
+			makeWorkloadPod("nsskip-victim", drainNode)
+
+			p := fetch(key)
+			p.Spec.Drain.NamespacesToSkip = []string{skipNS}
+			Expect(k8sClient.Update(ctx, p)).To(Succeed())
+
+			_, err := reconcilePlan(ctx, key.Name)
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := fetch(key)
+			Expect(updated.Status.Events).To(HaveLen(1))
+
+			evt := updated.Status.Events[0]
+			Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateDraining),
+				"the pod outside the skipped namespace must still hold the reset back; messages: %v",
+				updated.Status.Messages)
+			Expect(evt.PodsBlockingDrain).To(ConsistOf(drainWorkloadNS+"/nsskip-victim"),
+				"a skipped namespace is not something the drain is waiting on")
+
+			survivor := &core.Pod{}
+			Expect(k8sClient.Get(ctx,
+				types.NamespacedName{Name: "infra-pod", Namespace: skipNS}, survivor)).To(Succeed())
+			Expect(survivor.DeletionTimestamp).To(BeNil(),
+				"a pod in a skipped namespace must not be evicted")
+
+			victim := &core.Pod{}
+			Expect(k8sClient.Get(ctx,
+				types.NamespacedName{Name: "nsskip-victim", Namespace: drainWorkloadNS}, victim)).To(Succeed())
+			Expect(victim.DeletionTimestamp).NotTo(BeNil(),
+				"skipping one namespace must not turn the whole drain off")
+		})
+
+		It("should honour a PodDisruptionBudget that forbids the eviction", func() {
+			makeDrainNode(drainNode)
+			makeDrainSlice("slice-drain-pdb", drainNode, drainBDF, deviceTaintKeyReset)
+			key := makeDrainPlan("plan-drain-pdb", intelv1a1.RecoveryTypeSlot)
+
+			pod := makeWorkloadPod("pdb-protected", drainNode)
+			pod.Labels = map[string]string{"app": "pdb-guarded"}
+			Expect(k8sClient.Update(ctx, pod)).To(Succeed())
+
+			// The pod must be Running and Ready for the budget to apply at all: the eviction API
+			// deliberately lets an unhealthy pod go without consulting any PDB, on the grounds that
+			// evicting something already broken costs no availability. Without this the eviction
+			// succeeds and the spec proves nothing.
+			pod.Status = core.PodStatus{
+				Phase:      core.PodRunning,
+				Conditions: []core.PodCondition{{Type: core.PodReady, Status: core.ConditionTrue}},
+			}
+			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+
+			// A budget that permits no disruption at all. This is the whole reason the drain goes
+			// through the eviction subresource rather than deleting pods outright: a plain Delete
+			// ignores budgets and would silently break the availability guarantee the workload
+			// owner asked for.
+			pdb := &policy.PodDisruptionBudget{
+				ObjectMeta: metav1.ObjectMeta{Name: "no-disruptions", Namespace: drainWorkloadNS},
+				Spec: policy.PodDisruptionBudgetSpec{
+					MinAvailable: ptr.To(intstr.FromInt32(1)),
+					Selector:     &metav1.LabelSelector{MatchLabels: map[string]string{"app": "pdb-guarded"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, pdb)
+			})
+
+			// The status has to be written by hand: envtest runs no disruption controller, and the
+			// eviction handler in the API server waits — with backoff, for over a minute — for a
+			// budget whose observedGeneration is behind its spec, on the assumption that a
+			// controller is about to catch up. A real cluster always has that status computed, so
+			// filling it in is the faithful fixture as well as the fast one.
+			pdb.Status = policy.PodDisruptionBudgetStatus{
+				ObservedGeneration: pdb.Generation,
+				DisruptionsAllowed: 0,
+				CurrentHealthy:     1,
+				DesiredHealthy:     1,
+				ExpectedPods:       1,
+			}
+			Expect(k8sClient.Status().Update(ctx, pdb)).To(Succeed())
+
+			_, err := reconcilePlan(ctx, key.Name)
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := fetch(key)
+			Expect(updated.Status.Events).To(HaveLen(1))
+
+			evt := updated.Status.Events[0]
+
+			// A rejected eviction is a "not yet", not a failure: the event keeps waiting and the
+			// drain deadline is what eventually gives up on it.
+			Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateDraining),
+				"a budget-blocked eviction must leave the event draining; messages: %v", updated.Status.Messages)
+			Expect(evt.PodsBlockingDrain).To(ContainElement(drainWorkloadNS + "/pdb-protected"))
+
+			survivor := &core.Pod{}
+			Expect(k8sClient.Get(ctx,
+				types.NamespacedName{Name: "pdb-protected", Namespace: drainWorkloadNS}, survivor)).To(Succeed())
+			Expect(survivor.DeletionTimestamp).To(BeNil(),
+				"a pod a PodDisruptionBudget protects must survive the drain")
+		})
+
+		It("should keep waiting for a pod that is already terminating", func() {
+			makeDrainNode(drainNode)
+			makeDrainSlice("slice-drain-terminating", drainNode, drainBDF, deviceTaintKeyReset)
+			key := makeDrainPlan("plan-drain-terminating", intelv1a1.RecoveryTypeSlot)
+
+			// A pod with a finalizer keeps its deletionTimestamp: envtest has no kubelet to confirm
+			// the delete, so this is exactly the shape of a pod on its way out but not yet gone. A
+			// drain that treated "terminating" as "gone" would fire the reset while the workload's
+			// containers were still running on the GPU.
+			pod := makeWorkloadPod("slow-goodbye", drainNode)
+			pod.Finalizers = []string{"test.intel.com/hold"}
+			Expect(k8sClient.Update(ctx, pod)).To(Succeed())
+			DeferCleanup(func() {
+				fresh := &core.Pod{}
+				if err := k8sClient.Get(ctx,
+					types.NamespacedName{Name: "slow-goodbye", Namespace: drainWorkloadNS}, fresh); err == nil {
+					fresh.Finalizers = nil
+					_ = k8sClient.Update(ctx, fresh)
+				}
+			})
+
+			Expect(k8sClient.Delete(ctx, pod)).To(Succeed())
+
+			fresh := &core.Pod{}
+			Expect(k8sClient.Get(ctx,
+				types.NamespacedName{Name: "slow-goodbye", Namespace: drainWorkloadNS}, fresh)).To(Succeed())
+			Expect(fresh.DeletionTimestamp).NotTo(BeNil(), "fixture check: the pod must be terminating")
+
+			_, err := reconcilePlan(ctx, key.Name)
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := fetch(key)
+			Expect(updated.Status.Events).To(HaveLen(1))
+
+			evt := updated.Status.Events[0]
+			Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateDraining),
+				"a terminating pod still occupies the node; messages: %v", updated.Status.Messages)
+			Expect(evt.JobName).To(BeEmpty())
+			Expect(evt.PodsBlockingDrain).To(ContainElement(drainWorkloadNS + "/slow-goodbye"))
+		})
+
+		It("should fail the event and untaint the node when the drain deadline passes", func() {
+			makeDrainNode(drainNode)
+			makeDrainSlice("slice-drain-timeout", drainNode, drainBDF, deviceTaintKeyReset)
+			makeWorkloadPod("stuck-pod", drainNode)
+			key := makeDrainPlan("plan-drain-timeout", intelv1a1.RecoveryTypeSlot)
+
+			// Pass 1: the drain starts and stalls on the pod.
+			_, err := reconcilePlan(ctx, key.Name)
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := fetch(key)
+			Expect(updated.Status.Events[0].State).To(Equal(intelv1a1.RecoveryEventStateDraining))
+
+			// Backdate the clock rather than sleeping out a real timeout.
+			updated.Status.Events[0].DrainStartedAt = ptr.To(metav1.NewTime(time.Now().Add(-10 * time.Minute)))
+			Expect(k8sClient.Status().Update(ctx, updated)).To(Succeed())
+
+			// Pass 2: the deadline has passed.
+			_, err = reconcilePlan(ctx, key.Name)
+			Expect(err).NotTo(HaveOccurred())
+
+			updated = fetch(key)
+			evt := updated.Status.Events[0]
+
+			// Failing is the point: an unsatisfiable PodDisruptionBudget or a pod stuck on a
+			// finalizer would otherwise park the event in draining forever with no diagnostic.
+			Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateFailed),
+				"a drain that cannot finish must fail rather than hang; messages: %v", updated.Status.Messages)
+			Expect(evt.JobName).To(BeEmpty(), "the reset must not run after a failed drain")
+			Expect(evt.RetryCount).To(BeNumerically(">", 0))
+
+			// failed covers two different situations, and this is the one where the GPU was never
+			// touched: what has to change is the workload on the node, not anything about the plan
+			// or the device. The event has to say which it is.
+			Expect(evt.StateMessage).To(SatisfyAll(
+				ContainSubstring(drainNode),
+				ContainSubstring("timed out"),
+				ContainSubstring("reset not attempted"),
+			), "a drain timeout must be distinguishable from a reset that ran and failed")
+
+			// The node must not be left cordoned: keeping a whole node out of service on account
+			// of one un-recovered GPU is the worse outcome.
+			Expect(nodeTaints(drainNode)).NotTo(ContainElement(recoveryTaint(key.Name)),
+				"a failed drain must release the node")
+		})
+
+		// The two specs below cover the ways of staying in draining that do NOT go through the
+		// blocking-pod path, which is where the deadline used to be checked. Both looped for ever:
+		// the drain reported perfect progress — an empty node, no blockers — while nothing was timing
+		// it, and the plan sat in draining with the node cordoned indefinitely.
+		It("should fail the event when a drained node will not accept the recovery Job", func() {
+			makeDrainNode(drainNode)
+			makeDrainSlice("slice-drain-nojob", drainNode, drainBDF, deviceTaintKeyReset)
+			key := makeDrainPlan("plan-drain-nojob", intelv1a1.RecoveryTypeSlot)
+
+			reconcileRejectingJobs := func() {
+				r := newTestReconciler()
+				r.Client = &jobRejectingClient{Client: k8sClient}
+
+				_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+				Expect(err).NotTo(HaveOccurred(),
+					"a Job that cannot be created is the event's problem, not the reconcile's")
+			}
+
+			// Pass 1: nothing is on the node, so the drain converges at once and the rejected Job is
+			// the only thing keeping the event in draining.
+			reconcileRejectingJobs()
+
+			updated := fetch(key)
+			Expect(updated.Status.Events).To(HaveLen(1))
+
+			evt := updated.Status.Events[0]
+			Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateDraining),
+				"the Job is worth retrying, so the event waits; messages: %v", updated.Status.Messages)
+			Expect(evt.JobName).To(BeEmpty())
+			Expect(evt.PodsBlockingDrain).To(BeEmpty(),
+				"fixture check: the node must be clear, or this spec would run through the blocker path")
+
+			// Backdate the clock rather than sleeping out a real timeout.
+			updated.Status.Events[0].DrainStartedAt = ptr.To(metav1.NewTime(time.Now().Add(-10 * time.Minute)))
+			Expect(k8sClient.Status().Update(ctx, updated)).To(Succeed())
+
+			// Pass 2: the deadline has passed with the Job still un-creatable.
+			reconcileRejectingJobs()
+
+			updated = fetch(key)
+			evt = updated.Status.Events[0]
+
+			Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateFailed),
+				"an event that cannot start its Job must give up at the deadline, not retry for ever; messages: %v",
+				updated.Status.Messages)
+			Expect(evt.StateMessage).To(SatisfyAll(
+				ContainSubstring("timed out"),
+				ContainSubstring("could not be created"),
+			), "the failure must name what stopped it, which is the Job and not a pod")
+			Expect(evt.RetryCount).To(BeNumerically(">", 0))
+
+			Expect(nodeTaints(drainNode)).NotTo(ContainElement(recoveryTaint(key.Name)),
+				"a node emptied for a reset that never started must not stay cordoned")
+		})
+
+		It("should fail the event when the drain itself cannot be carried out", func() {
+			makeDrainNode(drainNode)
+			makeDrainSlice("slice-drain-nocordon", drainNode, drainBDF, deviceTaintKeyReset)
+			key := makeDrainPlan("plan-drain-nocordon", intelv1a1.RecoveryTypeSlot)
+
+			reconcileRejectingNodeWrites := func() {
+				r := newTestReconciler()
+				r.Client = &nodeWriteRejectingClient{Client: k8sClient}
+
+				_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+				Expect(err).NotTo(HaveOccurred(),
+					"one unreachable node must not fail the reconcile for every other GPU")
+			}
+
+			// Pass 1: the cordon fails, so the drain never gets as far as looking at pods.
+			reconcileRejectingNodeWrites()
+
+			updated := fetch(key)
+			Expect(updated.Status.Events).To(HaveLen(1))
+			Expect(updated.Status.Events[0].State).To(Equal(intelv1a1.RecoveryEventStateDraining),
+				"a transient node write failure is worth retrying; messages: %v", updated.Status.Messages)
+
+			updated.Status.Events[0].DrainStartedAt = ptr.To(metav1.NewTime(time.Now().Add(-10 * time.Minute)))
+			Expect(k8sClient.Status().Update(ctx, updated)).To(Succeed())
+
+			// Pass 2: still failing, and now out of time.
+			reconcileRejectingNodeWrites()
+
+			evt := fetch(key).Status.Events[0]
+			Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateFailed),
+				"a drain that cannot be performed at all must still hit the deadline")
+			Expect(evt.StateMessage).To(SatisfyAll(
+				ContainSubstring("timed out"),
+				ContainSubstring("not progressing"),
+			), "the failure must say the drain never ran, not that pods were in the way")
+		})
+
+		It("should hold the reset while a ResourceClaim still reserves the GPU", func() {
+			makeDrainNode(drainNode)
+			makeDrainSlice("slice-drain-claim", drainNode, drainBDF, deviceTaintKeyReset)
+			key := makeDrainPlan("plan-drain-claim", intelv1a1.RecoveryTypeSlot)
+
+			// A claim can outlive the pod that created it, so an empty node is not proof the device
+			// is free. reservedFor is what proves a live consumer.
+			claim := &resv1.ResourceClaim{
+				ObjectMeta: metav1.ObjectMeta{Name: "holding-claim", Namespace: "default"},
+				Spec: resv1.ResourceClaimSpec{
+					Devices: resv1.DeviceClaim{
+						Requests: []resv1.DeviceRequest{{
+							Name:    "gpu",
+							Exactly: &resv1.ExactDeviceRequest{DeviceClassName: gpuDeviceClass},
+						}},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, claim)).To(Succeed())
+			DeferCleanup(func() {
+				fresh := &resv1.ResourceClaim{}
+				if err := k8sClient.Get(ctx,
+					types.NamespacedName{Name: "holding-claim", Namespace: "default"}, fresh); err == nil {
+					fresh.Status = resv1.ResourceClaimStatus{}
+					_ = k8sClient.Status().Update(ctx, fresh)
+					_ = k8sClient.Delete(ctx, fresh)
+				}
+			})
+
+			claim.Status = resv1.ResourceClaimStatus{
+				Allocation: &resv1.AllocationResult{
+					Devices: resv1.DeviceAllocationResult{
+						Results: []resv1.DeviceRequestAllocationResult{{
+							Request: "gpu",
+							Driver:  gpuDeviceClass,
+							Pool:    drainPool,
+							Device:  "dev-drain-0",
+						}},
+					},
+				},
+				ReservedFor: []resv1.ResourceClaimConsumerReference{{
+					Resource: "pods",
+					Name:     "claim-holder",
+					UID:      "22222222-2222-2222-2222-222222222222",
+				}},
+			}
+			Expect(k8sClient.Status().Update(ctx, claim)).To(Succeed())
+
+			_, err := reconcilePlan(ctx, key.Name)
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := fetch(key)
+			Expect(updated.Status.Events).To(HaveLen(1))
+
+			evt := updated.Status.Events[0]
+			Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateDraining),
+				"resetting under a live allocation pulls the hardware out from under it; messages: %v",
+				updated.Status.Messages)
+			Expect(evt.JobName).To(BeEmpty())
+			Expect(evt.ClaimsBlockingReset).To(ContainElement("default/holding-claim"),
+				"the claim holding the device must be named in status")
+		})
+
+		It("should proceed when an allocated ResourceClaim has no consumer", func() {
+			makeDrainNode(drainNode)
+			makeDrainSlice("slice-drain-unreserved", drainNode, drainBDF, deviceTaintKeyReset)
+			key := makeDrainPlan("plan-drain-unreserved", intelv1a1.RecoveryTypeSlot)
+
+			claim := &resv1.ResourceClaim{
+				ObjectMeta: metav1.ObjectMeta{Name: "stale-claim", Namespace: "default"},
+				Spec: resv1.ResourceClaimSpec{
+					Devices: resv1.DeviceClaim{
+						Requests: []resv1.DeviceRequest{{
+							Name:    "gpu",
+							Exactly: &resv1.ExactDeviceRequest{DeviceClassName: gpuDeviceClass},
+						}},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, claim)).To(Succeed())
+			DeferCleanup(func() {
+				fresh := &resv1.ResourceClaim{}
+				if err := k8sClient.Get(ctx,
+					types.NamespacedName{Name: "stale-claim", Namespace: "default"}, fresh); err == nil {
+					fresh.Status = resv1.ResourceClaimStatus{}
+					_ = k8sClient.Status().Update(ctx, fresh)
+					_ = k8sClient.Delete(ctx, fresh)
+				}
+			})
+
+			// Allocated but reservedFor is empty: the scheduler allocated the device and the pod
+			// then went away. Nothing holds it, so blocking here would deadlock the recovery on a
+			// claim that will never be released by anyone.
+			claim.Status = resv1.ResourceClaimStatus{
+				Allocation: &resv1.AllocationResult{
+					Devices: resv1.DeviceAllocationResult{
+						Results: []resv1.DeviceRequestAllocationResult{{
+							Request: "gpu",
+							Driver:  gpuDeviceClass,
+							Pool:    drainPool,
+							Device:  "dev-drain-0",
+						}},
+					},
+				},
+			}
+			Expect(k8sClient.Status().Update(ctx, claim)).To(Succeed())
+
+			_, err := reconcilePlan(ctx, key.Name)
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := fetch(key)
+			Expect(updated.Status.Events).To(HaveLen(1))
+			Expect(updated.Status.Events[0].State).To(Equal(intelv1a1.RecoveryEventStateInProgress),
+				"an unreserved claim holds no device; messages: %v", updated.Status.Messages)
+			Expect(updated.Status.Events[0].ClaimsBlockingReset).To(BeEmpty())
+		})
+
+		It("should ignore a ResourceClaim holding a different GPU", func() {
+			makeDrainNode(drainNode)
+			makeDrainSlice("slice-drain-other", drainNode, drainBDF, deviceTaintKeyReset)
+			key := makeDrainPlan("plan-drain-other", intelv1a1.RecoveryTypeSlot)
+
+			claim := &resv1.ResourceClaim{
+				ObjectMeta: metav1.ObjectMeta{Name: "other-gpu-claim", Namespace: "default"},
+				Spec: resv1.ResourceClaimSpec{
+					Devices: resv1.DeviceClaim{
+						Requests: []resv1.DeviceRequest{{
+							Name:    "gpu",
+							Exactly: &resv1.ExactDeviceRequest{DeviceClassName: gpuDeviceClass},
+						}},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, claim)).To(Succeed())
+			DeferCleanup(func() {
+				fresh := &resv1.ResourceClaim{}
+				if err := k8sClient.Get(ctx,
+					types.NamespacedName{Name: "other-gpu-claim", Namespace: "default"}, fresh); err == nil {
+					fresh.Status = resv1.ResourceClaimStatus{}
+					_ = k8sClient.Status().Update(ctx, fresh)
+					_ = k8sClient.Delete(ctx, fresh)
+				}
+			})
+
+			// Reserved, but for a different device in the same pool. A node with eight GPUs has
+			// seven of these in normal operation; blocking on them would mean a reset could only
+			// ever run on a completely idle node.
+			claim.Status = resv1.ResourceClaimStatus{
+				Allocation: &resv1.AllocationResult{
+					Devices: resv1.DeviceAllocationResult{
+						Results: []resv1.DeviceRequestAllocationResult{{
+							Request: "gpu",
+							Driver:  gpuDeviceClass,
+							Pool:    drainPool,
+							Device:  "dev-drain-99",
+						}},
+					},
+				},
+				ReservedFor: []resv1.ResourceClaimConsumerReference{{
+					Resource: "pods",
+					Name:     "other-holder",
+					UID:      "33333333-3333-3333-3333-333333333333",
+				}},
+			}
+			Expect(k8sClient.Status().Update(ctx, claim)).To(Succeed())
+
+			_, err := reconcilePlan(ctx, key.Name)
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := fetch(key)
+			Expect(updated.Status.Events).To(HaveLen(1))
+			Expect(updated.Status.Events[0].State).To(Equal(intelv1a1.RecoveryEventStateInProgress),
+				"a claim on another GPU must not block this reset; messages: %v", updated.Status.Messages)
+			Expect(updated.Status.Events[0].ClaimsBlockingReset).To(BeEmpty())
+		})
+
+		// A claim the drain cannot release must not be treated as a blocker: the event would sit
+		// in draining for the full timeout, fail, spend a retry, and repeat — on a GPU nobody could
+		// have freed. XPU Manager is the case that matters in practice, holding an admin claim on
+		// every GPU it monitors from a DaemonSet in the operator's own namespace, which the drain
+		// skips twice over.
+		Context("Claims the drain can never release", func() {
+			// makeHoldingClaim allocates the event's GPU to a claim and reserves it for the given
+			// consumers. Status is cleared before deletion because an allocated claim would
+			// otherwise be seen by later specs in the same suite.
+			makeHoldingClaim := func(
+				name, namespace string,
+				adminAccess bool,
+				consumers ...resv1.ResourceClaimConsumerReference,
+			) {
+				claim := &resv1.ResourceClaim{
+					ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+					Spec: resv1.ResourceClaimSpec{
+						Devices: resv1.DeviceClaim{
+							Requests: []resv1.DeviceRequest{{
+								Name:    "gpu",
+								Exactly: &resv1.ExactDeviceRequest{DeviceClassName: gpuDeviceClass},
+							}},
+						},
+					},
+				}
+				Expect(k8sClient.Create(ctx, claim)).To(Succeed())
+				DeferCleanup(func() {
+					fresh := &resv1.ResourceClaim{}
+					if err := k8sClient.Get(ctx,
+						types.NamespacedName{Name: name, Namespace: namespace}, fresh); err == nil {
+						fresh.Status = resv1.ResourceClaimStatus{}
+						_ = k8sClient.Status().Update(ctx, fresh)
+						_ = k8sClient.Delete(ctx, fresh)
+					}
+				})
+
+				result := resv1.DeviceRequestAllocationResult{
+					Request: "gpu",
+					Driver:  gpuDeviceClass,
+					Pool:    drainPool,
+					Device:  "dev-drain-0",
+				}
+				if adminAccess {
+					result.AdminAccess = ptr.To(true)
+				}
+
+				claim.Status = resv1.ResourceClaimStatus{
+					Allocation: &resv1.AllocationResult{
+						Devices: resv1.DeviceAllocationResult{
+							Results: []resv1.DeviceRequestAllocationResult{result},
+						},
+					},
+					ReservedFor: consumers,
+				}
+				Expect(k8sClient.Status().Update(ctx, claim)).To(Succeed())
+			}
+
+			// makeUnevictablePod puts a pod the drain will never evict on the node: a DaemonSet
+			// pod, in the namespace given. This is XPU Manager's shape.
+			makeUnevictablePod := func(name, namespace string) *core.Pod {
+				pod := &core.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      name,
+						Namespace: namespace,
+						OwnerReferences: []metav1.OwnerReference{{
+							APIVersion: "apps/v1",
+							Kind:       "DaemonSet",
+							Name:       "xpumanager",
+							UID:        "44444444-4444-4444-4444-444444444444",
+						}},
+					},
+					Spec: core.PodSpec{
+						NodeName:   drainNode,
+						Containers: []core.Container{{Name: "c", Image: "busybox"}},
+					},
+				}
+				Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+				DeferCleanup(func() {
+					_ = k8sClient.Delete(ctx, pod, client.GracePeriodSeconds(0))
+				})
+
+				return pod
+			}
+
+			podConsumer := func(pod *core.Pod) resv1.ResourceClaimConsumerReference {
+				return resv1.ResourceClaimConsumerReference{Resource: "pods", Name: pod.Name, UID: pod.UID}
+			}
+
+			// expectReset asserts the reset went ahead, i.e. the claim was not treated as a hold.
+			expectReset := func(key types.NamespacedName, because string) {
+				_, err := reconcilePlan(ctx, key.Name)
+				Expect(err).NotTo(HaveOccurred())
+
+				updated := fetch(key)
+				Expect(updated.Status.Events).To(HaveLen(1))
+				Expect(updated.Status.Events[0].State).To(Equal(intelv1a1.RecoveryEventStateInProgress),
+					because+"; messages: %v", updated.Status.Messages)
+				Expect(updated.Status.Events[0].ClaimsBlockingReset).To(BeEmpty())
+			}
+
+			// adminAccess is monitoring access: DRA hands out the device without reserving it, so
+			// the same GPU stays allocatable to workloads and the claim proves nothing about
+			// whether anyone is computing on it.
+			It("should not wait for an admin-access claim", func() {
+				makeDrainNode(drainNode)
+				makeDrainSlice("slice-claim-admin", drainNode, drainBDF, deviceTaintKeyReset)
+				key := makeDrainPlan("plan-claim-admin", intelv1a1.RecoveryTypeSlot)
+
+				// The API server refuses an admin-access allocation unless the claim's namespace
+				// carries this label, so a cluster using admin claims has already opted its
+				// monitoring namespace in — including the operator's own.
+				ns := &core.Namespace{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: drainWorkloadNS}, ns)).To(Succeed())
+				metav1.SetMetaDataLabel(&ns.ObjectMeta, "resource.kubernetes.io/admin-access", "true")
+				Expect(k8sClient.Update(ctx, ns)).To(Succeed())
+
+				// Deliberately an evictable pod in a workload namespace: the exclusion must come
+				// from the admin flag alone, not from where the consumer happens to run. Same
+				// fixture as "should still wait for a claim held by an evictable pod" below, with
+				// adminAccess the only difference — so the pod still blocks the drain and the claim
+				// must not appear alongside it.
+				holder := makeWorkloadPod("admin-holder", drainNode)
+				makeHoldingClaim("admin-claim", drainWorkloadNS, true, podConsumer(holder))
+
+				_, err := reconcilePlan(ctx, key.Name)
+				Expect(err).NotTo(HaveOccurred())
+
+				updated := fetch(key)
+				evt := updated.Status.Events[0]
+				Expect(evt.ClaimsBlockingReset).To(BeEmpty(),
+					"an admin-access claim does not reserve the device; messages: %v", updated.Status.Messages)
+				Expect(evt.PodsBlockingDrain).To(ContainElement(drainWorkloadNS+"/admin-holder"),
+					"the holder pod is still an ordinary drain blocker")
+			})
+
+			// The operator's own namespace: nothing in it is ever evicted, so nothing in it can
+			// ever release a claim.
+			It("should not wait for a claim held by a pod in the operator namespace", func() {
+				makeDrainNode(drainNode)
+				makeDrainSlice("slice-claim-operator", drainNode, drainBDF, deviceTaintKeyReset)
+				key := makeDrainPlan("plan-claim-operator", intelv1a1.RecoveryTypeSlot)
+
+				// "default" is the operator namespace here, per newTestReconciler.
+				holder := makeUnevictablePod("xpumd-operator-ns", "default")
+				makeHoldingClaim("operator-ns-claim", "default", false, podConsumer(holder))
+
+				expectReset(key, "a claim in the operator namespace can never be released by draining")
+			})
+
+			// Same deadlock without the operator namespace: any GPU-using DaemonSet anywhere
+			// reaches it, because a DaemonSet pod is never evicted.
+			It("should not wait for a claim held by a DaemonSet pod elsewhere", func() {
+				makeDrainNode(drainNode)
+				makeDrainSlice("slice-claim-ds", drainNode, drainBDF, deviceTaintKeyReset)
+				key := makeDrainPlan("plan-claim-ds", intelv1a1.RecoveryTypeSlot)
+
+				holder := makeUnevictablePod("monitor-ds", drainWorkloadNS)
+				makeHoldingClaim("ds-claim", drainWorkloadNS, false, podConsumer(holder))
+
+				expectReset(key, "a DaemonSet pod is never evicted, so its claim is never released")
+			})
+
+			// spec.drain.namespacesToSkip opens the same hole by configuration, which is why it is
+			// documented as "do not list namespaces that run GPU workloads": the drain's skip set
+			// and the set of claims that cannot block are the same set, on purpose.
+			It("should not wait for a claim held by a pod in a skipped namespace", func() {
+				makeDrainNode(drainNode)
+				makeDrainSlice("slice-claim-skipns", drainNode, drainBDF, deviceTaintKeyReset)
+				key := makeDrainPlan("plan-claim-skipns", intelv1a1.RecoveryTypeSlot)
+
+				p := fetch(key)
+				p.Spec.Drain.NamespacesToSkip = []string{drainWorkloadNS}
+				Expect(k8sClient.Update(ctx, p)).To(Succeed())
+
+				// An ordinary pod: only the skip list makes it unevictable, so this also pins that
+				// the claim check reads the same list the drain does.
+				holder := makeWorkloadPod("skipped-holder", drainNode)
+				makeHoldingClaim("skipns-claim", drainWorkloadNS, false, podConsumer(holder))
+
+				expectReset(key, "a pod the drain skips by namespace cannot release its claim either")
+			})
+
+			// The other half of the rule: nothing above may weaken the check for a claim the drain
+			// *can* release.
+			It("should still wait for a claim held by an evictable pod", func() {
+				makeDrainNode(drainNode)
+				makeDrainSlice("slice-claim-evictable", drainNode, drainBDF, deviceTaintKeyReset)
+				key := makeDrainPlan("plan-claim-evictable", intelv1a1.RecoveryTypeSlot)
+
+				holder := makeWorkloadPod("evictable-holder", drainNode)
+				makeHoldingClaim("evictable-claim", drainWorkloadNS, false, podConsumer(holder))
+
+				_, err := reconcilePlan(ctx, key.Name)
+				Expect(err).NotTo(HaveOccurred())
+
+				updated := fetch(key)
+				evt := updated.Status.Events[0]
+				Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateDraining),
+					"an evictable holder is exactly what the in-use check exists for; messages: %v",
+					updated.Status.Messages)
+				Expect(evt.ClaimsBlockingReset).To(ContainElement(drainWorkloadNS + "/evictable-claim"))
+			})
+
+			// A mixed claim must block. Anything else lets one unevictable co-consumer hide a live
+			// workload holding the same device.
+			It("should still wait for a claim held by both an unevictable and an evictable pod", func() {
+				makeDrainNode(drainNode)
+				makeDrainSlice("slice-claim-mixed", drainNode, drainBDF, deviceTaintKeyReset)
+				key := makeDrainPlan("plan-claim-mixed", intelv1a1.RecoveryTypeSlot)
+
+				infra := makeUnevictablePod("mixed-ds", drainWorkloadNS)
+				workload := makeWorkloadPod("mixed-workload", drainNode)
+				makeHoldingClaim("mixed-claim", drainWorkloadNS, false,
+					podConsumer(infra), podConsumer(workload))
+
+				_, err := reconcilePlan(ctx, key.Name)
+				Expect(err).NotTo(HaveOccurred())
+
+				updated := fetch(key)
+				Expect(updated.Status.Events[0].ClaimsBlockingReset).To(
+					ContainElement(drainWorkloadNS+"/mixed-claim"),
+					"one unevictable consumer must not excuse the whole claim; messages: %v",
+					updated.Status.Messages)
+			})
+
+			// A reservation whose pod is gone is the window the claim check was added for: the pod
+			// object disappears before the kubelet has finished unpreparing the device. It must
+			// keep blocking, with the drain deadline as the only backstop.
+			It("should still wait for a reservation whose pod no longer exists", func() {
+				makeDrainNode(drainNode)
+				makeDrainSlice("slice-claim-ghost", drainNode, drainBDF, deviceTaintKeyReset)
+				key := makeDrainPlan("plan-claim-ghost", intelv1a1.RecoveryTypeSlot)
+
+				makeHoldingClaim("ghost-claim", drainWorkloadNS, false,
+					resv1.ResourceClaimConsumerReference{
+						Resource: "pods",
+						Name:     "long-gone",
+						UID:      "55555555-5555-5555-5555-555555555555",
+					})
+
+				_, err := reconcilePlan(ctx, key.Name)
+				Expect(err).NotTo(HaveOccurred())
+
+				updated := fetch(key)
+				Expect(updated.Status.Events[0].State).To(Equal(intelv1a1.RecoveryEventStateDraining),
+					"a claim outliving its pod must still hold the reset; messages: %v", updated.Status.Messages)
+				Expect(updated.Status.Events[0].ClaimsBlockingReset).To(
+					ContainElement(drainWorkloadNS + "/ghost-claim"))
+			})
+
+			// A pod recreated under the same name is a different consumer. Classifying the
+			// reservation by whatever pod currently answers to that name would answer a question
+			// about a pod that no longer exists — and here it would answer it wrongly, since the
+			// live pod is one the drain leaves alone.
+			It("should still wait for a reservation whose pod was replaced under the same name", func() {
+				makeDrainNode(drainNode)
+				makeDrainSlice("slice-claim-uid", drainNode, drainBDF, deviceTaintKeyReset)
+				key := makeDrainPlan("plan-claim-uid", intelv1a1.RecoveryTypeSlot)
+
+				live := makeUnevictablePod("reused-name", drainWorkloadNS)
+				stale := podConsumer(live)
+				stale.UID = "66666666-6666-6666-6666-666666666666"
+				makeHoldingClaim("uid-claim", drainWorkloadNS, false, stale)
+
+				_, err := reconcilePlan(ctx, key.Name)
+				Expect(err).NotTo(HaveOccurred())
+
+				updated := fetch(key)
+				Expect(updated.Status.Events[0].ClaimsBlockingReset).To(
+					ContainElement(drainWorkloadNS+"/uid-claim"),
+					"a stale UID must not be classified by the pod that replaced it; messages: %v",
+					updated.Status.Messages)
+			})
+
+			// The drain declines to evict a Succeeded pod too, but that is a state which clears by
+			// itself rather than a pod that will never move — so its claim is worth waiting for.
+			// This pins the deliberate difference between drainNeverEvicts and
+			// classifyPodForDrain: folding the two together would stop the reset waiting here.
+			It("should still wait for a claim held by a completed pod", func() {
+				makeDrainNode(drainNode)
+				makeDrainSlice("slice-claim-done", drainNode, drainBDF, deviceTaintKeyReset)
+				key := makeDrainPlan("plan-claim-done", intelv1a1.RecoveryTypeSlot)
+
+				holder := makeWorkloadPod("finished-holder", drainNode)
+				holder.Status.Phase = core.PodSucceeded
+				Expect(k8sClient.Status().Update(ctx, holder)).To(Succeed())
+
+				makeHoldingClaim("done-claim", drainWorkloadNS, false, podConsumer(holder))
+
+				_, err := reconcilePlan(ctx, key.Name)
+				Expect(err).NotTo(HaveOccurred())
+
+				updated := fetch(key)
+				evt := updated.Status.Events[0]
+				Expect(evt.PodsBlockingDrain).To(BeEmpty(),
+					"a Succeeded pod is not a drain blocker; messages: %v", updated.Status.Messages)
+				Expect(evt.ClaimsBlockingReset).To(ContainElement(drainWorkloadNS+"/done-claim"),
+					"a reservation that has not been released yet must still hold the reset")
+			})
+
+			// A consumer the operator cannot classify must count as a real holder. The DRA API
+			// allows non-pod consumers, and guessing they are harmless would reset under one.
+			It("should still wait for a claim reserved by a non-pod consumer", func() {
+				makeDrainNode(drainNode)
+				makeDrainSlice("slice-claim-nonpod", drainNode, drainBDF, deviceTaintKeyReset)
+				key := makeDrainPlan("plan-claim-nonpod", intelv1a1.RecoveryTypeSlot)
+
+				makeHoldingClaim("nonpod-claim", drainWorkloadNS, false,
+					resv1.ResourceClaimConsumerReference{
+						APIGroup: "example.com",
+						Resource: "widgets",
+						Name:     "some-widget",
+						UID:      "77777777-7777-7777-7777-777777777777",
+					})
+
+				_, err := reconcilePlan(ctx, key.Name)
+				Expect(err).NotTo(HaveOccurred())
+
+				updated := fetch(key)
+				Expect(updated.Status.Events[0].ClaimsBlockingReset).To(
+					ContainElement(drainWorkloadNS+"/nonpod-claim"),
+					"an unclassifiable consumer must not be assumed harmless; messages: %v",
+					updated.Status.Messages)
+			})
+		})
+
+		It("should release the drain taint when the plan is deleted", func() {
+			makeDrainNode(drainNode)
+			makeDrainSlice("slice-drain-delete", drainNode, drainBDF, deviceTaintKeyReset)
+			makeWorkloadPod("delete-victim", drainNode)
+			key := makeDrainPlan("plan-drain-delete", intelv1a1.RecoveryTypeSlot)
+
+			_, err := reconcilePlan(ctx, key.Name)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(nodeTaints(drainNode)).To(ContainElement(recoveryTaint(key.Name)))
+
+			Expect(k8sClient.Delete(ctx, fetch(key))).To(Succeed())
+
+			_, err = reconcilePlan(ctx, key.Name)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Once the CR is gone nothing reconciles these taints, so a node missed here stays
+			// unschedulable forever with no object left to explain why.
+			Expect(nodeTaints(drainNode)).NotTo(ContainElement(recoveryTaint(key.Name)),
+				"deleting the plan must not leave nodes cordoned")
+		})
+
+		It("should not remove another plan's drain taint", func() {
+			makeDrainNode(drainNode)
+
+			// The taint value carries the owning plan's name precisely so two plans can drain the
+			// same node without clobbering each other. Two plans on one node is a real
+			// configuration: one plan per device ID, and a node can host more than one GPU model.
+			// Here the other plan is mid-drain and this one has nothing to do on the node at all —
+			// no slice publishes a GPU there, so it has no events.
+			other := recoveryTaint("some-other-plan")
+
+			node := &core.Node{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: drainNode}, node)).To(Succeed())
+			node.Spec.Taints = append(node.Spec.Taints, other)
+			Expect(k8sClient.Update(ctx, node)).To(Succeed())
+
+			key := makeDrainPlan("plan-drain-coexist", intelv1a1.RecoveryTypeSlot)
+
+			_, err := reconcilePlan(ctx, key.Name)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(fetch(key).Status.Events).To(BeEmpty(),
+				"fixture check: this plan must have no event on the node, or the node would be "+
+					"in its own keep-set and the cleanup would never run")
+
+			Expect(nodeTaints(drainNode)).To(ContainElement(other),
+				"a plan must only ever touch the taint carrying its own name; untainting a "+
+					"node another plan is still draining would let pods land mid-reset")
+		})
+	})
+
+	// drainDeadlineExceeded's two defensive branches are exercised directly rather than through
+	// Reconcile: neither is reachable via the API server. The CRD defaults drain.timeoutSeconds to
+	// 300 and forbids values below 1, and a nil DrainStartedAt only arises from a status write that
+	// was lost. Unreachable-by-construction is a reason to test the function, not a reason to leave
+	// the branch unpinned.
+	Context("Helper: drainDeadlineExceeded defensive branches", func() {
+		It("should treat a zero timeout as the default rather than as 'wait forever'", func() {
+			plan := &intelv1a1.GPURecoveryPlan{}
+			plan.Spec.Drain.TimeoutSeconds = 0
+
+			long := metav1.NewTime(time.Now().Add(-2 * defaultDrainTimeout))
+			evt := &intelv1a1.RecoveryEvent{DrainStartedAt: &long}
+
+			Expect(drainDeadlineExceeded(plan, evt)).To(BeTrue(),
+				"an object that bypassed API-server defaulting unmarshals as 0; treating "+
+					"that as no timeout is the exact hang the deadline exists to prevent")
+
+			recent := metav1.NewTime(time.Now().Add(-1 * time.Second))
+			evt.DrainStartedAt = &recent
+
+			Expect(drainDeadlineExceeded(plan, evt)).To(BeFalse(),
+				"the fallback must be the default timeout, not zero")
+		})
+
+		It("should re-stamp a missing DrainStartedAt instead of failing the event", func() {
+			plan := &intelv1a1.GPURecoveryPlan{}
+			plan.Spec.Drain.TimeoutSeconds = 300
+
+			evt := &intelv1a1.RecoveryEvent{DrainStartedAt: nil}
+
+			Expect(drainDeadlineExceeded(plan, evt)).To(BeFalse(),
+				"a lost status write should cost one more drain interval, not a recovery")
+			Expect(evt.DrainStartedAt).NotTo(BeNil(),
+				"the clock must be restarted, or every later pass re-enters this branch and "+
+					"the deadline can never be reached at all")
+		})
+	})
+
+	// needsDrain's fail-safe reading of a nil spec.drain.enable. The CRD defaults the field to
+	// true, so nil only arises from an object that bypassed API-server defaulting — and reading nil
+	// as "off" would silently drive a PCIe reset into a running workload, which is the one outcome
+	// the drain exists to prevent.
+	Context("Helper: needsDrain", func() {
+		resetEvent := &intelv1a1.RecoveryEvent{
+			RecoveryType: intelv1a1.RecoveryTypeSpec{Type: intelv1a1.RecoveryTypeSlot},
+		}
+
+		planWithEnable := func(enable *bool) *intelv1a1.GPURecoveryPlan {
+			return &intelv1a1.GPURecoveryPlan{
+				Spec: intelv1a1.GPURecoveryPlanSpec{
+					Drain: intelv1a1.DrainSpec{Enable: enable},
+				},
+			}
+		}
+
+		It("should drain when enable is unset", func() {
+			Expect(needsDrain(planWithEnable(nil), resetEvent)).To(BeTrue())
+		})
+
+		It("should drain when enable is true", func() {
+			Expect(needsDrain(planWithEnable(ptr.To(true)), resetEvent)).To(BeTrue())
+		})
+
+		It("should not drain when enable is false", func() {
+			Expect(needsDrain(planWithEnable(ptr.To(false)), resetEvent)).To(BeFalse())
+		})
+
+		It("should not drain for a reflash whatever enable says", func() {
+			reflash := &intelv1a1.RecoveryEvent{
+				RecoveryType: intelv1a1.RecoveryTypeSpec{Type: intelv1a1.RecoveryTypeReflash},
+			}
+			Expect(needsDrain(planWithEnable(ptr.To(true)), reflash)).To(BeFalse())
 		})
 	})
 })
