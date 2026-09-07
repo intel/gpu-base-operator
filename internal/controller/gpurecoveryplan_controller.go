@@ -68,6 +68,10 @@ type GPURecoveryPlanReconciler struct {
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=resource.k8s.io,resources=resourceclaims,verbs=get;list;watch
 
+// On OpenShift the recovery Jobs run under an SCC of their own; the operator has to be able to
+// create it and to grant its use.
+// +kubebuilder:rbac:groups=security.openshift.io,resources=securitycontextconstraints,verbs=create;delete;get;list;watch;use;update
+
 // Reconcile is the main reconciliation loop for GPURecoveryPlan.
 //
 // The loop is triggered by a change to a GPURecoveryPlan (an admin adding an approval, or the
@@ -117,6 +121,15 @@ func (r *GPURecoveryPlanReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// Reflect the current cluster GPU state into status.events.
 	if err := r.syncRecoveryEventsFromSlices(ctx, plan); err != nil {
 		return ctrl.Result{}, fmt.Errorf("syncRecoveryEventsFromSlices: %w", err)
+	}
+
+	// Apply SCCs if in OpenShift
+	if r.Opts.OpenShift {
+		if err := r.ensureOpenShiftResources(ctx, plan.Name); err != nil {
+			appendMessage(plan, fmt.Sprintf("Failed to ensure OpenShift SCC resources: %v", err))
+
+			return ctrl.Result{}, fmt.Errorf("ensureOpenShiftResources: %w", err)
+		}
 	}
 
 	// Move every event an admin has approved forward: into a node drain for a reset, or straight
@@ -244,6 +257,11 @@ func (r *GPURecoveryPlanReconciler) handleFinalizer(ctx context.Context, plan *i
 		// the last chance to do it: once the finalizer is gone nothing reconciles the plan again,
 		// and the taint carries the plan's own name, which nothing else knows to look for.
 		r.releaseAllDrainTaints(ctx, plan)
+
+		// Remove any SCCs as the plan is going away.
+		if r.Opts.OpenShift {
+			r.cleanupOpenShiftResources(ctx, plan.Name)
+		}
 
 		controllerutil.RemoveFinalizer(plan, recoveryPlanFinalizer)
 
@@ -910,7 +928,45 @@ func (r *GPURecoveryPlanReconciler) prepareRecoveryJob(job *batch.Job, plan *int
 		job.Spec.Template.Spec.ImagePullSecrets = []core.LocalObjectReference{{Name: r.Opts.SecretName}}
 	}
 
+	// On OpenShift the pod has to run under the ServiceAccount bound to the recovery SCC
+	if r.Opts.OpenShift {
+		_, _, _, saName := buildOpenShiftNames(plan.Name, recoveryResourcePart)
+		job.Spec.Template.Spec.ServiceAccountName = saName
+	}
+
 	return jobName
+}
+
+// ensureOpenShiftResources creates the SCC, ClusterRole, ClusterRoleBinding and ServiceAccount that
+// let recovery Job pods run privileged on OpenShift.
+func (r *GPURecoveryPlanReconciler) ensureOpenShiftResources(ctx context.Context, planName string) error {
+	sccName, roleName, bindingName, saName := buildOpenShiftNames(planName, recoveryResourcePart)
+
+	if err := createServiceAccount(ctx, r.Client, saName, r.Opts.Namespace); err != nil {
+		return fmt.Errorf("failed to ensure recovery ServiceAccount: %w", err)
+	}
+
+	if err := ensureSCC(ctx, r.Client, buildRecoverySCC(sccName)); err != nil {
+		return fmt.Errorf("failed to ensure recovery SCC: %w", err)
+	}
+
+	if err := createSCCRole(ctx, r.Client, roleName, sccName); err != nil {
+		return fmt.Errorf("failed to ensure recovery SCC ClusterRole: %w", err)
+	}
+
+	if err := createSCCRoleBinding(ctx, r.Client, bindingName, roleName, saName, r.Opts.Namespace); err != nil {
+		return fmt.Errorf("failed to ensure recovery SCC ClusterRoleBinding: %w", err)
+	}
+
+	return nil
+}
+
+// cleanupOpenShiftResources removes the SCC quadruple when the plan is deleted. The objects are
+// cluster-scoped — or, for the ServiceAccount, in the operator namespace — and not owned by the
+// plan, so they are not garbage-collected with it.
+func (r *GPURecoveryPlanReconciler) cleanupOpenShiftResources(ctx context.Context, planName string) {
+	sccName, roleName, bindingName, saName := buildOpenShiftNames(planName, recoveryResourcePart)
+	deleteOpenShiftSCCResources(ctx, r.Client, sccName, roleName, bindingName, saName, r.Opts.Namespace)
 }
 
 // createRecoveryJob creates the Job that carries out the event's recovery and moves the event to

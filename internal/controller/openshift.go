@@ -156,6 +156,42 @@ func buildFWUpdateSCC(name string) *unstructured.Unstructured {
 	})
 }
 
+// buildRecoverySCC returns the SCC for GPURecoveryPlan recovery Job pods. It has to cover both
+// Job shapes the recovery controller creates:
+//
+//   - xpum-reset-job.yaml: hostPath /sys, one privileged root container running xpu-smi.
+//   - xpum-fwupdate-job.yaml: the same, plus an emptyDir the fw-copy initContainer stages the
+//     firmware into.
+//
+// privileged, root and hostPath are what a PCIe reset and a firmware reflash actually need —
+// xpu-smi drives the device through sysfs, and a reset that cannot reach the device is the
+// problem it was created to solve. Everything not needed is denied: no host network, PID, IPC
+// or ports, every capability dropped, and none allowed back. Requiring the drop costs nothing,
+// since both templates already set capabilities.drop: [ALL ] themselves.
+func buildRecoverySCC(name string) *unstructured.Unstructured {
+	return buildSCC(name, map[string]interface{}{
+		"allowPrivilegedContainer": true,
+		"allowHostDirVolumePlugin": true,
+		"allowHostIPC":             false,
+		"allowHostNetwork":         false,
+		"allowHostPID":             false,
+		"allowHostPorts":           false,
+		"allowPrivilegeEscalation": true,
+		"allowedCapabilities":      nil,
+		"defaultAddCapabilities":   nil,
+		"fsGroup":                  map[string]interface{}{"type": "RunAsAny"},
+		"readOnlyRootFilesystem":   false,
+		"requiredDropCapabilities": []interface{}{"ALL"},
+		"runAsUser":                map[string]interface{}{"type": "RunAsAny"},
+		"seLinuxContext":           map[string]interface{}{"type": "RunAsAny"},
+		"seccompProfiles":          []interface{}{"*"},
+		"supplementalGroups":       map[string]interface{}{"type": "RunAsAny"},
+		"volumes":                  []interface{}{"hostPath", "emptyDir"},
+		"users":                    []interface{}{},
+		"groups":                   []interface{}{},
+	})
+}
+
 func buildOpenShiftNames(crName, componentName string) (sccName string, roleName string, bindingName string, saName string) {
 	sccName = fmt.Sprintf("%s-%s-scc", crName, componentName)
 	roleName = fmt.Sprintf("%s-%s-scc-role", crName, componentName)

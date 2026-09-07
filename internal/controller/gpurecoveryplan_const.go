@@ -68,6 +68,9 @@ const (
 	// reflashStagingDir is where the fw-copy initContainer stages the firmware inside the Job's emptyDir.
 	reflashStagingDir = "/update"
 
+	// recoveryResourcePart is this component's segment in the OpenShift SCC/Role/Binding/SA name
+	recoveryResourcePart = "gpu-recovery"
+
 	// maxStatusMessages is the maximum number of entries kept in status.messages.
 	maxStatusMessages = 50
 
