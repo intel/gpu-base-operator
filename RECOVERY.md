@@ -202,13 +202,18 @@ make install-kubectl-plugin   # builds to bin/ and installs to ~/.local/bin
 make setup-completion         # optional: shell completion
 
 kubectl gpurecovery plans
-kubectl gpurecovery events <plan>
+kubectl gpurecovery events <plan> [-o wide|yaml]
 kubectl gpurecovery messages <plan>
 kubectl gpurecovery approvals <plan>
 kubectl gpurecovery approve <plan> <event-id>
 kubectl gpurecovery confirm <plan> <recovery-type> [--persistent]
 kubectl gpurecovery remove <plan> <approval-id>
 ```
+
+`events` takes kubectl's `-o`: `-o wide` adds the approving approval, the recovery Job and
+whatever is blocking the recovery (pods still on the node, ResourceClaims still reserving the
+GPU) and stops truncating MESSAGE; `-o yaml` prints `status.events` verbatim, for piping into
+`yq`/`jq`.
 
 Plain `kubectl patch` works too, e.g.:
 
