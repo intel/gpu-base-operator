@@ -235,6 +235,35 @@ func recoveryTypeToArgs(bdf string, rt intelv1a1.RecoveryType) []string {
 	}
 }
 
+// buildFDOFlashCommand returns the shell command line that reflashes one GPU from a firmware file the
+// fw-copy initContainer has staged in the shared volume.
+func buildFDOFlashCommand(bdf, file string) []string {
+	return []string{"xpu-smi", "updatefw", "-d", bdf, "-t", "FDO", "-f", fmt.Sprintf("%s/%s", reflashStagingDir, file), "-y", "--force"}
+}
+
+// firmwareImagePath returns path to the firmware file inside the firmware image.
+func firmwareImagePath(file string) string {
+	return fmt.Sprintf("%s/%s", firmwareImageDir, file)
+}
+
+// containerByName returns the named container from a container list, or nil.
+func containerByName(containers []core.Container, name string) *core.Container {
+	for i := range containers {
+		if containers[i].Name == name {
+			return &containers[i]
+		}
+	}
+
+	return nil
+}
+
+// applyXpuSmiImage points the container that runs xpu-smi at the image and pull policy the plan asks
+// for, leaving the template's own values in place where the plan states none.
+func applyXpuSmiImage(c *core.Container, plan *intelv1a1.GPURecoveryPlan) {
+	c.Image = plan.Spec.XpuSmi.Image
+	c.ImagePullPolicy = core.PullPolicy(plan.Spec.XpuSmi.PullPolicy)
+}
+
 // nodeSelectorMatches reports whether the named node carries all labels in sel. An empty
 // selector matches anything, mirroring how the rest of the approval selector treats unset
 // fields.
@@ -603,7 +632,17 @@ func updatePlanState(plan *intelv1a1.GPURecoveryPlan) {
 			intelv1a1.RecoveryEventStateDraining,
 			intelv1a1.RecoveryEventStateInProgress:
 			// blocked is active, not stuck: it clears on its own once the node frees up.
-			anyActive = true
+			//
+			// waiting-approval needs a second look. An event whose images did not verify against the
+			// current spec is parked there (see ensureImagesUsable) and stays until the plan is
+			// edited, so it is indistinguishable from one merely awaiting a decision — but the admin
+			// has already decided and something in the plan is wrong, which is an error.
+			if evt.State == intelv1a1.RecoveryEventStateWaitingApproval &&
+				evt.ImageVerifyGeneration != 0 && evt.ImageVerifyGeneration == plan.Generation {
+				anyStuck = true
+			} else {
+				anyActive = true
+			}
 
 		case intelv1a1.RecoveryEventStateMissingFirmware:
 			// Blocked on operator configuration, not on hardware or an admin decision:
@@ -773,6 +812,12 @@ func escalateEvent(plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent
 	evt.RetryCount = 0
 	evt.ApprovalID = ""
 	evt.ApprovalMatchedAt = nil
+
+	// The escalated operation may not pull the same images — a reset needs xpu-smi, a reflash needs
+	// the firmware image too. Carrying the recorded generation over would treat a firmware image that
+	// has never been checked as already answered by another image's failure. Cleared before the state
+	// is set, so the escalation message below survives.
+	clearImageVerifyHold(evt)
 
 	setEventState(evt, intelv1a1.RecoveryEventStateWaitingApproval,
 		"escalated from %s to %s (%s); the approval for the previous type no longer applies",

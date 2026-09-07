@@ -214,7 +214,9 @@ func validateRecoveryPlanSpec(spec *GPURecoveryPlanSpec) error {
 		return err
 	}
 
-	if spec.XpuSmi.Image != "" {
+	if spec.XpuSmi.Image == "" {
+		return fmt.Errorf("spec.xpuSmi.image is required")
+	} else {
 		if _, err := reference.ParseAnyReference(spec.XpuSmi.Image); err != nil {
 			return fmt.Errorf("spec.xpuSmi.image %q is not a valid image reference: %w", spec.XpuSmi.Image, err)
 		}
