@@ -257,6 +257,23 @@ func containerByName(containers []core.Container, name string) *core.Container {
 	return nil
 }
 
+// recoveryJobTimeout returns the activeDeadlineSeconds for the event's recovery Job.
+func recoveryJobTimeout(plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent) int64 {
+	if evt.RecoveryType.IsReflash() {
+		if plan.Spec.Timeouts.ReflashSeconds > 0 {
+			return int64(plan.Spec.Timeouts.ReflashSeconds)
+		}
+
+		return defaultReflashJobTimeout
+	}
+
+	if plan.Spec.Timeouts.ResetSeconds > 0 {
+		return int64(plan.Spec.Timeouts.ResetSeconds)
+	}
+
+	return defaultResetJobTimeout
+}
+
 // applyXpuSmiImage points the container that runs xpu-smi at the image and pull policy the plan asks
 // for, leaving the template's own values in place where the plan states none.
 func applyXpuSmiImage(c *core.Container, plan *intelv1a1.GPURecoveryPlan) {

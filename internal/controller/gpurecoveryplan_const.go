@@ -88,6 +88,11 @@ const (
 	// defaultDrainTimeout mirrors the CRD default for spec.drain.timeoutSeconds.
 	defaultDrainTimeout = 300 * time.Second
 
+	// defaultResetJobTimeout and defaultReflashJobTimeout mirror the CRD defaults for
+	// spec.timeouts.resetSeconds and spec.timeouts.reflashSeconds
+	defaultResetJobTimeout   int64 = 300
+	defaultReflashJobTimeout int64 = 600
+
 	// maxRecoveryNameLen is the hard ceiling on a recovery Job name, and therefore on the
 	// event ID it is built from.
 	//
