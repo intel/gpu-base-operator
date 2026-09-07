@@ -28,6 +28,9 @@ func validPlan() *GPURecoveryPlan {
 		Spec: GPURecoveryPlanSpec{
 			DeviceID:         "0x1234",
 			DefaultResetType: RecoveryTypeSlot,
+			XpuSmi: XpuSmiSpec{
+				Image: "intel/xpusmi:devel",
+			},
 		},
 	}
 }
@@ -392,6 +395,16 @@ var _ = Describe("GPURecoveryPlan Webhook", func() {
 				obj.Spec.Firmware = validFW()
 				_, err := validator.ValidateCreate(ctx, obj)
 				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("should reject missing xpuSmi.image", func() {
+				fw := validFW()
+				fw.Source = FirmwareSource{}
+				obj.Spec.Firmware = fw
+				obj.Spec.XpuSmi.Image = ""
+				_, err := validator.ValidateCreate(ctx, obj)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("xpuSmi.image"))
 			})
 
 			It("should reject missing source (no container and no volume)", func() {

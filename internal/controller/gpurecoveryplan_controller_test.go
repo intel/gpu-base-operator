@@ -42,6 +42,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	intelv1a1 "github.com/intel/gpu-base-operator/api/v1alpha1"
+	"github.com/intel/gpu-base-operator/config/deployments"
 )
 
 // makeTestJob builds a minimal batch.Job with the given condition pre-set, suitable for creating
@@ -202,7 +203,17 @@ func createPlanForOwnerRef(p *intelv1a1.GPURecoveryPlan) {
 }
 
 // newTestReconciler builds a GPURecoveryPlanReconciler wired to the shared test client.
+//
+// The image verifier is a fake that approves everything, because there is no registry here and the
+// pre-flight check gates every recovery Job: a real verifier would fail every spec below on an image
+// reference that is only ever a string in a fixture. The specs that are about the check itself supply
+// their own fake through newTestReconcilerVerifying.
 func newTestReconciler() *GPURecoveryPlanReconciler {
+	return newTestReconcilerVerifying(&fakeContentImageVerifier{})
+}
+
+// newTestReconcilerVerifying builds a reconciler whose pre-flight image check answers as given.
+func newTestReconcilerVerifying(v ContentImageVerifier) *GPURecoveryPlanReconciler {
 	return &GPURecoveryPlanReconciler{
 		Client: k8sClient,
 		Scheme: k8sClient.Scheme(),
@@ -210,12 +221,20 @@ func newTestReconciler() *GPURecoveryPlanReconciler {
 			Namespace:    "default",
 			RequeueDelay: 2 * time.Second,
 		},
+		imgVerify: v,
 	}
 }
 
 // reconcilePlan runs a single reconcile cycle for the named GPURecoveryPlan.
 func reconcilePlan(ctx context.Context, name string) (reconcile.Result, error) {
 	return newTestReconciler().Reconcile(ctx, reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: name},
+	})
+}
+
+// reconcilePlanVerifying runs a single reconcile cycle with the given image verifier in place.
+func reconcilePlanVerifying(ctx context.Context, name string, v ContentImageVerifier) (reconcile.Result, error) {
+	return newTestReconcilerVerifying(v).Reconcile(ctx, reconcile.Request{
 		NamespacedName: types.NamespacedName{Name: name},
 	})
 }
@@ -1343,6 +1362,23 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 			Expect(evt.ApprovalMatchedAt).To(BeNil())
 		})
 
+		// A reset that could not pull xpu-smi says nothing about the firmware image the escalated
+		// reflash also needs. Carrying the recorded generation across would suppress the check on an
+		// image that has never been looked at, and the reflash would run — or not — on a guess.
+		It("should re-check the images of the escalated operation", func() {
+			p := &intelv1a1.GPURecoveryPlan{
+				ObjectMeta: metav1.ObjectMeta{Name: "plan-esc-imgcheck", Generation: 7},
+			}
+			evt := waitingEvent(intelv1a1.RecoveryTypeSlot)
+			evt.ImageVerifyGeneration = 7
+
+			escalateEvent(p, evt, deviceNeed{rt: intelv1a1.RecoveryTypeReflash, reason: reasonSurvivability})
+
+			Expect(evt.ImageVerifyGeneration).To(BeZero())
+			// Clearing the hold must not take the escalation message with it.
+			Expect(evt.StateMessage).To(ContainSubstring("escalated"))
+		})
+
 		// The ID changing is invisible on the event itself, and it is the reason an approval an
 		// admin already granted has stopped applying. Nothing else says so.
 		It("should say on the event why the previous approval no longer applies", func() {
@@ -1876,6 +1912,32 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 				"nothing clears this but an operator filling in spec.firmware")
 		})
 
+		// An event whose images did not verify is parked in waiting-approval, which normally reads as
+		// active. Here it is not: the approval is already there and the plan is what is wrong, so
+		// nothing will move until an admin edits it. Reporting active would hide that behind a state
+		// that means "working on it".
+		It("should report error for an event held on an unpullable image", func() {
+			p := planWith(evt(intelv1a1.RecoveryEventStateWaitingApproval, 0))
+			p.Generation = 4
+			p.Status.Events[0].ImageVerifyGeneration = 4
+
+			updatePlanState(p)
+
+			Expect(p.Status.State).To(Equal(intelv1a1.PlanStateError))
+		})
+
+		// The recorded generation is only a verdict on the spec it was made against. Once the spec
+		// moves on the check has not been made yet, so the event is genuinely waiting again.
+		It("should report active again once the plan has moved past a held generation", func() {
+			p := planWith(evt(intelv1a1.RecoveryEventStateWaitingApproval, 0))
+			p.Generation = 5
+			p.Status.Events[0].ImageVerifyGeneration = 4
+
+			updatePlanState(p)
+
+			Expect(p.Status.State).To(Equal(intelv1a1.PlanStateActive))
+		})
+
 		// The whole point of the field is answering "does this need me?" — one healthy event in
 		// flight must not mask a stuck one.
 		It("should let error outrank active", func() {
@@ -2370,7 +2432,10 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 					DefaultResetType: intelv1a1.RecoveryTypeSlot,
 					DeviceID:         "0xabcd",
 					MaxRetries:       3,
-					Drain:            intelv1a1.DrainSpec{Enable: ptr.To(false)},
+					XpuSmi: intelv1a1.XpuSmiSpec{
+						Image: "local/xpusmi:devel",
+					},
+					Drain: intelv1a1.DrainSpec{Enable: ptr.To(false)},
 					Approvals: []intelv1a1.RecoveryApproval{
 						{
 							ID:         "sel-persistent",
@@ -2405,10 +2470,10 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 				"a persistent approval is standing policy and must survive firing")
 		})
 
-		// A reflash cannot be carried out yet, so its approval must stay unspent: consuming it
-		// would leave the admin's decision spent on nothing, and they would have to approve again
-		// once the operator can do the work.
-		It("should park an approved reflash without consuming the approval", func() {
+		// A reflash the operator cannot build a Job for must leave its approval unspent: consuming it
+		// would spend the admin's decision on nothing, and they would have to approve again once
+		// spec.firmware told the operator what to flash.
+		It("should park a reflash with no firmware configured without consuming the approval", func() {
 			r := newTestReconciler()
 
 			p := &intelv1a1.GPURecoveryPlan{
@@ -2438,9 +2503,9 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 			r.processApprovals(ctx, p)
 
 			evt := p.Status.Events[0]
-			Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateWaitingApproval))
+			Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateMissingFirmware))
 			Expect(evt.JobName).To(BeEmpty())
-			Expect(evt.StateMessage).To(ContainSubstring("reflash"))
+			Expect(evt.StateMessage).To(ContainSubstring("spec.firmware"))
 			Expect(p.Spec.Approvals[0].Consumed).To(BeFalse(),
 				"an approval that produced no Job must stay available")
 
@@ -2449,7 +2514,60 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 				Name: "recovery-evt-reflash-park-0", Namespace: "default",
 			}, job)
 			Expect(errors.IsNotFound(err)).To(BeTrue(),
-				"a reflash event must not be answered with a reset Job")
+				"a parked reflash must not leave a Job behind")
+		})
+
+		// The other half of the above: once spec.firmware says what to flash, the retained approval
+		// carries the reflash through on the next pass without a second admin action.
+		It("should consume the approval once the reflash Job is created", func() {
+			r := newTestReconciler()
+
+			p := &intelv1a1.GPURecoveryPlan{
+				ObjectMeta: metav1.ObjectMeta{Name: "plan-reflash-resume"},
+				Spec: intelv1a1.GPURecoveryPlanSpec{
+					DefaultResetType: intelv1a1.RecoveryTypeSlot,
+					DeviceID:         "0xabcd",
+					MaxRetries:       3,
+					XpuSmi:           intelv1a1.XpuSmiSpec{Image: "registry/xpu-smi:latest"},
+					Firmware: &intelv1a1.FirmwareSpec{
+						Source: intelv1a1.FirmwareSource{
+							ContainerSource: &intelv1a1.ContainerFirmwareSource{Name: "registry/fw:v2"},
+						},
+						File: "gfx.bin",
+					},
+					Approvals: []intelv1a1.RecoveryApproval{
+						{ID: "app-reflash-resume", EventID: "evt-reflash-resume"},
+					},
+				},
+				Status: intelv1a1.GPURecoveryPlanStatus{
+					Events: []intelv1a1.RecoveryEvent{
+						{
+							ID: "evt-reflash-resume", NodeName: "node01", GPUBDF: "0000:02:00.0",
+							RecoveryType: intelv1a1.RecoveryTypeSpec{Type: intelv1a1.RecoveryTypeReflash},
+							Reason:       reasonSurvivability,
+							// Where the spec above left the event: parked, approval still in place.
+							State: intelv1a1.RecoveryEventStateMissingFirmware,
+						},
+					},
+				},
+			}
+
+			createPlanForOwnerRef(p)
+
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, &batch.Job{ObjectMeta: metav1.ObjectMeta{
+					Name: "recovery-evt-reflash-resume-0", Namespace: "default",
+				}})
+			})
+
+			r.processApprovals(ctx, p)
+
+			evt := p.Status.Events[0]
+			Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateInProgress),
+				"missing-firmware must be re-examined once the plan is corrected; messages: %v", p.Status.Messages)
+			Expect(evt.JobName).To(Equal("recovery-evt-reflash-resume-0"))
+			Expect(p.Spec.Approvals[0].Consumed).To(BeTrue(),
+				"the retained approval is spent by the reflash it eventually authorised")
 		})
 	})
 
@@ -2464,6 +2582,7 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 					DefaultResetType: intelv1a1.RecoveryTypeSlot,
 					DeviceID:         "0xabcd",
 					MaxRetries:       2,
+					XpuSmi:           intelv1a1.XpuSmiSpec{Image: "registry/xpu-smi:latest"},
 					// The drain is off so the re-approved event lands straight in in-progress;
 					// what is under test is the retry counter and the approval, not the drain.
 					Drain: intelv1a1.DrainSpec{Enable: ptr.To(false)},
@@ -2516,6 +2635,7 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 					DefaultResetType: intelv1a1.RecoveryTypeSlot,
 					DeviceID:         "0xabcd",
 					MaxRetries:       2,
+					XpuSmi:           intelv1a1.XpuSmiSpec{Image: "registry/xpu-smi:latest"},
 					Approvals: []intelv1a1.RecoveryApproval{
 						{
 							ID:         "sel-approval",
@@ -2874,6 +2994,9 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 					DefaultResetType: intelv1a1.RecoveryTypeSlot,
 					DeviceID:         "0xabcd",
 					MaxRetries:       3,
+					XpuSmi: intelv1a1.XpuSmiSpec{
+						Image: "local/xpusmi:devel",
+					},
 				},
 				Status: intelv1a1.GPURecoveryPlanStatus{
 					Events: []intelv1a1.RecoveryEvent{
@@ -2951,30 +3074,12 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 			Expect(job.Spec.Template.Spec.Tolerations).To(ContainElement(
 				core.Toleration{Key: "extra", Operator: core.TolerationOpExists}))
 
-			resetter := findJobContainer(job, "resetter")
+			resetter := containerByName(job.Spec.Template.Spec.Containers, resetJobContainer)
 			Expect(resetter).NotTo(BeNil())
 			Expect(resetter.Image).To(Equal("registry/xpu-smi:v1"))
 			Expect(resetter.ImagePullPolicy).To(Equal(core.PullAlways))
 			// The BDF has to reach the command line, not just the event.
 			Expect(resetter.Args).To(Equal([]string{"config", "-d", "0000:02:00.0", "--coldreset"}))
-		})
-
-		// pullPolicy is defaulted by both the CRD and the webhook, so an empty one means an object
-		// that never reached the API server. Keeping the template's IfNotPresent then matters:
-		// leaving the field empty hands the choice to the kubelet, which picks Always for a
-		// ":latest" image — a pull the broken node may not be able to make.
-		It("should keep the template's pull policy when the plan states none", func() {
-			r := newTestReconciler()
-			p := planWithEvent("plan-own-nopolicy", "evt-own-nopolicy", intelv1a1.RecoveryTypeSBR)
-			p.Spec.XpuSmi = intelv1a1.XpuSmiSpec{Image: "registry/xpu-smi:latest"}
-
-			Expect(r.createRecoveryJob(ctx, p, &p.Status.Events[0])).To(Succeed())
-
-			job := expectOwned("recovery-evt-own-nopolicy-0", p)
-
-			resetter := findJobContainer(job, "resetter")
-			Expect(resetter).NotTo(BeNil())
-			Expect(resetter.ImagePullPolicy).To(Equal(core.PullIfNotPresent))
 		})
 
 		It("should give the Job the operator's own pull secret", func() {
@@ -3047,6 +3152,509 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 		})
 	})
 
+	// A card in survivability mode has firmware that no reset can fix, so the recovery is to write a
+	// known-good image over it. That is a different Job from a reset — a firmware image, an
+	// initContainer that stages it, and a shell command line rather than an argv — and every part the
+	// operator fills in fails silently inside a pod if it is filled in wrongly.
+	Context("Reflash Jobs", func() {
+		const (
+			reflashBDF  = "0000:4b:00.0"
+			reflashFile = "gfx_fw.bin"
+			fwImage     = "registry.example.com/intel/gpu-fw:2026.1"
+		)
+
+		// reflashPlan creates a plan (in the API server, so the Job's owner reference has a UID)
+		// carrying one reflash event ready to be acted on, so createRecoveryJob is the whole of what
+		// these specs drive.
+		reflashPlan := func(planName, evtID string, fw *intelv1a1.FirmwareSpec) *intelv1a1.GPURecoveryPlan {
+			p := &intelv1a1.GPURecoveryPlan{
+				ObjectMeta: metav1.ObjectMeta{Name: planName},
+				Spec: intelv1a1.GPURecoveryPlanSpec{
+					DefaultResetType: intelv1a1.RecoveryTypeSlot,
+					DeviceID:         "0xabcd",
+					MaxRetries:       3,
+					XpuSmi:           intelv1a1.XpuSmiSpec{Image: "registry/xpu-smi:latest"},
+					Firmware:         fw,
+				},
+				Status: intelv1a1.GPURecoveryPlanStatus{
+					Events: []intelv1a1.RecoveryEvent{{
+						ID:           evtID,
+						NodeName:     "node07",
+						GPUBDF:       reflashBDF,
+						RecoveryType: intelv1a1.RecoveryTypeSpec{Type: intelv1a1.RecoveryTypeReflash},
+						Reason:       reasonSurvivability,
+						State:        intelv1a1.RecoveryEventStateWaitingApproval,
+						LastUpdated:  ptr.To(metav1.Now()),
+					}},
+				},
+			}
+
+			createPlanForOwnerRef(p)
+
+			return p
+		}
+
+		containerFirmware := func() *intelv1a1.FirmwareSpec {
+			return &intelv1a1.FirmwareSpec{
+				Source: intelv1a1.FirmwareSource{
+					ContainerSource: &intelv1a1.ContainerFirmwareSource{Name: fwImage},
+				},
+				File: reflashFile,
+			}
+		}
+
+		getJob := func(name string) *batch.Job {
+			job := &batch.Job{}
+			Expect(k8sClient.Get(ctx,
+				types.NamespacedName{Name: name, Namespace: "default"}, job)).To(Succeed())
+
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, job)
+			})
+
+			return job
+		}
+
+		expectNoJob := func(name string) {
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "default"}, &batch.Job{})
+			Expect(errors.IsNotFound(err)).To(BeTrue(), "a parked reflash must not leave a Job behind")
+		}
+
+		It("should build the flash Job from the firmware-update template", func() {
+			r := newTestReconciler()
+			p := reflashPlan("plan-reflash-build", "evt-reflash-build", containerFirmware())
+			p.Spec.XpuSmi = intelv1a1.XpuSmiSpec{Image: "registry/xpu-smi:v1", PullPolicy: "Always"}
+
+			Expect(r.createRecoveryJob(ctx, p, &p.Status.Events[0])).To(Succeed())
+
+			evt := p.Status.Events[0]
+			Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateInProgress))
+			Expect(evt.JobName).To(Equal("recovery-evt-reflash-build-0"))
+
+			job := getJob(evt.JobName)
+			Expect(job.Labels).To(HaveKeyWithValue(recoveryJobLabelPlan, "plan-reflash-build"))
+			Expect(job.Labels).To(HaveKeyWithValue(recoveryJobLabelEvent, "evt-reflash-build"))
+			Expect(job.Spec.Template.Spec.NodeName).To(Equal("node07"))
+
+			// The firmware comes out of its own image, which is the initContainer's whole job.
+			copyC := containerByName(job.Spec.Template.Spec.InitContainers, reflashCopyContainer)
+			Expect(copyC).NotTo(BeNil())
+			Expect(copyC.Image).To(Equal(fwImage))
+
+			flashC := containerByName(job.Spec.Template.Spec.Containers, reflashJobContainer)
+			Expect(flashC).NotTo(BeNil())
+			Expect(flashC.Image).To(Equal("registry/xpu-smi:v1"))
+			Expect(flashC.ImagePullPolicy).To(Equal(core.PullAlways))
+
+			// The template runs /bin/sh -c, so the flash has to stay one command line: replacing the
+			// command with an argv, as a reset does, would leave the shell nothing to run.
+			Expect(flashC.Command).To(Equal([]string{"/bin/sh", "-c"}))
+			Expect(flashC.Args).To(Equal(buildFDOFlashCommand(reflashBDF, reflashFile)))
+
+			// An admin who has to check what was flashed onto which card reads this, not the pod log.
+			Expect(p.Status.Messages).To(ContainElement(SatisfyAll(
+				ContainSubstring(reflashBDF),
+				ContainSubstring(reflashFile),
+				ContainSubstring(evt.JobName),
+			)))
+		})
+
+		// The two halves of the reflash are wired together by convention, not by anything either side
+		// checks: the initContainer copies one directory into the staging volume, and xpu-smi is
+		// handed a path under it. If the template's directories and the operator's constants drift
+		// apart the Job still starts and fails minutes later, from inside a pod, on a missing file.
+		It("should flash from the directory the initContainer stages into", func() {
+			tmpl := deployments.XpuManagerFWUpdateJob()
+
+			copyC := containerByName(tmpl.Spec.Template.Spec.InitContainers, reflashCopyContainer)
+			Expect(copyC).NotTo(BeNil())
+			Expect(copyC.Args).To(HaveLen(1))
+			Expect(copyC.Args[0]).To(SatisfyAll(
+				ContainSubstring(firmwareImageDir),
+				ContainSubstring(reflashStagingDir),
+			), "the copy must read where firmwareImagePath looks and write where the flash reads")
+
+			// mountedAt returns the name of the volume the container sees at the given path, so the
+			// two containers can be shown to be talking about the same emptyDir.
+			mountedAt := func(c *core.Container, path string) string {
+				for i := range c.VolumeMounts {
+					if c.VolumeMounts[i].MountPath == path {
+						return c.VolumeMounts[i].Name
+					}
+				}
+
+				return ""
+			}
+
+			flashC := containerByName(tmpl.Spec.Template.Spec.Containers, reflashJobContainer)
+			Expect(flashC).NotTo(BeNil())
+			Expect(mountedAt(copyC, reflashStagingDir)).NotTo(BeEmpty())
+			Expect(mountedAt(flashC, reflashStagingDir)).To(Equal(mountedAt(copyC, reflashStagingDir)))
+
+			Expect(strings.Join(buildFDOFlashCommand(reflashBDF, reflashFile), " ")).To(
+				ContainSubstring(reflashStagingDir + "/" + reflashFile))
+			Expect(firmwareImagePath(reflashFile)).To(Equal(firmwareImageDir + "/" + reflashFile))
+		})
+
+		// -y because there is no terminal to answer the prompt on, and --force because the card is in
+		// survivability mode: xpu-smi otherwise declines to write an image it judges no newer than
+		// what is on the device, and what is on the device is exactly what has to go.
+		It("should force an unattended FDO flash", func() {
+			Expect(strings.Join(buildFDOFlashCommand("0000:02:00.0", "fw.bin"), " ")).To(
+				Equal("xpu-smi updatefw -d 0000:02:00.0 -t FDO -f /update/fw.bin -y --force"))
+		})
+
+		DescribeTable("should park in missing-firmware rather than build an unusable Job",
+			func(planName, evtID string, fw *intelv1a1.FirmwareSpec, wantMsg string) {
+				r := newTestReconciler()
+				p := reflashPlan(planName, evtID, fw)
+
+				// Not an error: nothing has gone wrong in the cluster, the plan is simply not
+				// finished. Returning one would put the whole reconcile into backoff and pile the
+				// same message into status.errors on every retry.
+				Expect(r.createRecoveryJob(ctx, p, &p.Status.Events[0])).To(Succeed())
+
+				evt := p.Status.Events[0]
+				Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateMissingFirmware))
+				Expect(evt.JobName).To(BeEmpty())
+				Expect(evt.StateMessage).To(ContainSubstring(wantMsg))
+				Expect(p.Status.Messages).To(ContainElement(ContainSubstring(wantMsg)))
+
+				expectNoJob(recoveryJobName(evtID, 0))
+			},
+			Entry("no firmware at all", "plan-reflash-nofw", "evt-reflash-nofw",
+				nil, "spec.firmware"),
+			Entry("a source but no file", "plan-reflash-nofile", "evt-reflash-nofile",
+				&intelv1a1.FirmwareSpec{
+					Source: intelv1a1.FirmwareSource{
+						ContainerSource: &intelv1a1.ContainerFirmwareSource{Name: fwImage},
+					},
+				}, "spec.firmware"),
+			// volumeSource is accepted by the CRD but not acted on: the reflash Job copies firmware
+			// out of a container image. Parking says so rather than building a Job whose
+			// initContainer would copy from an image that holds no firmware.
+			Entry("a volume source, which is not implemented", "plan-reflash-vol", "evt-reflash-vol",
+				&intelv1a1.FirmwareSpec{
+					Source: intelv1a1.FirmwareSource{
+						VolumeSource: &intelv1a1.VolumeFirmwareSource{Name: "fw-pvc"},
+					},
+					File: reflashFile,
+				}, "containerSource"),
+		)
+	})
+
+	// Every image a recovery Job pulls is checked against its registry first. A Job pinned to an
+	// image that does not resolve is not a fast failure: it reports in-progress while its pod sits in
+	// ImagePullBackOff until activeDeadlineSeconds expires, so a mistyped reference reads as minutes
+	// of recovery followed by a failure that names the Job rather than the typo.
+	Context("Pre-flight image verification", func() {
+		const (
+			imgBDF  = "0000:5e:00.0"
+			imgFile = "fdo.bin"
+			imgFW   = "registry.example.com/fw:1.0"
+			imgSmi  = "registry.example.com/xpu-smi:1.0"
+		)
+
+		// imgPlan creates a plan whose single event is approved by a blanket EventID approval and
+		// whose drain is off, so processApprovals runs the gate and then goes straight to the Job.
+		imgPlan := func(planName, evtID string, rt intelv1a1.RecoveryType) *intelv1a1.GPURecoveryPlan {
+			p := &intelv1a1.GPURecoveryPlan{
+				ObjectMeta: metav1.ObjectMeta{Name: planName},
+				Spec: intelv1a1.GPURecoveryPlanSpec{
+					DefaultResetType: intelv1a1.RecoveryTypeSlot,
+					DeviceID:         "0xabcd",
+					MaxRetries:       3,
+					Drain:            intelv1a1.DrainSpec{Enable: ptr.To(false)},
+					XpuSmi:           intelv1a1.XpuSmiSpec{Image: imgSmi},
+					Approvals:        []intelv1a1.RecoveryApproval{{ID: "app-" + evtID, EventID: evtID}},
+				},
+				Status: intelv1a1.GPURecoveryPlanStatus{
+					Events: []intelv1a1.RecoveryEvent{{
+						ID:           evtID,
+						NodeName:     "node11",
+						GPUBDF:       imgBDF,
+						RecoveryType: intelv1a1.RecoveryTypeSpec{Type: rt},
+						State:        intelv1a1.RecoveryEventStateWaitingApproval,
+						LastUpdated:  ptr.To(metav1.Now()),
+					}},
+				},
+			}
+
+			if rt == intelv1a1.RecoveryTypeReflash {
+				p.Spec.Firmware = &intelv1a1.FirmwareSpec{
+					Source: intelv1a1.FirmwareSource{
+						ContainerSource: &intelv1a1.ContainerFirmwareSource{Name: imgFW},
+					},
+					File: imgFile,
+				}
+			}
+
+			createPlanForOwnerRef(p)
+
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, &batch.Job{ObjectMeta: metav1.ObjectMeta{
+					Name: recoveryJobName(evtID, 0), Namespace: "default",
+				}})
+			})
+
+			return p
+		}
+
+		It("should check the xpu-smi image before creating a reset Job", func() {
+			fake := &fakeContentImageVerifier{}
+			r := newTestReconcilerVerifying(fake)
+			r.Opts.SecretName = "operator-pull-secret"
+
+			p := imgPlan("plan-img-reset", "evt-img-reset", intelv1a1.RecoveryTypeSlot)
+
+			r.processApprovals(ctx, p)
+
+			Expect(p.Status.Events[0].State).To(Equal(intelv1a1.RecoveryEventStateInProgress))
+
+			// No Files: nothing inside the xpu-smi image is the operator's business, and a content
+			// check would stream hundreds of megabytes to learn nothing. The operator's own pull
+			// secret has to be there, or a private registry answers "unauthorized" for an image the
+			// kubelet would have pulled perfectly well.
+			Expect(fake.requests).To(ConsistOf(ImageVerifyRequest{
+				Image:      imgSmi,
+				PullSecret: "operator-pull-secret",
+			}))
+		})
+
+		It("should check the firmware image for its file as well as its existence", func() {
+			fake := &fakeContentImageVerifier{}
+			r := newTestReconcilerVerifying(fake)
+
+			p := imgPlan("plan-img-reflash", "evt-img-reflash", intelv1a1.RecoveryTypeReflash)
+
+			r.processApprovals(ctx, p)
+
+			Expect(p.Status.Events[0].State).To(Equal(intelv1a1.RecoveryEventStateInProgress))
+			Expect(fake.requests).To(HaveLen(2))
+
+			// An image that exists but does not carry spec.firmware.file fails the same way a missing
+			// image does, only later and inside the initContainer, where the diagnostic is a shell
+			// error in a pod log. No checksum is asked for: the plan does not declare one.
+			Expect(fake.requests[1]).To(Equal(ImageVerifyRequest{
+				Image: imgFW,
+				Files: []ImageFile{{Name: firmwareImagePath(imgFile)}},
+			}))
+		})
+
+		// The xpu-smi image and the firmware image can live on different registries, only one of
+		// which serves a certificate the operator cannot chase. Folding the two opt-outs together
+		// would silently widen whichever one the admin did not ask for.
+		It("should carry each image's own TLS opt-out", func() {
+			fake := &fakeContentImageVerifier{}
+			r := newTestReconcilerVerifying(fake)
+
+			p := imgPlan("plan-img-tls", "evt-img-tls", intelv1a1.RecoveryTypeReflash)
+			p.Spec.Firmware.Source.ContainerSource.InsecureSkipTLSVerify = true
+
+			r.processApprovals(ctx, p)
+
+			Expect(fake.requests).To(HaveLen(2))
+			Expect(fake.requests[0].InsecureSkipTLSVerify).To(BeFalse())
+			Expect(fake.requests[1].InsecureSkipTLSVerify).To(BeTrue())
+		})
+
+		// Pull policy Never means the kubelet never contacts a registry: the image is on the node
+		// already, put there by something outside Kubernetes. Verifying it against a registry that
+		// may not even hold it would park a recovery whose image is sitting right there, leaving the
+		// card broken.
+		It("should not check an image the kubelet will not pull", func() {
+			fake := &fakeContentImageVerifier{err: fmt.Errorf("not in any registry")}
+			r := newTestReconcilerVerifying(fake)
+
+			p := imgPlan("plan-img-never", "evt-img-never", intelv1a1.RecoveryTypeSlot)
+			p.Spec.XpuSmi.PullPolicy = string(core.PullNever)
+
+			r.processApprovals(ctx, p)
+
+			Expect(fake.requests).To(BeEmpty())
+			Expect(p.Status.Events[0].State).To(Equal(intelv1a1.RecoveryEventStateInProgress))
+		})
+
+		// The pull policy is spec.xpuSmi's; the firmware image is pulled by the initContainer at
+		// whatever the template says. A preloaded xpu-smi therefore says nothing about the firmware.
+		It("should still check the firmware image when xpu-smi is preloaded", func() {
+			fake := &fakeContentImageVerifier{}
+			r := newTestReconcilerVerifying(fake)
+
+			p := imgPlan("plan-img-never-fw", "evt-img-never-fw", intelv1a1.RecoveryTypeReflash)
+			p.Spec.XpuSmi.PullPolicy = string(core.PullNever)
+
+			r.processApprovals(ctx, p)
+
+			Expect(fake.requests).To(HaveLen(1))
+			Expect(fake.requests[0].Image).To(Equal(imgFW))
+		})
+
+		It("should skip the check entirely when the plan asks it to", func() {
+			fake := &fakeContentImageVerifier{err: fmt.Errorf("registry unreachable")}
+			r := newTestReconcilerVerifying(fake)
+
+			p := imgPlan("plan-img-skip", "evt-img-skip", intelv1a1.RecoveryTypeSlot)
+			p.Spec.SkipImageVerification = true
+
+			r.processApprovals(ctx, p)
+
+			Expect(fake.requests).To(BeEmpty())
+			Expect(p.Status.Events[0].State).To(Equal(intelv1a1.RecoveryEventStateInProgress),
+				"an air-gapped cluster must be able to opt out and still recover its GPUs")
+		})
+
+		It("should hold the recovery and keep the approval when an image cannot be pulled", func() {
+			fake := &fakeContentImageVerifier{err: fmt.Errorf("MANIFEST_UNKNOWN")}
+			r := newTestReconcilerVerifying(fake)
+
+			p := imgPlan("plan-img-hold", "evt-img-hold", intelv1a1.RecoveryTypeSlot)
+
+			r.processApprovals(ctx, p)
+
+			evt := p.Status.Events[0]
+			Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateWaitingApproval))
+			Expect(evt.JobName).To(BeEmpty())
+
+			// The state says "waiting for an approval" while an approval is sitting right there, so
+			// the message is the only thing that tells an admin what is actually wrong, and it has to
+			// name the field to correct as well as the failure.
+			Expect(evt.StateMessage).To(SatisfyAll(
+				ContainSubstring("spec.xpuSmi.image"),
+				ContainSubstring(imgSmi),
+				ContainSubstring("MANIFEST_UNKNOWN"),
+			))
+			Expect(evt.ImageVerifyGeneration).To(Equal(p.Generation))
+
+			Expect(p.Spec.Approvals[0].Consumed).To(BeFalse(),
+				"correcting the reference must be enough; the admin must not have to approve twice")
+			Expect(p.Status.Messages).To(ContainElement(ContainSubstring("spec.xpuSmi.image")))
+
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name: recoveryJobName("evt-img-hold", 0), Namespace: "default",
+			}, &batch.Job{})
+			Expect(errors.IsNotFound(err)).To(BeTrue(), "no Job may exist for a held recovery")
+		})
+
+		// What failed is a value in the plan, and only an admin edit can change that answer — which
+		// is also what advances metadata.generation. Retrying on the reconcile cadence would re-ask a
+		// question the spec has already settled, and append a message every time.
+		It("should not re-check or re-report until the plan changes", func() {
+			fake := &fakeContentImageVerifier{err: fmt.Errorf("MANIFEST_UNKNOWN")}
+			r := newTestReconcilerVerifying(fake)
+
+			p := imgPlan("plan-img-once", "evt-img-once", intelv1a1.RecoveryTypeSlot)
+
+			r.processApprovals(ctx, p)
+			afterFirst := len(p.Status.Messages)
+
+			r.processApprovals(ctx, p)
+			r.processApprovals(ctx, p)
+
+			Expect(fake.requests).To(HaveLen(1), "one registry round trip per spec version")
+			Expect(p.Status.Messages).To(HaveLen(afterFirst))
+		})
+
+		It("should resume the recovery once the plan is corrected", func() {
+			failing := &fakeContentImageVerifier{err: fmt.Errorf("MANIFEST_UNKNOWN")}
+			p := imgPlan("plan-img-resume", "evt-img-resume", intelv1a1.RecoveryTypeSlot)
+
+			newTestReconcilerVerifying(failing).processApprovals(ctx, p)
+			Expect(p.Status.Events[0].ImageVerifyGeneration).To(Equal(p.Generation))
+
+			// What an admin fixing the reference does: a spec write, which the API server answers
+			// with a new generation. The approval is still there, unconsumed.
+			p.Spec.XpuSmi.Image = "registry.example.com/xpu-smi:1.1"
+			p.Generation++
+
+			passing := &fakeContentImageVerifier{}
+			newTestReconcilerVerifying(passing).processApprovals(ctx, p)
+
+			evt := p.Status.Events[0]
+			Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateInProgress),
+				"messages: %v", p.Status.Messages)
+			Expect(evt.ImageVerifyGeneration).To(BeZero(),
+				"a cleared hold must not make the next failure look like an old one")
+			Expect(evt.StateMessage).To(BeEmpty(),
+				"a stale explanation on a running recovery points at a problem that is gone")
+			Expect(passing.requests).To(HaveLen(1))
+			Expect(passing.requests[0].Image).To(Equal("registry.example.com/xpu-smi:1.1"))
+
+			// The transition out of a hold is worth a line: the plan's own history is where an admin
+			// checks whether their edit was the one that worked.
+			Expect(p.Status.Messages).To(ContainElement(ContainSubstring("resuming")))
+			Expect(p.Spec.Approvals[0].Consumed).To(BeTrue())
+		})
+
+		// A block clears by itself within minutes, so holding the node through one is cheap. An
+		// unpullable image waits on a person and may wait indefinitely, and a NoSchedule taint parked
+		// on a working node for the lifetime of a config typo takes real capacity out of the cluster.
+		It("should not cordon the node while a recovery is held on an image", func() {
+			const heldNode = "img-held-node"
+
+			node := &core.Node{ObjectMeta: metav1.ObjectMeta{Name: heldNode}}
+			Expect(k8sClient.Create(ctx, node)).To(Succeed())
+			DeferCleanup(func() {
+				fresh := &core.Node{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: heldNode}, fresh); err == nil {
+					fresh.Spec.Taints = nil
+					_ = k8sClient.Update(ctx, fresh)
+					_ = k8sClient.Delete(ctx, fresh)
+				}
+			})
+
+			putTaintedSlice(ctx, "slice-img-held", heldNode, "0x1234", imgBDF, deviceTaintKeyReset)
+
+			p := &intelv1a1.GPURecoveryPlan{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "plan-img-nocordon", Finalizers: []string{recoveryPlanFinalizer},
+				},
+				Spec: intelv1a1.GPURecoveryPlanSpec{
+					DefaultResetType: intelv1a1.RecoveryTypeSlot,
+					DeviceID:         "0x1234",
+					MaxRetries:       3,
+					// The drain is on, which is what makes this worth asserting: a reset would
+					// normally taint the node on its way to the Job.
+					Drain:  intelv1a1.DrainSpec{Enable: ptr.To(true), TimeoutSeconds: 300},
+					XpuSmi: intelv1a1.XpuSmiSpec{Image: imgSmi},
+					Approvals: []intelv1a1.RecoveryApproval{{
+						ID:       "app-img-nocordon",
+						Selector: &intelv1a1.ApprovalSelector{RecoveryType: intelv1a1.RecoveryTypeSlot},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, p)).To(Succeed())
+			DeferCleanup(func() {
+				fresh := &intelv1a1.GPURecoveryPlan{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: p.Name}, fresh); err == nil {
+					fresh.Finalizers = nil
+					_ = k8sClient.Update(ctx, fresh)
+					_ = k8sClient.Delete(ctx, fresh)
+				}
+			})
+
+			_, err := reconcilePlanVerifying(ctx, p.Name,
+				&fakeContentImageVerifier{err: fmt.Errorf("MANIFEST_UNKNOWN")})
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &intelv1a1.GPURecoveryPlan{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: p.Name}, updated)).To(Succeed())
+			Expect(updated.Status.Events).To(HaveLen(1))
+			Expect(updated.Status.Events[0].State).To(Equal(intelv1a1.RecoveryEventStateWaitingApproval))
+			Expect(updated.Status.Events[0].DrainStartedAt).To(BeNil())
+
+			// The plan must say it needs attention: waiting-approval alone would read as normal.
+			Expect(updated.Status.State).To(Equal(intelv1a1.PlanStateError))
+
+			// Only the operator's own taint is asserted on: envtest runs no kubelet, so the Node
+			// carries node.kubernetes.io/not-ready of its own accord.
+			fresh := &core.Node{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: heldNode}, fresh)).To(Succeed())
+			Expect(fresh.Spec.Taints).NotTo(ContainElement(HaveField("Key", recoveryTaintKey)),
+				"a recovery that cannot start must not take the node out of service")
+		})
+	})
+
 	Context("Reconcile: long node names still produce a creatable Job", func() {
 		It("should create the recovery Job for a node name well over the limit", func() {
 			r := newTestReconciler()
@@ -3097,6 +3705,7 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 					DefaultResetType: intelv1a1.RecoveryTypeSlot,
 					DeviceID:         "0xbeef",
 					MaxRetries:       3,
+					XpuSmi:           intelv1a1.XpuSmiSpec{Image: "registry/xpu-smi:latest"},
 					Approvals: []intelv1a1.RecoveryApproval{{
 						ID:       "app-any-reset",
 						Selector: &intelv1a1.ApprovalSelector{RecoveryType: intelv1a1.RecoveryTypeSlot},
@@ -3358,6 +3967,7 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 					DefaultResetType: intelv1a1.RecoveryTypeSlot,
 					DeviceID:         "0x1234",
 					MaxRetries:       3,
+					XpuSmi:           intelv1a1.XpuSmiSpec{Image: "local/xpusmi:devel"},
 					// Spelled out rather than left to CRD defaulting: these specs are about what
 					// the drain does, so what it was asked to do belongs in the fixture.
 					Drain: intelv1a1.DrainSpec{
@@ -3506,6 +4116,17 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 			makeWorkloadPod("reflash-bystander", drainNode)
 			key := makeDrainPlan("plan-drain-reflash", intelv1a1.RecoveryTypeReflash)
 
+			// Firmware configured, so the reflash really runs: what is under test is that the Job is
+			// reached without a drain, not the missing-firmware parking that would also skip one.
+			p := fetch(key)
+			p.Spec.Firmware = &intelv1a1.FirmwareSpec{
+				Source: intelv1a1.FirmwareSource{
+					ContainerSource: &intelv1a1.ContainerFirmwareSource{Name: "registry/fw:v2"},
+				},
+				File: "gfx.bin",
+			}
+			Expect(k8sClient.Update(ctx, p)).To(Succeed())
+
 			_, err := reconcilePlan(ctx, key.Name)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -3514,14 +4135,18 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 
 			// A reflash writes firmware to a device already in survivability mode, without
 			// resetting the bus. There is nothing on the node for a drain to protect, so evicting
-			// unrelated workloads would be pure disruption. This version parks the reflash instead
-			// of carrying it out, which is what the state message says — but the point here is
-			// that the node was never touched on the way to that decision.
+			// unrelated workloads would be pure disruption.
 			evt := updated.Status.Events[0]
-			Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateWaitingApproval),
+			Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateInProgress),
 				"a reflash must not enter draining; messages: %v", updated.Status.Messages)
-			Expect(evt.StateMessage).To(ContainSubstring("reflash"))
+			Expect(evt.JobName).NotTo(BeEmpty())
 			Expect(evt.DrainStartedAt).To(BeNil())
+
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, &batch.Job{ObjectMeta: metav1.ObjectMeta{
+					Name: evt.JobName, Namespace: "default",
+				}})
+			})
 
 			Expect(nodeTaints(drainNode)).NotTo(ContainElement(recoveryTaint(key.Name)),
 				"a reflash must not cordon the node")
@@ -5112,14 +5737,3 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 		})
 	})
 })
-
-// findJobContainer returns the named container from a Job's pod template, or nil.
-func findJobContainer(job *batch.Job, name string) *core.Container {
-	for i := range job.Spec.Template.Spec.Containers {
-		if job.Spec.Template.Spec.Containers[i].Name == name {
-			return &job.Spec.Template.Spec.Containers[i]
-		}
-	}
-
-	return nil
-}

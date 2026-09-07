@@ -48,6 +48,10 @@ type GPURecoveryPlanReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 	Opts   ControllerOpts
+
+	// imgVerify is the pre-flight registry check run before a recovery Job is created. An
+	// interface so tests can answer for a registry they do not have.
+	imgVerify ContentImageVerifier
 }
 
 // +kubebuilder:rbac:groups=intel.com,resources=gpurecoveryplans,verbs=get;list;watch;update;patch
@@ -378,7 +382,8 @@ func (r *GPURecoveryPlanReconciler) processApprovals(ctx context.Context, plan *
 
 		// blocked is admitted alongside waiting-approval
 		if evt.State != intelv1a1.RecoveryEventStateWaitingApproval &&
-			evt.State != intelv1a1.RecoveryEventStateBlocked {
+			evt.State != intelv1a1.RecoveryEventStateBlocked &&
+			evt.State != intelv1a1.RecoveryEventStateMissingFirmware {
 			continue
 		}
 
@@ -411,6 +416,11 @@ func (r *GPURecoveryPlanReconciler) processApprovals(ctx context.Context, plan *
 			continue
 		}
 
+		// Every image the Job is about to pull has to resolve in its registry first.
+		if !ensureImagesUsable(r.imgVerify, r.Opts.SecretName, ctx, plan, evt) {
+			continue
+		}
+
 		// A reset needs the node emptied first, which spans several reconciles; its Job is created
 		// by processDrains once the node is clear. Anything that resets nothing goes straight to
 		// the Job.
@@ -428,7 +438,8 @@ func (r *GPURecoveryPlanReconciler) processApprovals(ctx context.Context, plan *
 		}
 
 		// Only consume a one-shot approval once the event has actually left waiting-approval —
-		// into draining, or straight to in-progress.
+		// into draining, or straight to in-progress. An event parked in missing-firmware never
+		// started, so its approval stays and fires again once spec.firmware is filled in.
 		if !approval.Persistent &&
 			(evt.State == intelv1a1.RecoveryEventStateInProgress ||
 				evt.State == intelv1a1.RecoveryEventStateDraining) {
@@ -679,6 +690,12 @@ func (r *GPURecoveryPlanReconciler) reconcileDrainTaints(ctx context.Context, pl
 				wanted[plan.Status.Events[i].NodeName] = struct{}{}
 			}
 		}
+
+		// An event held back by a failed image check is deliberately absent, unlike a blocked one. A
+		// block clears by itself, usually within minutes, so holding the node is cheap. An unpullable
+		// image waits on a person and may wait indefinitely, and a NoSchedule taint parked on a working
+		// node for the lifetime of a config typo takes real capacity out of the cluster. Such an event
+		// reads as plain waiting-approval here: no taint until an approval actually starts a recovery.
 	}
 
 	r.untaintNodesExcept(ctx, plan, wanted)
@@ -881,10 +898,6 @@ func (r *GPURecoveryPlanReconciler) prepareRecoveryJob(job *batch.Job, plan *int
 		plan.Spec.Tolerations...,
 	)
 
-	if plan.Spec.XpuSmi.PullPolicy != "" {
-		job.Spec.Template.Spec.Containers[0].ImagePullPolicy = core.PullPolicy(plan.Spec.XpuSmi.PullPolicy)
-	}
-
 	if r.Opts.SecretName != "" {
 		job.Spec.Template.Spec.ImagePullSecrets = []core.LocalObjectReference{{Name: r.Opts.SecretName}}
 	}
@@ -896,16 +909,7 @@ func (r *GPURecoveryPlanReconciler) prepareRecoveryJob(job *batch.Job, plan *int
 // in-progress.
 func (r *GPURecoveryPlanReconciler) createRecoveryJob(ctx context.Context, plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent) error {
 	if evt.RecoveryType.IsReflash() {
-		// A reflash writes firmware over a card that is already in survivability mode rather than
-		// resetting the PCIe bus, so it is a different Job built from different inputs — a firmware
-		// image and a file within it — which this version does not assemble yet. The event keeps
-		// its state and its approval, so it starts as soon as the operator can carry it out.
-		setEventState(evt, evt.State, "a firmware reflash is not carried out by this version of the operator")
-
-		klog.Warningf("GPURecoveryPlan %s: event %s calls for a firmware reflash, which is not implemented; leaving it in %s",
-			plan.Name, evt.ID, evt.State)
-
-		return nil
+		return r.createReflashJob(ctx, plan, evt)
 	}
 
 	return r.createResetJob(ctx, plan, evt)
@@ -926,16 +930,9 @@ func (r *GPURecoveryPlanReconciler) createResetJob(ctx context.Context, plan *in
 	jobName := r.prepareRecoveryJob(job, plan, evt)
 
 	// Inject the xpu-smi image and the reset command from the plan and the event.
-	for i := range job.Spec.Template.Spec.Containers {
-		if job.Spec.Template.Spec.Containers[i].Name == "resetter" {
-			if plan.Spec.XpuSmi.Image != "" {
-				job.Spec.Template.Spec.Containers[i].Image = plan.Spec.XpuSmi.Image
-			}
-
-			job.Spec.Template.Spec.Containers[i].Args = args
-
-			break
-		}
+	if c := containerByName(job.Spec.Template.Spec.Containers, resetJobContainer); c != nil {
+		applyXpuSmiImage(c, plan)
+		c.Args = args
 	}
 
 	if err := r.Create(ctx, job); err != nil {
@@ -960,6 +957,80 @@ func (r *GPURecoveryPlanReconciler) createResetJob(ctx context.Context, plan *in
 		plan.Name, jobName, evt.ID, rt, evt.NodeName, evt.GPUBDF)
 
 	return nil
+}
+
+// createReflashJob creates the firmware-reflash Job for a reflash event and moves the event to
+// in-progress.
+func (r *GPURecoveryPlanReconciler) createReflashJob(ctx context.Context, plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent) error {
+	fw := plan.Spec.Firmware
+	if fw == nil || fw.File == "" {
+		// The state names the problem; the message names which part of spec.firmware is missing.
+		r.parkForFirmware(plan, evt, "spec.firmware is not configured, so a reflash cannot be attempted",
+			"spec.firmware not configured")
+
+		return nil
+	}
+
+	if fw.Source.ContainerSource == nil {
+		r.parkForFirmware(plan, evt,
+			"spec.firmware.source.containerSource is not set; a reflash copies the firmware from a "+
+				"container image, and volumeSource is not supported yet",
+			"spec.firmware.source.containerSource not configured")
+
+		return nil
+	}
+
+	job := deployments.XpuManagerFWUpdateJob()
+	jobName := r.prepareRecoveryJob(job, plan, evt)
+
+	// The firmware comes out of its own image, which the initContainer copies into the shared
+	// emptyDir the updater then flashes from.
+	if c := containerByName(job.Spec.Template.Spec.InitContainers, reflashCopyContainer); c != nil {
+		c.Image = fw.Source.ContainerSource.Name
+	}
+
+	if c := containerByName(job.Spec.Template.Spec.Containers, reflashJobContainer); c != nil {
+		applyXpuSmiImage(c, plan)
+
+		// The template's command is /bin/sh -c, so the flash is one argument: a command line, not an
+		// argv. Overwriting args rather than command keeps the shell, which the template needs
+		// anyway.
+		c.Args = buildFDOFlashCommand(evt.GPUBDF, fw.File)
+	}
+
+	if err := r.Create(ctx, job); err != nil {
+		if !k8serrors.IsAlreadyExists(err) {
+			return fmt.Errorf("creating reflash Job %s: %w", jobName, err)
+		}
+
+		// Adopted for the same reason createResetJob adopts: the name embeds the event ID and the
+		// attempt index, so this is the very Job this attempt wanted.
+		klog.V(2).Infof("GPURecoveryPlan %s: reflash Job %s already exists", plan.Name, jobName)
+	}
+
+	evt.JobName = jobName
+
+	// No message, as in createResetJob: the Job named on the event is where the detail is.
+	setEventState(evt, intelv1a1.RecoveryEventStateInProgress, "")
+
+	appendMessage(plan, fmt.Sprintf("Event %s: FDO reflash Job %s created (node: %s, bdf: %s, file: %s)",
+		evt.ID, jobName, evt.NodeName, evt.GPUBDF, fw.File))
+
+	klog.Infof("GPURecoveryPlan %s: created reflash Job %s for event %s (node: %s, bdf: %s, file: %s)",
+		plan.Name, jobName, evt.ID, evt.NodeName, evt.GPUBDF, fw.File)
+
+	return nil
+}
+
+// parkForFirmware moves a reflash event to missing-firmware, recording on the event the sentence that
+// says which part of spec.firmware is missing and on the plan the shorter form of the same.
+func (r *GPURecoveryPlanReconciler) parkForFirmware(plan *intelv1a1.GPURecoveryPlan,
+	evt *intelv1a1.RecoveryEvent, stateMsg, planMsg string) {
+	setEventState(evt, intelv1a1.RecoveryEventStateMissingFirmware, "%s", stateMsg)
+
+	klog.Warningf("GPURecoveryPlan %s: event %s parked in %s: %s",
+		plan.Name, evt.ID, intelv1a1.RecoveryEventStateMissingFirmware, stateMsg)
+	appendMessage(plan, fmt.Sprintf("Event %s: firmware reflash pending — %s", evt.ID, planMsg))
 }
 
 // syncJobStatuses polls the Job of every in-progress event and moves the event to succeeded or
@@ -1164,6 +1235,10 @@ func (r *GPURecoveryPlanReconciler) resourceSliceToPlans(ctx context.Context, ob
 // SetupWithManager sets up the controller with the Manager.
 func (r *GPURecoveryPlanReconciler) SetupWithManager(mgr ctrl.Manager, opts ControllerOpts) error {
 	r.Opts = opts
+
+	// The API reader, not the cached client: the pull secret lives in the operator namespace but is
+	// read before any Job exists, and the manager cache is not started yet at Setup time.
+	r.imgVerify = newContentImageVerifier(mgr.GetAPIReader(), opts.Namespace)
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&intelv1a1.GPURecoveryPlan{}).

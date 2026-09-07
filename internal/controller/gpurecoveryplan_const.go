@@ -57,6 +57,17 @@ const (
 	reasonWedged        = "gpu-wedged"
 	reasonSurvivability = "survivability-mode"
 
+	// Container names for the recovery Jobs.
+	resetJobContainer    = "resetter"
+	reflashJobContainer  = "updater"
+	reflashCopyContainer = "fw-copy"
+
+	// firmwareImageDir is the directory a firmware image is expected to carry its .bin files in.
+	firmwareImageDir = "/fwupdate"
+
+	// reflashStagingDir is where the fw-copy initContainer stages the firmware inside the Job's emptyDir.
+	reflashStagingDir = "/update"
+
 	// maxStatusMessages is the maximum number of entries kept in status.messages.
 	maxStatusMessages = 50
 
