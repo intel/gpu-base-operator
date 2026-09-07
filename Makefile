@@ -114,9 +114,12 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 .PHONY: test
+## The exclusion list drops the e2e suite (needs a cluster and real GPUs), the manager package
+## (cmd, no tests — but cmd/kubectl-gpurecovery has them, hence the anchored '/cmd$$'), and the
+## test/sample helpers.
 test: manifests generate fmt vet setup-envtest ## Run tests.
 	chmod -R u+w $(LOCALBIN)/k8s || true ## by default binaries are not writable and cannot be removed
-	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v -e /e2e -e /cmd -e /test -e /samples) -coverprofile cover.out
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v -e /e2e -e '/cmd$$' -e /test -e /samples) -coverprofile cover.out
 
 # TODO(user): To use a different vendor for e2e tests, modify the setup under 'tests/e2e'.
 # The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.
@@ -174,6 +177,24 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 .PHONY: build
 build: manifests generate fmt vet ## Build manager binary.
 	go build -o bin/manager cmd/main.go
+
+.PHONY: build-kubectl-plugin
+build-kubectl-plugin: fmt vet ## Build kubectl-gpurecovery plugin binary to bin/kubectl-gpurecovery.
+	go build -o bin/kubectl-gpurecovery ./cmd/kubectl-gpurecovery/...
+
+.PHONY: install-kubectl-plugin
+install-kubectl-plugin: build-kubectl-plugin ## Install kubectl-gpurecovery plugin to ~/.local/bin (must be on PATH).
+	install -m 0755 bin/kubectl-gpurecovery ~/.local/bin/kubectl-gpurecovery
+	@echo "Installed kubectl-gpurecovery to ~/.local/bin/kubectl-gpurecovery"
+	@echo ""
+	@echo "To enable tab completion for both 'kubectl-gpurecovery <tab>' and 'kubectl gpurecovery <tab>',"
+	@echo "add the following to your ~/.bashrc (or ~/.zshrc for zsh):"
+	@echo ""
+	@echo "  # kubectl plugin completion"
+	@echo "  source <(kubectl completion bash)"
+	@echo "  source <(kubectl-gpurecovery completion bash)"
+	@echo ""
+	@echo "Then reload your shell: source ~/.bashrc"
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
