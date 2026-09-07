@@ -34,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -888,6 +889,13 @@ func (r *GPURecoveryPlanReconciler) prepareRecoveryJob(job *batch.Job, plan *int
 		appendMessage(plan, warning)
 		klog.Warning(warning)
 	}
+
+	// Bound how long the recovery may run. Without a deadline a Job whose pod never gets anywhere —
+	// an xpu-smi that hangs on a card that has stopped answering at all — holds the node's drain
+	// taint and the event's in-progress state indefinitely, and nothing else in the reconcile is
+	// watching a clock once the Job exists. Overwrites the template's own value, which is the same
+	// number as the CRD default and is here for objects that bypassed defaulting.
+	job.Spec.ActiveDeadlineSeconds = ptr.To(recoveryJobTimeout(plan, evt))
 
 	// Pin the pod to the node hosting the affected GPU.
 	job.Spec.Template.Spec.NodeName = evt.NodeName
