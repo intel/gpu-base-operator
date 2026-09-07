@@ -409,6 +409,44 @@ func needsDrain(plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent) b
 	return !evt.RecoveryType.IsReflash()
 }
 
+// nodeBusyWith reports whether another event in this plan is already recovering a GPU on the same
+// node, returning the ID of the event that holds it.
+func nodeBusyWith(plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent) (string, bool) {
+	for i := range plan.Status.Events {
+		other := &plan.Status.Events[i]
+
+		if other.ID == evt.ID || other.NodeName != evt.NodeName {
+			continue
+		}
+
+		if other.State == intelv1a1.RecoveryEventStateDraining ||
+			other.State == intelv1a1.RecoveryEventStateInProgress {
+			return other.ID, true
+		}
+	}
+
+	return "", false
+}
+
+// blockEvent holds an approved event back because another recovery owns its node.
+func blockEvent(plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent, blockerID string) {
+	if evt.State == intelv1a1.RecoveryEventStateBlocked {
+		klog.V(2).Infof("GPURecoveryPlan %s: event %s still blocked by %s on node %s",
+			plan.Name, evt.ID, blockerID, evt.NodeName)
+
+		return
+	}
+
+	setEventState(evt, intelv1a1.RecoveryEventStateBlocked,
+		"recovery %s is already running on node %s; approval retained", blockerID, evt.NodeName)
+
+	appendMessage(plan, fmt.Sprintf(
+		"Event %s: held back — recovery %s is already running on node %s; approval retained",
+		evt.ID, blockerID, evt.NodeName))
+	klog.Infof("GPURecoveryPlan %s: event %s blocked by %s on node %s (approval retained)",
+		plan.Name, evt.ID, blockerID, evt.NodeName)
+}
+
 // beginDrain moves an approved event into draining and starts the deadline clock. Called instead
 // of createRecoveryJob for an event whose recovery needs the node emptied first.
 func beginDrain(plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent) {
@@ -543,7 +581,8 @@ func addRecoveryEvent(plan *intelv1a1.GPURecoveryPlan, nodeName, bdf string, nee
 func hasActiveJobs(plan *intelv1a1.GPURecoveryPlan) bool {
 	for _, evt := range plan.Status.Events {
 		if evt.State == intelv1a1.RecoveryEventStateInProgress ||
-			evt.State == intelv1a1.RecoveryEventStateDraining {
+			evt.State == intelv1a1.RecoveryEventStateDraining ||
+			evt.State == intelv1a1.RecoveryEventStateBlocked {
 			return true
 		}
 	}

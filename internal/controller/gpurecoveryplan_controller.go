@@ -347,6 +347,8 @@ func (r *GPURecoveryPlanReconciler) processApprovals(ctx context.Context, plan *
 	// after the loop so that a single selector approval matches every event currently waiting —
 	// three GPUs all needing an sbr, say — rather than being spent on the first one reached.
 	consumedIDs := make(map[string]bool)
+	// blockedIDs contains the approvals that have an event that cannot start yet
+	blockedIDs := make(map[string]bool)
 
 	for i := range plan.Status.Events {
 		evt := &plan.Status.Events[i]
@@ -374,7 +376,9 @@ func (r *GPURecoveryPlanReconciler) processApprovals(ctx context.Context, plan *
 			// State is waiting-approval now; fall through so the Job is created in this same cycle.
 		}
 
-		if evt.State != intelv1a1.RecoveryEventStateWaitingApproval {
+		// blocked is admitted alongside waiting-approval
+		if evt.State != intelv1a1.RecoveryEventStateWaitingApproval &&
+			evt.State != intelv1a1.RecoveryEventStateBlocked {
 			continue
 		}
 
@@ -397,6 +401,15 @@ func (r *GPURecoveryPlanReconciler) processApprovals(ctx context.Context, plan *
 
 		// Apply any override before the recovery type decides whether the node has to be drained.
 		r.applyOverride(plan, evt, approval)
+
+		// Prevent multiple events from running on the same node at once.
+		if blocker, busy := nodeBusyWith(plan, evt); busy {
+			blockEvent(plan, evt, blocker)
+
+			blockedIDs[approval.ID] = true
+
+			continue
+		}
 
 		// A reset needs the node emptied first, which spans several reconciles; its Job is created
 		// by processDrains once the node is clear. Anything that resets nothing goes straight to
@@ -424,6 +437,13 @@ func (r *GPURecoveryPlanReconciler) processApprovals(ctx context.Context, plan *
 	}
 
 	for id := range consumedIDs {
+		if blockedIDs[id] {
+			klog.V(2).Infof("GPURecoveryPlan %s: approval %s not consumed yet; it still has a blocked event",
+				plan.Name, id)
+
+			continue
+		}
+
 		setApprovalConsumed(plan, id)
 	}
 }
@@ -645,13 +665,19 @@ func (r *GPURecoveryPlanReconciler) reconcileDrainTaints(ctx context.Context, pl
 	wanted := make(map[string]struct{})
 
 	for i := range plan.Status.Events {
-		if plan.Status.Events[i].State == intelv1a1.RecoveryEventStateDraining ||
-			plan.Status.Events[i].State == intelv1a1.RecoveryEventStateInProgress {
+		switch plan.Status.Events[i].State {
+		case intelv1a1.RecoveryEventStateDraining, intelv1a1.RecoveryEventStateInProgress:
 			// Included without re-checking needsDrain. A recovery that never drained has no taint
 			// on its node from this plan, so listing it costs nothing, whereas re-deriving the
 			// answer would let a mid-flight flip of spec.drain.enable untaint a node while its
 			// reset is still running.
 			wanted[plan.Status.Events[i].NodeName] = struct{}{}
+
+		case intelv1a1.RecoveryEventStateBlocked:
+			// A reset queued behind another recovery keeps the node tainted
+			if needsDrain(plan, &plan.Status.Events[i]) {
+				wanted[plan.Status.Events[i].NodeName] = struct{}{}
+			}
 		}
 	}
 
