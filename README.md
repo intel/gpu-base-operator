@@ -206,6 +206,7 @@ Applies to both DP and DRA unless noted. Thresholds that are exceeded mark the G
 |`spec.xpu.monitoringResource`|Set XPUMD resource for Device Plugin use.|`monitoring`|
 |`spec.xpu.configMapOverride`|Name of a ConfigMap in the operator namespace containing a custom OpenTelemetry Collector `config.yaml`|—|
 |`spec.xpu.affinity`|Optional `k8s.io/api/core/v1` `Affinity` object applied to the XPU manager daemon set|—|
+|`spec.xpu.restartOnDeviceRecovery`|When to restart a node's XPU Manager pod so it can monitor a GPU its container cannot reach. `OnRecoveredDevice`, `Always` or `Disabled`.|`OnRecoveredDevice`|
 
 #### Kueue (`spec.kueue`)
 

@@ -3191,6 +3191,16 @@ spec:
                     - xe_monitoring
                     - monitoring
                     type: string
+                  restartOnDeviceRecovery:
+                    default: OnRecoveredDevice
+                    description: |-
+                      RestartOnDeviceRecovery controls whether the operator restarts a node's XPU Manager pod so
+                      that it can monitor a GPU its container cannot currently reach.
+                    enum:
+                    - OnRecoveredDevice
+                    - Always
+                    - Disabled
+                    type: string
                 type: object
             required:
             - resourceRegistration

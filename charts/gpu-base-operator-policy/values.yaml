@@ -48,6 +48,8 @@ xpu:
 #       - matchExpressions:
 #         - key: gpu.intel.com/xpumd-deny-node
 #           operator: DoesNotExist
+  # Restart a node's XPU Manager pod so it can monitor a GPU its container cannot reach.
+  restartOnDeviceRecovery: OnRecoveredDevice
 
 kueue:
   equalResources:

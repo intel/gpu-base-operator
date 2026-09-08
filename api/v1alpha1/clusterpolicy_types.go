@@ -163,6 +163,13 @@ type XpuManagerSpec struct {
 	// Set optional affinities for XPU pods
 	// +optional
 	Affinity *v1.Affinity `json:"affinity,omitempty"`
+
+	// RestartOnDeviceRecovery controls whether the operator restarts a node's XPU Manager pod so
+	// that it can monitor a GPU its container cannot currently reach.
+	// +kubebuilder:validation:Enum=OnRecoveredDevice;Always;Disabled
+	// +kubebuilder:default:=OnRecoveredDevice
+	// +optional
+	RestartOnDeviceRecovery XpumRestartMode `json:"restartOnDeviceRecovery,omitempty"`
 }
 
 // RegistryTLSSpec configures TLS behavior for accessing container image registries.
@@ -266,6 +273,22 @@ type BuildArg struct {
 	Name  string `json:"name"`
 	Value string `json:"value"`
 }
+
+// XpumRestartMode selects when the operator replaces a node's XPU Manager pod to give it a GPU its
+// container cannot reach.
+type XpumRestartMode string
+
+const (
+	// XpumRestartOnRecoveredDevice restarts the pod for a usable GPU its container was never
+	// given a device node for, and leaves a re-enumerated one to XPU Manager's own rescan.
+	XpumRestartOnRecoveredDevice XpumRestartMode = "OnRecoveredDevice"
+
+	// XpumRestartAlways also restarts when a device the container does hold re-enumerates.
+	XpumRestartAlways XpumRestartMode = "Always"
+
+	// XpumRestartDisabled disables both the record and the restart.
+	XpumRestartDisabled XpumRestartMode = "Disabled"
+)
 
 // ClusterPolicyStatus defines the observed state of ClusterPolicy.
 type ClusterPolicyStatus struct {
