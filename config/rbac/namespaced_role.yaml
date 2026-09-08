@@ -25,6 +25,16 @@ rules:
   - pods/log
   verbs:
   - get
+# Patching pods is how XpumDeviceRefreshReconciler records, on each XPU Manager pod, which of its
+# node's GPUs its container can actually use. Granted here rather than through a kubebuilder marker
+# because those all merge into the cluster-wide role, and this write only ever targets the operator's
+# own namespace. Reading and deleting pods is cluster-wide already, for the firmware update jobs.
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - patch
 - apiGroups:
   - ""
   resources:
