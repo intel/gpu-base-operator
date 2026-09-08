@@ -375,6 +375,13 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "GPURecoveryPlan")
 		os.Exit(1)
 	}
+	if err := (&controller.XpumDeviceRefreshReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr, copts); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "XpumDeviceRefresh")
+		os.Exit(1)
+	}
 
 	// nolint:goconst
 	if os.Getenv("DISABLE_WEBHOOKS") != "true" {

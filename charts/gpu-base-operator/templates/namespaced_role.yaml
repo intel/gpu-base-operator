@@ -26,6 +26,14 @@ rules:
   - pods/log
   verbs:
   - get
+# Patching pods is how XpumDeviceRefreshReconciler records, on each XPU Manager pod, which of its
+# node's GPUs its container can actually use. Kept in step with config/rbac/namespaced_role.yaml.
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - patch
 - apiGroups:
   - ""
   resources:
