@@ -47,6 +47,7 @@ See [Customizing the Chart Before Installing](https://helm.sh/docs/intro/using_h
 | xpu.logLevel | 2 | XPU manager log level. |
 | xpu.monitoringResource | monitoring | Monitoring resource for XPUMD with device plugin. |
 | xpu.configMapOverride | "" | Override the default XPUM configuration ConfigMap name. |
+| xpu.restartOnDeviceRecovery | OnRecoveredDevice | When to restart a node's XPUMD pod so it can monitor a GPU its container cannot reach: `OnRecoveredDevice`, `Always` or `Disabled`. |
 | kueue.equalResources | [] | List of ClusterQueue configurations. |
 | pullSecret | null | Image pull secret. |
 | nodeSelector | {} | Node selector for scheduling pods. |

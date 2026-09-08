@@ -73,6 +73,9 @@ spec:
 {{- if .Values.xpu.configMapOverride }}
     configMapOverride: {{ .Values.xpu.configMapOverride | default "" }}
 {{- end }}
+{{- if .Values.xpu.restartOnDeviceRecovery }}
+    restartOnDeviceRecovery: {{ .Values.xpu.restartOnDeviceRecovery | quote }}
+{{- end }}
 
 {{- if .Values.kernelModule }}
   kernelModule:
