@@ -59,6 +59,7 @@ jobs:
           go-version-file: go.mod
           check-latest: true
           cache: false
+      - run: make build-kubectl-plugin
       - run: make build
       - run: IMG=ghcr.io/intel/intel-gpu-base-operator:trivy make operator-build
       - name: Run Trivy for operator image (json)
