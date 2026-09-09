@@ -242,17 +242,6 @@ spec:
                 - file
                 - source
                 type: object
-              maxRetries:
-                default: 3
-                description: |-
-                  MaxRetries is the maximum number of times a failed recovery event is automatically
-                  re-queued for approval and retried while its device taint persists. Once this limit
-                  is reached the event stays in the failed state and requires manual intervention
-                  (e.g. delete the event entry or increase MaxRetries). Setting 0 disables automatic
-                  retries entirely.
-                format: int32
-                minimum: 0
-                type: integer
               skipImageVerification:
                 description: |-
                   SkipImageVerification disables the pre-flight registry check on the images a recovery Job
@@ -361,7 +350,6 @@ spec:
             required:
             - defaultResetType
             - deviceId
-            - maxRetries
             type: object
           status:
             description: GPURecoveryPlanStatus defines the observed state of GPURecoveryPlan.
@@ -429,9 +417,8 @@ spec:
                       type: string
                     pastJobs:
                       description: |-
-                        PastJobs is the names of all Jobs created for this event across all attempts.
-                        Jobs are retained alive until the event is removed (i.e. the device taint clears),
-                        so their Pods remain available for diagnostics throughout the event lifecycle.
+                        PastJobs is the names of all Jobs created for this event across all attempts, so its length
+                        is the number of attempts made so far.
                       items:
                         type: string
                       type: array
@@ -486,11 +473,6 @@ spec:
                       required:
                       - type
                       type: object
-                    retryCount:
-                      description: RetryCount is the number of times this recovery
-                        has been retried after failure.
-                      format: int32
-                      type: integer
                     state:
                       allOf:
                       - enum:
@@ -525,7 +507,6 @@ spec:
                   - lastUpdated
                   - nodeName
                   - recoveryType
-                  - retryCount
                   - state
                   type: object
                 type: array

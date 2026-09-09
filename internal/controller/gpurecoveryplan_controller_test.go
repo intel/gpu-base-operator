@@ -48,12 +48,13 @@ import (
 )
 
 // makeTestJob builds a minimal batch.Job with the given condition pre-set, suitable for creating
-// in the envtest API server to drive syncJobStatuses and the deletion paths.
-func makeTestJob(name, ns string, labels map[string]string, condType batch.JobConditionType) *batch.Job {
+// in the envtest API server to drive syncJobStatuses and the deletion paths. The namespace is the
+// operator's own, which is where every recovery Job is created.
+func makeTestJob(name string, labels map[string]string, condType batch.JobConditionType) *batch.Job {
 	return &batch.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: ns,
+			Namespace: "default",
 			Labels:    labels,
 		},
 		Spec: batch.JobSpec{
@@ -516,7 +517,7 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 		// subresource is driven to Failed; otherwise it is left condition-less and so counts as
 		// still running.
 		createJob := func(name string, terminal bool) *batch.Job {
-			job := makeTestJob(name, "default", map[string]string{
+			job := makeTestJob(name, map[string]string{
 				recoveryJobLabelPlan:  delPlanName,
 				recoveryJobLabelEvent: "evt-del-001",
 			}, batch.JobFailed)
@@ -662,7 +663,7 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 
 			// A Job finalizer keeps the object readable after Delete, so it is observable in the
 			// Terminating state that runningRecoveryJobs must skip.
-			job := makeTestJob("recovery-terminating-0", "default", map[string]string{
+			job := makeTestJob("recovery-terminating-0", map[string]string{
 				recoveryJobLabelPlan: delPlanName,
 			}, batch.JobFailed)
 			job.Status = batch.JobStatus{}
@@ -990,7 +991,6 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: name},
 				Spec: intelv1a1.GPURecoveryPlanSpec{
 					DeviceID:         drtDevID,
-					MaxRetries:       3,
 					DefaultResetType: rt,
 				},
 			}
@@ -1228,6 +1228,70 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 			// orig == p, so there is nothing to write and neither failing path is hit.
 			Expect(r.persistPlan(ctx, key, p.DeepCopy(), p)).To(Succeed())
 		})
+
+		// The pass that produced this used to un-consume the approval it had just spent: it was
+		// woken by the previous pass's status write, read the spec from a cache that had not caught
+		// up with the previous pass's spec write, pruned an unrelated spent approval, and wrote its
+		// whole stale spec back — with consumed=false on the approval that had already started a
+		// recovery Job. The approval then matched again and reset the same GPU a second time.
+		It("must not revert a consumed approval when its own copy of the spec is stale", func() {
+			r, p := newPersistPlan("plan-persist-stale")
+			key := types.NamespacedName{Name: p.Name}
+
+			// Two approvals: app-persist, which the pass below still believes is unconsumed, and
+			// app-spent, which it prunes.
+			p.Spec.Approvals = append(p.Spec.Approvals, intelv1a1.RecoveryApproval{
+				ID: "app-spent", EventID: "evt-persist-0", Consumed: true,
+			})
+			Expect(k8sClient.Update(ctx, p)).To(Succeed())
+
+			orig := p.DeepCopy()
+
+			// What the previous pass wrote and this one has not seen.
+			ahead := &intelv1a1.GPURecoveryPlan{}
+			Expect(k8sClient.Get(ctx, key, ahead)).To(Succeed())
+			ahead.Spec.Approvals[0].Consumed = true
+			Expect(k8sClient.Update(ctx, ahead)).To(Succeed())
+
+			// This pass prunes app-spent and nothing else.
+			pruneConsumedApprovals(p)
+			Expect(p.Spec.Approvals).To(HaveLen(1))
+
+			Expect(r.persistPlan(ctx, key, orig, p)).To(Succeed())
+
+			got := &intelv1a1.GPURecoveryPlan{}
+			Expect(k8sClient.Get(ctx, key, got)).To(Succeed())
+			Expect(got.Spec.Approvals).To(HaveLen(1), "the spent approval must still be pruned")
+			Expect(got.Spec.Approvals[0].ID).To(Equal("app-persist"))
+			Expect(got.Spec.Approvals[0].Consumed).To(BeTrue(),
+				"a consumed approval must not be un-consumed by a write from a stale copy")
+		})
+
+		It("must keep an approval added while the pass was running", func() {
+			r, p := newPersistPlan("plan-persist-added")
+			key := types.NamespacedName{Name: p.Name}
+			orig := p.DeepCopy()
+
+			// An admin approves another event after this pass read the plan.
+			added := &intelv1a1.GPURecoveryPlan{}
+			Expect(k8sClient.Get(ctx, key, added)).To(Succeed())
+			added.Spec.Approvals = append(added.Spec.Approvals, intelv1a1.RecoveryApproval{
+				ID: "app-late", EventID: "evt-persist-2",
+			})
+			Expect(k8sClient.Update(ctx, added)).To(Succeed())
+
+			// The pass consumes the approval it matched, knowing nothing of the new one.
+			setApprovalConsumed(p, "app-persist")
+
+			Expect(r.persistPlan(ctx, key, orig, p)).To(Succeed())
+
+			got := &intelv1a1.GPURecoveryPlan{}
+			Expect(k8sClient.Get(ctx, key, got)).To(Succeed())
+			Expect(got.Spec.Approvals).To(HaveLen(2), "the approval added mid-pass must survive")
+			Expect(got.Spec.Approvals[0].Consumed).To(BeTrue())
+			Expect(got.Spec.Approvals[1].ID).To(Equal("app-late"))
+			Expect(got.Spec.Approvals[1].Consumed).To(BeFalse())
+		})
 	})
 
 	Context("Reconcile: write failures are surfaced", func() {
@@ -1302,7 +1366,7 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 			p := &intelv1a1.GPURecoveryPlan{
 				ObjectMeta: metav1.ObjectMeta{Name: escPlan},
 				Spec: intelv1a1.GPURecoveryPlanSpec{
-					DefaultResetType: intelv1a1.RecoveryTypeSlot, DeviceID: "0xabcd", MaxRetries: 3,
+					DefaultResetType: intelv1a1.RecoveryTypeSlot, DeviceID: "0xabcd",
 				},
 			}
 
@@ -1330,7 +1394,7 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 			p := &intelv1a1.GPURecoveryPlan{
 				ObjectMeta: metav1.ObjectMeta{Name: escPlan + "-steady"},
 				Spec: intelv1a1.GPURecoveryPlanSpec{
-					DefaultResetType: intelv1a1.RecoveryTypeSlot, DeviceID: "0xabcd", MaxRetries: 3,
+					DefaultResetType: intelv1a1.RecoveryTypeSlot, DeviceID: "0xabcd",
 				},
 			}
 
@@ -1346,8 +1410,8 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 
 	Context("Helper: escalateEvent", func() {
 		// waitingEvent builds a single-device event of the given type, waiting for approval, with
-		// approval bookkeeping and a spent retry budget already present so escalation can be seen
-		// to clear them.
+		// approval bookkeeping and two failed attempts already present so escalation can be seen
+		// to clear the approval and keep the attempt history.
 		waitingEvent := func(rt intelv1a1.RecoveryType) *intelv1a1.RecoveryEvent {
 			now := metav1.Now()
 
@@ -1358,7 +1422,7 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 				Reason:            reasonWedged,
 				RecoveryType:      intelv1a1.RecoveryTypeSpec{Type: rt},
 				State:             intelv1a1.RecoveryEventStateWaitingApproval,
-				RetryCount:        2,
+				PastJobs:          []string{"recovery-old-0", "recovery-old-1"},
 				ApprovalID:        "app-old",
 				ApprovalMatchedAt: ptr.To(now),
 				LastUpdated:       ptr.To(now),
@@ -1402,16 +1466,17 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 				"a slot-reset approval must not carry over to the escalated reflash event")
 		})
 
-		It("should reset the approval state and retry budget", func() {
+		It("should reset the approval state, keeping the attempt history", func() {
 			p := &intelv1a1.GPURecoveryPlan{ObjectMeta: metav1.ObjectMeta{Name: "plan-esc-reset"}}
 			evt := waitingEvent(intelv1a1.RecoveryTypeSlot)
 
 			escalateEvent(p, evt, deviceNeed{rt: intelv1a1.RecoveryTypeReflash, reason: reasonSurvivability})
 
 			Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateWaitingApproval))
-			Expect(evt.RetryCount).To(BeZero(), "the escalated operation gets its own retry budget")
 			Expect(evt.ApprovalID).To(BeEmpty())
 			Expect(evt.ApprovalMatchedAt).To(BeNil())
+			Expect(evt.PastJobs).To(ConsistOf("recovery-old-0", "recovery-old-1"),
+				"the Jobs of the earlier attempts stay listed for diagnostics")
 		})
 
 		// A reset that could not pull xpu-smi says nothing about the firmware image the escalated
@@ -1677,8 +1742,8 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 				Expect(validation.IsValidLabelValue(id)).To(BeEmpty(),
 					"event ID %q is not a valid label value", id)
 
-				// maxRetries has no upper bound, so check the widest attempt index the
-				// budget was sized for rather than just the first attempt.
+				// An event can be re-approved any number of times, so check the widest attempt
+				// index the name budget was sized for rather than just the first attempt.
 				for _, attempt := range []int{0, 9, 99} {
 					name := recoveryJobName(id, attempt)
 
@@ -1903,18 +1968,18 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 	})
 
 	Context("Helper: updatePlanState", func() {
-		// planWith builds a plan with maxRetries=3 and the given events, so the retry-budget
-		// comparison in updatePlanState has a real threshold to test against.
+		// planWith builds a plan carrying the given events, which is all updatePlanState reads.
 		planWith := func(events ...intelv1a1.RecoveryEvent) *intelv1a1.GPURecoveryPlan {
 			return &intelv1a1.GPURecoveryPlan{
-				Spec: intelv1a1.GPURecoveryPlanSpec{DefaultResetType: intelv1a1.RecoveryTypeSlot, MaxRetries: 3},
+				Spec: intelv1a1.GPURecoveryPlanSpec{DefaultResetType: intelv1a1.RecoveryTypeSlot},
 				Status: intelv1a1.GPURecoveryPlanStatus{
 					Events: events,
 				},
 			}
 		}
-		evt := func(state intelv1a1.RecoveryEventState, retries int32) intelv1a1.RecoveryEvent {
-			return intelv1a1.RecoveryEvent{State: state, RetryCount: retries}
+		// pastJobs stands in for the attempts the event has already made, one Job name each.
+		evt := func(state intelv1a1.RecoveryEventState, pastJobs ...string) intelv1a1.RecoveryEvent {
+			return intelv1a1.RecoveryEvent{State: state, PastJobs: pastJobs}
 		}
 
 		It("should report idle with no events", func() {
@@ -1925,7 +1990,7 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 
 		DescribeTable("should report active while an event is on its way somewhere",
 			func(state intelv1a1.RecoveryEventState) {
-				p := planWith(evt(state, 0))
+				p := planWith(evt(state))
 				updatePlanState(p)
 				Expect(p.Status.State).To(Equal(intelv1a1.PlanStateActive))
 			},
@@ -1937,28 +2002,27 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 		)
 
 		It("should report idle once every event has settled", func() {
-			p := planWith(evt(intelv1a1.RecoveryEventStateSucceeded, 1))
+			p := planWith(evt(intelv1a1.RecoveryEventStateSucceeded, "recovery-0"))
 			updatePlanState(p)
 			Expect(p.Status.State).To(Equal(intelv1a1.PlanStateIdle))
 		})
 
-		It("should report error for an event that exhausted its retry budget", func() {
-			p := planWith(evt(intelv1a1.RecoveryEventStateFailed, 3))
-			updatePlanState(p)
-			Expect(p.Status.State).To(Equal(intelv1a1.PlanStateError),
-				"an exhausted event never retries on its own; it needs an explicit re-approval")
-		})
-
-		// A failure inside the budget is transient: the event is put back to waiting-approval on
-		// a later pass, so surfacing "error" would be a false alarm.
-		It("should not report error for a failure still inside its retry budget", func() {
-			p := planWith(evt(intelv1a1.RecoveryEventStateFailed, 1))
-			updatePlanState(p)
-			Expect(p.Status.State).NotTo(Equal(intelv1a1.PlanStateError))
-		})
+		// A failed event never restarts on its own, so there is no such thing as a transient
+		// failure here: the very first one is already waiting for a person. Reporting anything
+		// else — least of all idle, the one word that means no GPU in the cluster needs
+		// anything — would hide a broken card behind a state nobody looks twice at.
+		DescribeTable("should report error for a failed event",
+			func(pastJobs []string) {
+				p := planWith(evt(intelv1a1.RecoveryEventStateFailed, pastJobs...))
+				updatePlanState(p)
+				Expect(p.Status.State).To(Equal(intelv1a1.PlanStateError))
+			},
+			Entry("on its first attempt", []string{"recovery-0"}),
+			Entry("after an admin re-approved it once", []string{"recovery-0", "recovery-1"}),
+		)
 
 		It("should report error when a reflash is blocked on missing firmware", func() {
-			p := planWith(evt(intelv1a1.RecoveryEventStateMissingFirmware, 0))
+			p := planWith(evt(intelv1a1.RecoveryEventStateMissingFirmware))
 			updatePlanState(p)
 			Expect(p.Status.State).To(Equal(intelv1a1.PlanStateError),
 				"nothing clears this but an operator filling in spec.firmware")
@@ -1969,7 +2033,7 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 		// nothing will move until an admin edits it. Reporting active would hide that behind a state
 		// that means "working on it".
 		It("should report error for an event held on an unpullable image", func() {
-			p := planWith(evt(intelv1a1.RecoveryEventStateWaitingApproval, 0))
+			p := planWith(evt(intelv1a1.RecoveryEventStateWaitingApproval))
 			p.Generation = 4
 			p.Status.Events[0].ImageVerifyGeneration = 4
 
@@ -1981,7 +2045,7 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 		// The recorded generation is only a verdict on the spec it was made against. Once the spec
 		// moves on the check has not been made yet, so the event is genuinely waiting again.
 		It("should report active again once the plan has moved past a held generation", func() {
-			p := planWith(evt(intelv1a1.RecoveryEventStateWaitingApproval, 0))
+			p := planWith(evt(intelv1a1.RecoveryEventStateWaitingApproval))
 			p.Generation = 5
 			p.Status.Events[0].ImageVerifyGeneration = 4
 
@@ -1994,8 +2058,8 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 		// flight must not mask a stuck one.
 		It("should let error outrank active", func() {
 			p := planWith(
-				evt(intelv1a1.RecoveryEventStateInProgress, 0),
-				evt(intelv1a1.RecoveryEventStateFailed, 3),
+				evt(intelv1a1.RecoveryEventStateInProgress),
+				evt(intelv1a1.RecoveryEventStateFailed, "recovery-0", "recovery-1", "recovery-2"),
 			)
 			updatePlanState(p)
 			Expect(p.Status.State).To(Equal(intelv1a1.PlanStateError))
@@ -2105,9 +2169,6 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 			Expect(ok).To(BeFalse())
 		})
 
-		// An event with no recovery type cannot be authorised: a selector with an empty
-		// recoveryType means "any reset", and matching it against an event whose own type is
-		// unknown would approve a reset nobody chose.
 		It("should refuse to match an event with no recovery type", func() {
 			p := &intelv1a1.GPURecoveryPlan{
 				Spec: intelv1a1.GPURecoveryPlanSpec{
@@ -2347,7 +2408,6 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 				Spec: intelv1a1.GPURecoveryPlanSpec{
 					DefaultResetType: intelv1a1.RecoveryTypeSlot,
 					DeviceID:         "0xabcd",
-					MaxRetries:       3,
 					XpuSmi:           intelv1a1.XpuSmiSpec{Image: "registry/xpu-smi:latest"},
 					// The subject here is which approval fires and when it is spent, so the drain
 					// is switched off: with it on, an approved event stops at draining and the
@@ -2422,7 +2482,6 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 				Spec: intelv1a1.GPURecoveryPlanSpec{
 					DefaultResetType: intelv1a1.RecoveryTypeSlot,
 					DeviceID:         "0xabcd",
-					MaxRetries:       3,
 					XpuSmi:           intelv1a1.XpuSmiSpec{Image: "registry/xpu-smi:latest"},
 					Drain:            intelv1a1.DrainSpec{Enable: ptr.To(false)},
 					Approvals: []intelv1a1.RecoveryApproval{
@@ -2483,7 +2542,6 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 				Spec: intelv1a1.GPURecoveryPlanSpec{
 					DefaultResetType: intelv1a1.RecoveryTypeSlot,
 					DeviceID:         "0xabcd",
-					MaxRetries:       3,
 					XpuSmi: intelv1a1.XpuSmiSpec{
 						Image: "local/xpusmi:devel",
 					},
@@ -2533,7 +2591,6 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 				Spec: intelv1a1.GPURecoveryPlanSpec{
 					DefaultResetType: intelv1a1.RecoveryTypeSlot,
 					DeviceID:         "0xabcd",
-					MaxRetries:       3,
 					Approvals: []intelv1a1.RecoveryApproval{
 						{ID: "app-reflash", EventID: "evt-reflash-park"},
 					},
@@ -2579,7 +2636,6 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 				Spec: intelv1a1.GPURecoveryPlanSpec{
 					DefaultResetType: intelv1a1.RecoveryTypeSlot,
 					DeviceID:         "0xabcd",
-					MaxRetries:       3,
 					XpuSmi:           intelv1a1.XpuSmiSpec{Image: "registry/xpu-smi:latest"},
 					Firmware: &intelv1a1.FirmwareSpec{
 						Source: intelv1a1.FirmwareSource{
@@ -2633,10 +2689,9 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 				Spec: intelv1a1.GPURecoveryPlanSpec{
 					DefaultResetType: intelv1a1.RecoveryTypeSlot,
 					DeviceID:         "0xabcd",
-					MaxRetries:       2,
 					XpuSmi:           intelv1a1.XpuSmiSpec{Image: "registry/xpu-smi:latest"},
 					// The drain is off so the re-approved event lands straight in in-progress;
-					// what is under test is the retry counter and the approval, not the drain.
+					// what is under test is the approval and the attempt history, not the drain.
 					Drain: intelv1a1.DrainSpec{Enable: ptr.To(false)},
 					Approvals: []intelv1a1.RecoveryApproval{
 						{ID: "reapp-001", EventID: "evt-exhausted"},
@@ -2650,9 +2705,10 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 							GPUBDF:       "0000:03:00.0",
 							RecoveryType: intelv1a1.RecoveryTypeSpec{Type: intelv1a1.RecoveryTypeSBR},
 							State:        intelv1a1.RecoveryEventStateFailed,
-							RetryCount:   2, // exhausted
-							LastUpdated:  &now,
-							ApprovalID:   "old-approval",
+							// Two attempts already failed.
+							PastJobs:    []string{"recovery-evt-exhausted-0", "recovery-evt-exhausted-1"},
+							LastUpdated: &now,
+							ApprovalID:  "old-approval",
 						},
 					},
 				},
@@ -2662,15 +2718,16 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 
 			DeferCleanup(func() {
 				_ = k8sClient.Delete(ctx, &batch.Job{ObjectMeta: metav1.ObjectMeta{
-					Name: "recovery-evt-exhausted-0", Namespace: "default",
+					Name: "recovery-evt-exhausted-2", Namespace: "default",
 				}})
 			})
 
 			r.processApprovals(ctx, p)
 
 			evt := &p.Status.Events[0]
-			Expect(evt.RetryCount).To(BeZero(), "retry count must be reset on re-approval")
 			Expect(evt.ApprovalID).To(Equal("reapp-001"))
+			Expect(evt.JobName).To(Equal("recovery-evt-exhausted-2"),
+				"the re-approved attempt gets a Job of its own, named after its attempt index")
 			// Re-approval falls through into the same pass, so the Job starts immediately rather
 			// than waiting for another reconcile.
 			Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateInProgress))
@@ -2686,7 +2743,6 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 				Spec: intelv1a1.GPURecoveryPlanSpec{
 					DefaultResetType: intelv1a1.RecoveryTypeSlot,
 					DeviceID:         "0xabcd",
-					MaxRetries:       2,
 					XpuSmi:           intelv1a1.XpuSmiSpec{Image: "registry/xpu-smi:latest"},
 					Approvals: []intelv1a1.RecoveryApproval{
 						{
@@ -2704,8 +2760,9 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 							GPUBDF:       "0000:04:00.0",
 							RecoveryType: intelv1a1.RecoveryTypeSpec{Type: intelv1a1.RecoveryTypeSBR},
 							State:        intelv1a1.RecoveryEventStateFailed,
-							RetryCount:   2, // exhausted
-							LastUpdated:  &now,
+							// Two attempts already failed.
+							PastJobs:    []string{"recovery-evt-perm-failed-0", "recovery-evt-perm-failed-1"},
+							LastUpdated: &now,
 						},
 					},
 				},
@@ -2713,8 +2770,8 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 
 			r.processApprovals(ctx, p)
 
-			// State must remain failed — a standing approval must not keep retrying a GPU that has
-			// already failed its way out of the budget that same approval granted.
+			// State must remain failed — a standing approval must not keep retrying a GPU whose
+			// recovery it has already authorised once and watched fail.
 			Expect(p.Status.Events[0].State).To(Equal(intelv1a1.RecoveryEventStateFailed))
 		})
 
@@ -2940,9 +2997,10 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 		)
 	})
 
-	// The deadline is the only clock running once a recovery Job exists: nothing in the reconcile
-	// gives up on an in-progress event, so an xpu-smi that hangs on a card that has stopped answering
-	// would hold the node's drain taint and the event's state indefinitely.
+	// The deadline is the clock on the Job itself: an xpu-smi that hangs on a card that has stopped
+	// answering would otherwise hold the node's drain taint and the event's state indefinitely. The
+	// operator keeps its own clock over it (jobVerdictOverdue), because a deadline enforced by the
+	// Job controller is no help on an event whose Job the Job controller never answers for.
 	Context("Recovery Job timeouts", func() {
 		timeoutFor := func(rt intelv1a1.RecoveryType, t intelv1a1.RecoveryTimeoutsSpec) int64 {
 			plan := &intelv1a1.GPURecoveryPlan{Spec: intelv1a1.GPURecoveryPlanSpec{Timeouts: t}}
@@ -2995,7 +3053,6 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 					Spec: intelv1a1.GPURecoveryPlanSpec{
 						DefaultResetType: intelv1a1.RecoveryTypeSlot,
 						DeviceID:         "0xabcd",
-						MaxRetries:       3,
 						XpuSmi:           intelv1a1.XpuSmiSpec{Image: "local/xpusmi:devel"},
 						Timeouts:         intelv1a1.RecoveryTimeoutsSpec{ResetSeconds: 42, ReflashSeconds: 1200},
 						Firmware: &intelv1a1.FirmwareSpec{
@@ -3038,6 +3095,62 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 			Entry("a reflash Job", "plan-deadline-reflash", "evt-deadline-reflash",
 				intelv1a1.RecoveryTypeReflash, int64(1200)),
 		)
+
+		// One pod per approval: an admin authorised one attempt at this card, and the Job
+		// controller's default backoff limit of 6 would quietly turn that into seven. The templates'
+		// podFailurePolicy only names the container running xpu-smi, so a pod that fails anywhere
+		// else (the reflash's fw-copy initContainer, when the firmware file is not in the image)
+		// falls through to the backoff limit: seven privileged pods on a broken GPU, and the event
+		// hears nothing until activeDeadlineSeconds.
+		DescribeTable("should leave the Job controller no pod retries of its own",
+			func(planName, evtID string, rt intelv1a1.RecoveryType) {
+				r := newTestReconciler()
+
+				p := &intelv1a1.GPURecoveryPlan{
+					ObjectMeta: metav1.ObjectMeta{Name: planName},
+					Spec: intelv1a1.GPURecoveryPlanSpec{
+						DefaultResetType: intelv1a1.RecoveryTypeSlot,
+						DeviceID:         "0xabcd",
+						XpuSmi:           intelv1a1.XpuSmiSpec{Image: "local/xpusmi:devel"},
+						Firmware: &intelv1a1.FirmwareSpec{
+							Source: intelv1a1.FirmwareSource{
+								ContainerSource: &intelv1a1.ContainerFirmwareSource{Name: "registry/fw:v2"},
+							},
+							File: "gfx.bin",
+						},
+					},
+					Status: intelv1a1.GPURecoveryPlanStatus{
+						Events: []intelv1a1.RecoveryEvent{{
+							ID:           evtID,
+							NodeName:     "node01",
+							GPUBDF:       "0000:02:00.0",
+							RecoveryType: intelv1a1.RecoveryTypeSpec{Type: rt},
+							State:        intelv1a1.RecoveryEventStateWaitingApproval,
+							LastUpdated:  ptr.To(metav1.Now()),
+						}},
+					},
+				}
+
+				createPlanForOwnerRef(p)
+
+				Expect(r.createRecoveryJob(ctx, p, &p.Status.Events[0])).To(Succeed())
+
+				job := &batch.Job{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{
+					Name: recoveryJobName(evtID, 0), Namespace: "default",
+				}, job)).To(Succeed())
+
+				DeferCleanup(func() {
+					_ = k8sClient.Delete(ctx, job)
+				})
+
+				Expect(job.Spec.BackoffLimit).To(HaveValue(BeNumerically("==", 0)))
+				Expect(job.Spec.Template.Spec.RestartPolicy).To(Equal(core.RestartPolicyNever),
+					"a backoff limit of 0 only means one pod if the pod itself is not restarted")
+			},
+			Entry("a reset Job", "plan-backoff-reset", "evt-backoff-reset", intelv1a1.RecoveryTypeSlot),
+			Entry("a reflash Job", "plan-backoff-reflash", "evt-backoff-reflash", intelv1a1.RecoveryTypeReflash),
+		)
 	})
 
 	// Jobs are kept for as long as the event they belong to, so an admin looking at a GPU can still
@@ -3047,7 +3160,7 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 		// putJob creates a Job and drives its status subresource to the given terminal condition.
 		// K8s 1.36 requires startTime plus the interim condition before the terminal one.
 		putJob := func(name, planName, evtID string, complete bool, reason string) {
-			job := makeTestJob(name, "default", map[string]string{
+			job := makeTestJob(name, map[string]string{
 				recoveryJobLabelPlan:  planName,
 				recoveryJobLabelEvent: evtID,
 			}, batch.JobComplete)
@@ -3089,7 +3202,6 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 				Spec: intelv1a1.GPURecoveryPlanSpec{
 					DefaultResetType: intelv1a1.RecoveryTypeSlot,
 					DeviceID:         "0xabcd",
-					MaxRetries:       3,
 				},
 				Status: intelv1a1.GPURecoveryPlanStatus{
 					Events: []intelv1a1.RecoveryEvent{
@@ -3100,6 +3212,10 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 							RecoveryType: intelv1a1.RecoveryTypeSpec{Type: intelv1a1.RecoveryTypeSBR},
 							State:        intelv1a1.RecoveryEventStateInProgress,
 							JobName:      jobName,
+							// A just-started attempt. syncJobStatuses times an in-progress event
+							// out against this, so leaving it unset would make the specs below
+							// pass on a missing timestamp rather than on a recent one.
+							LastUpdated: ptr.To(metav1.Now()),
 						},
 					},
 				},
@@ -3116,16 +3232,15 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 
 			evt := &p.Status.Events[0]
 			Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateFailed))
-			Expect(evt.PastJobs).To(ContainElement("recovery-evt-fail-001-0"))
+			Expect(evt.PastJobs).To(ConsistOf("recovery-evt-fail-001-0"))
 			Expect(evt.JobName).To(BeEmpty())
-			Expect(evt.RetryCount).To(BeNumerically("==", 1))
 
 			// The Job outlives the event, but its pods do not outlive the plan's cleanup, so the
-			// verdict is copied onto the event. The attempt count is what says whether the operator
-			// will try again — retryCount alone does not, without also knowing spec.maxRetries.
+			// verdict is copied onto the event: which attempt it was, which Job ran it, and what
+			// the Job controller made of it.
 			Expect(evt.StateMessage).To(SatisfyAll(
 				ContainSubstring("recovery-evt-fail-001-0"),
-				ContainSubstring("attempt 1 of 3"),
+				ContainSubstring("attempt 1"),
 				ContainSubstring("BackoffLimitExceeded"),
 			))
 
@@ -3145,9 +3260,8 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 
 			evt := &p.Status.Events[0]
 			Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateSucceeded))
-			Expect(evt.PastJobs).To(ContainElement("recovery-evt-ok-001-0"))
+			Expect(evt.PastJobs).To(ConsistOf("recovery-evt-ok-001-0"))
 			Expect(evt.JobName).To(BeEmpty())
-			Expect(evt.RetryCount).To(BeZero())
 
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      "recovery-evt-ok-001-0",
@@ -3155,8 +3269,8 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 			}, &batch.Job{})).To(Succeed(), "a succeeded Job must remain until the event is removed")
 		})
 
-		// A Job that has gone missing is not a failure of the recovery: reporting one would burn a
-		// retry and could park the event in failed while the reset it started is still running.
+		// A Job that has gone missing is not a failure of the recovery: failed is terminal, so
+		// reporting one could park the event there while the reset it started is still running.
 		It("should leave an event in-progress when its Job cannot be read", func() {
 			r := newTestReconciler()
 			p := planInProgress("plan-job-missing", "evt-missing-001", "recovery-evt-missing-001-0")
@@ -3164,7 +3278,176 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 			Expect(r.syncJobStatuses(ctx, p)).To(Succeed())
 
 			Expect(p.Status.Events[0].State).To(Equal(intelv1a1.RecoveryEventStateInProgress))
-			Expect(p.Status.Events[0].RetryCount).To(BeZero())
+			Expect(p.Status.Events[0].PastJobs).To(BeEmpty(), "no attempt has concluded yet")
+		})
+
+		// ...but it cannot stay in-progress for ever either. in-progress is the state that holds the
+		// node's recovery taint on and keeps the event out of every other phase, so an event whose
+		// Job never reports back is a node the operator has cordoned and then forgotten about. Only
+		// the Job controller writes the verdict, and it writes nothing at all if the Job was deleted
+		// by hand, evicted with its namespace, or never admitted in the first place.
+		It("should fail an event whose Job is gone and whose deadline has passed", func() {
+			r := newTestReconciler()
+			p := planInProgress("plan-job-lost", "evt-lost-001", "recovery-evt-lost-001-0")
+			p.Status.Events[0].LastUpdated = ptr.To(metav1.NewTime(time.Now().Add(-20 * time.Minute)))
+
+			Expect(r.syncJobStatuses(ctx, p)).To(Succeed())
+
+			evt := &p.Status.Events[0]
+			Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateFailed))
+			Expect(evt.PastJobs).To(ConsistOf("recovery-evt-lost-001-0"),
+				"the attempt is recorded, so a re-approved event's next Job gets a name of its own")
+			Expect(evt.JobName).To(BeEmpty())
+			Expect(evt.StateMessage).To(ContainSubstring("no longer exists"))
+		})
+
+		// The Job's own activeDeadlineSeconds is meant to end a hung recovery, and normally does. It
+		// is not a guarantee: nothing enforces it if the Job controller is not running, and the pod
+		// holding the GPU open outlives the event either way.
+		It("should fail an event whose Job outlived its own deadline without concluding", func() {
+			r := newTestReconciler()
+			p := planInProgress("plan-job-hung", "evt-hung-001", "recovery-evt-hung-001-0")
+
+			job := makeTestJob("recovery-evt-hung-001-0", map[string]string{
+				recoveryJobLabelPlan:  p.Name,
+				recoveryJobLabelEvent: "evt-hung-001",
+			}, batch.JobComplete)
+			job.Status = batch.JobStatus{}
+			job.Spec.ActiveDeadlineSeconds = ptr.To(defaultResetJobTimeout)
+
+			Expect(k8sClient.Create(ctx, job)).To(Succeed())
+
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, job)
+			})
+
+			// Running, with no condition of any kind, since well before a reset's deadline.
+			job.Status = batch.JobStatus{
+				StartTime: ptr.To(metav1.NewTime(time.Now().Add(-20 * time.Minute))),
+				Active:    1,
+			}
+			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+
+			Expect(r.syncJobStatuses(ctx, p)).To(Succeed())
+
+			evt := &p.Status.Events[0]
+			Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateFailed))
+			Expect(evt.PastJobs).To(ConsistOf("recovery-evt-hung-001-0"))
+			Expect(evt.StateMessage).To(ContainSubstring("no verdict"))
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "recovery-evt-hung-001-0", Namespace: "default",
+			}, &batch.Job{})).To(Succeed(), "the Job is left for an admin to look at, as a failed one is")
+		})
+
+		It("should leave a Job that is merely still running alone", func() {
+			r := newTestReconciler()
+			p := planInProgress("plan-job-running", "evt-running-001", "recovery-evt-running-001-0")
+
+			job := makeTestJob("recovery-evt-running-001-0", map[string]string{
+				recoveryJobLabelPlan:  p.Name,
+				recoveryJobLabelEvent: "evt-running-001",
+			}, batch.JobComplete)
+			job.Status = batch.JobStatus{}
+
+			Expect(k8sClient.Create(ctx, job)).To(Succeed())
+
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, job)
+			})
+
+			job.Status = batch.JobStatus{StartTime: ptr.To(metav1.Now()), Active: 1}
+			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+
+			Expect(r.syncJobStatuses(ctx, p)).To(Succeed())
+
+			Expect(p.Status.Events[0].State).To(Equal(intelv1a1.RecoveryEventStateInProgress))
+			Expect(p.Status.Events[0].JobName).To(Equal("recovery-evt-running-001-0"))
+			Expect(p.Status.Events[0].PastJobs).To(BeEmpty(), "the attempt is still in flight")
+		})
+
+		// The operator's clock has to sit outside the Job's, or it fires while a recovery that is
+		// still within its deadline is running — a reflash interrupted part-written being the
+		// outcome worth avoiding, which is also why the reflash deadline is the longer one.
+		DescribeTable("should time an attempt out only past the Job's own deadline",
+			func(rt intelv1a1.RecoveryType, age time.Duration, overdue bool) {
+				p := planInProgress("plan-overdue", "evt-overdue", "job-overdue")
+				evt := &p.Status.Events[0]
+				evt.RecoveryType.Type = rt
+
+				since := ptr.To(metav1.NewTime(time.Now().Add(-age)))
+				Expect(jobVerdictOverdue(jobDeadlineSeconds(p, evt, nil), since)).To(Equal(overdue))
+			},
+			Entry("a reset inside its deadline", intelv1a1.RecoveryTypeSlot, 4*time.Minute, false),
+			Entry("a reset inside the grace after it", intelv1a1.RecoveryTypeSlot, 5*time.Minute+30*time.Second, false),
+			Entry("a reset past both", intelv1a1.RecoveryTypeSlot, 7*time.Minute, true),
+			// The same age that is overdue for a reset is not for a reflash.
+			Entry("a reflash at a reset's deadline", intelv1a1.RecoveryTypeReflash, 7*time.Minute, false),
+			Entry("a reflash past its own", intelv1a1.RecoveryTypeReflash, 12*time.Minute, true),
+		)
+
+		// An event with no timestamp has no deadline to be past, and guessing one from time.Now()
+		// would make the first reconcile that saw it start the clock at zero.
+		It("should not time out an attempt with no timestamp to measure from", func() {
+			p := planInProgress("plan-no-stamp", "evt-no-stamp", "job-no-stamp")
+			Expect(jobVerdictOverdue(jobDeadlineSeconds(p, &p.Status.Events[0], nil), nil)).To(BeFalse())
+		})
+
+		// A Job runs under the activeDeadlineSeconds it was created with, and spec.timeouts is
+		// editable while one is in flight, so the clock the operator keeps has to come off the Job
+		// and not off the plan as it reads now.
+		DescribeTable("should measure a Job against the deadline it was created with",
+			func(job *batch.Job, want int64) {
+				p := planInProgress("plan-deadline-src", "evt-deadline-src", "job-deadline-src")
+				p.Spec.Timeouts.ResetSeconds = 60
+
+				Expect(jobDeadlineSeconds(p, &p.Status.Events[0], job)).To(Equal(want))
+			},
+			Entry("the Job's own deadline, not the plan's",
+				&batch.Job{Spec: batch.JobSpec{ActiveDeadlineSeconds: ptr.To(int64(1800))}}, int64(1800)),
+			// A Job the operator created always has one; these cover a Job that has gone missing,
+			// and one created by hand or by an operator old enough not to have set it.
+			Entry("the plan's when there is no Job to read", nil, int64(60)),
+			Entry("the plan's when the Job carries none", &batch.Job{}, int64(60)),
+			Entry("the plan's when the Job carries a zero",
+				&batch.Job{Spec: batch.JobSpec{ActiveDeadlineSeconds: ptr.To(int64(0))}}, int64(60)),
+		)
+
+		// The reason the deadline is read off the Job: nothing stops an admin from lowering
+		// spec.timeouts while a recovery is running, and reading it back from the plan would fail an
+		// event whose Job is still inside the deadline it was admitted with — for a reflash, with
+		// the card part-written and the Job controller about to report success.
+		It("should not fail a running Job that spec.timeouts was shortened under", func() {
+			r := newTestReconciler()
+			p := planInProgress("plan-timeout-cut", "evt-timeout-cut", "recovery-evt-timeout-cut-0")
+
+			job := makeTestJob("recovery-evt-timeout-cut-0", map[string]string{
+				recoveryJobLabelPlan:  p.Name,
+				recoveryJobLabelEvent: "evt-timeout-cut",
+			}, batch.JobComplete)
+			job.Status = batch.JobStatus{}
+			job.Spec.ActiveDeadlineSeconds = ptr.To(int64(3600))
+
+			Expect(k8sClient.Create(ctx, job)).To(Succeed())
+
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, job)
+			})
+
+			job.Status = batch.JobStatus{
+				StartTime: ptr.To(metav1.NewTime(time.Now().Add(-20 * time.Minute))),
+				Active:    1,
+			}
+			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+
+			// Cut to well under the Job's age after the Job was already admitted.
+			p.Spec.Timeouts.ResetSeconds = 60
+
+			Expect(r.syncJobStatuses(ctx, p)).To(Succeed())
+
+			Expect(p.Status.Events[0].State).To(Equal(intelv1a1.RecoveryEventStateInProgress))
+			Expect(p.Status.Events[0].PastJobs).To(BeEmpty(),
+				"the Job is still inside the deadline it was created with")
 		})
 
 		It("should report an in-flight Job as an active Job", func() {
@@ -3188,7 +3471,6 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 				Spec: intelv1a1.GPURecoveryPlanSpec{
 					DefaultResetType: intelv1a1.RecoveryTypeSlot,
 					DeviceID:         "0xabcd",
-					MaxRetries:       3,
 					XpuSmi: intelv1a1.XpuSmiSpec{
 						Image: "local/xpusmi:devel",
 					},
@@ -3335,9 +3617,9 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 			Expect(p.Status.Events[0].JobName).To(Equal("recovery-evt-own-adopt-0"))
 		})
 
-		// The attempt index in the name is what keeps a retry from colliding with the Job that
+		// The attempt index in the name is what keeps a re-approved attempt from colliding with the Job that
 		// already failed — and that Job is still there, kept for diagnostics.
-		It("should name a retry after its attempt index", func() {
+		It("should name a re-approved attempt after its attempt index", func() {
 			r := newTestReconciler()
 			p := planWithEvent("plan-own-retry", "evt-own-retry", intelv1a1.RecoveryTypeSBR)
 			p.Status.Events[0].PastJobs = []string{"recovery-evt-own-retry-0"}
@@ -3391,7 +3673,6 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 				Spec: intelv1a1.GPURecoveryPlanSpec{
 					DefaultResetType: intelv1a1.RecoveryTypeSlot,
 					DeviceID:         "0xabcd",
-					MaxRetries:       3,
 					XpuSmi:           intelv1a1.XpuSmiSpec{Image: "registry/xpu-smi:latest"},
 					Firmware:         fw,
 				},
@@ -3586,7 +3867,6 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 				Spec: intelv1a1.GPURecoveryPlanSpec{
 					DefaultResetType: intelv1a1.RecoveryTypeSlot,
 					DeviceID:         "0xabcd",
-					MaxRetries:       3,
 					Drain:            intelv1a1.DrainSpec{Enable: ptr.To(false)},
 					XpuSmi:           intelv1a1.XpuSmiSpec{Image: imgSmi},
 					Approvals:        []intelv1a1.RecoveryApproval{{ID: "app-" + evtID, EventID: evtID}},
@@ -3835,7 +4115,6 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 				Spec: intelv1a1.GPURecoveryPlanSpec{
 					DefaultResetType: intelv1a1.RecoveryTypeSlot,
 					DeviceID:         "0x1234",
-					MaxRetries:       3,
 					// The drain is on, which is what makes this worth asserting: a reset would
 					// normally taint the node on its way to the Job.
 					Drain:  intelv1a1.DrainSpec{Enable: ptr.To(true), TimeoutSeconds: 300},
@@ -3916,7 +4195,6 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 				Spec: intelv1a1.GPURecoveryPlanSpec{
 					DefaultResetType: intelv1a1.RecoveryTypeSlot,
 					DeviceID:         "0xabcd",
-					MaxRetries:       3,
 					XpuSmi:           intelv1a1.XpuSmiSpec{Image: "local/xpusmi:devel"},
 				},
 				Status: intelv1a1.GPURecoveryPlanStatus{
@@ -3953,7 +4231,6 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 				Spec: intelv1a1.GPURecoveryPlanSpec{
 					DefaultResetType: intelv1a1.RecoveryTypeSlot,
 					DeviceID:         "0xabcd",
-					MaxRetries:       3,
 				},
 			})
 
@@ -3993,7 +4270,6 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 				Spec: intelv1a1.GPURecoveryPlanSpec{
 					DefaultResetType: intelv1a1.RecoveryTypeSlot,
 					DeviceID:         "0xabcd",
-					MaxRetries:       3,
 				},
 			})
 
@@ -4074,7 +4350,6 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 				Spec: intelv1a1.GPURecoveryPlanSpec{
 					DefaultResetType: intelv1a1.RecoveryTypeSlot,
 					DeviceID:         "0xabcd",
-					MaxRetries:       3,
 				},
 			}
 			Expect(k8sClient.Create(ctx, p)).To(Succeed())
@@ -4161,7 +4436,6 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 				Spec: intelv1a1.GPURecoveryPlanSpec{
 					DefaultResetType: intelv1a1.RecoveryTypeSlot,
 					DeviceID:         "0xbeef",
-					MaxRetries:       3,
 					XpuSmi:           intelv1a1.XpuSmiSpec{Image: "registry/xpu-smi:latest"},
 					Approvals: []intelv1a1.RecoveryApproval{{
 						ID:       "app-any-reset",
@@ -4209,87 +4483,213 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 		})
 	})
 
-	// A GPU whose taint is still there after a failed attempt gets another go, up to
-	// spec.maxRetries. The event ID is reused, so a standing group approval re-approves the same
-	// event rather than fanning one broken GPU out into a flood of events.
-	Context("Helper: requeueFailedEvents", func() {
-		failedPlan := func(maxRetries int32, retryCount int32) *intelv1a1.GPURecoveryPlan {
-			return &intelv1a1.GPURecoveryPlan{
-				ObjectMeta: metav1.ObjectMeta{Name: "plan-requeue"},
-				Spec: intelv1a1.GPURecoveryPlanSpec{
-					DefaultResetType: intelv1a1.RecoveryTypeSlot,
-					DeviceID:         "0xabcd",
-					MaxRetries:       maxRetries,
-				},
-				Status: intelv1a1.GPURecoveryPlanStatus{
-					Events: []intelv1a1.RecoveryEvent{
-						{
-							ID:           "evt-requeue",
-							NodeName:     "node01",
-							GPUBDF:       "0000:02:00.0",
-							RecoveryType: intelv1a1.RecoveryTypeSpec{Type: intelv1a1.RecoveryTypeSBR},
-							State:        intelv1a1.RecoveryEventStateFailed,
-							RetryCount:   retryCount,
-							PastJobs:     []string{"recovery-evt-requeue-0"},
-							LastUpdated:  ptr.To(metav1.Now()),
-						},
+	// A recovery Job that fails ends the event, and nothing in the operator restarts it. Retrying a
+	// reset that did not bring the card back is unlikely to help and not free — it is another
+	// privileged pod and another node drain on hardware that has already misbehaved — and the
+	// failures that are not the hardware's (a renamed xpu-smi flag, a firmware file missing from the
+	// image) are deterministic. Both want an admin, so failed is where the event waits for one.
+	//
+	// This is checked through Reconcile because the property is about the whole loop: the phase that
+	// records the failure, the phases that could pick the event up again, and the approval matching
+	// in between.
+	Context("Reconcile: a failed recovery Job ends the event", func() {
+		const (
+			endPlan = "plan-failed-terminal"
+			endNode = "node-failed-terminal"
+			endBDF  = "0000:4b:00.0"
+		)
+
+		// failJob drives a Job to the state the Job controller leaves it in when its pod exits
+		// non-zero: FailureTarget, then Failed, with the pod failure policy as the reason.
+		failJob := func(name string) {
+			job := &batch.Job{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "default"}, job)).To(Succeed())
+
+			now := metav1.Now()
+			job.Status = batch.JobStatus{
+				StartTime: &now,
+				Failed:    1,
+				Conditions: []batch.JobCondition{
+					{Type: batch.JobFailureTarget, Status: core.ConditionTrue, Reason: "PodFailurePolicy"},
+					{
+						Type: batch.JobFailed, Status: core.ConditionTrue, Reason: "PodFailurePolicy",
+						Message: "Container updater for pod default/x failed with exit code 1 matching FailJob rule at index 0",
 					},
 				},
 			}
+			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
 		}
 
-		stillTainted := map[deviceKey]deviceNeed{
-			{node: "node01", bdf: "0000:02:00.0"}: {rt: intelv1a1.RecoveryTypeSBR, reason: reasonWedged},
+		getPlan := func() *intelv1a1.GPURecoveryPlan {
+			p := &intelv1a1.GPURecoveryPlan{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: endPlan}, p)).To(Succeed())
+
+			return p
 		}
 
-		It("should send a failed event back to waiting-approval while the taint persists", func() {
-			p := failedPlan(3, 1)
+		// reconcileUntilSettled runs the loop the way the manager does, where each status write
+		// triggers another pass, so the specs assert on the state the loop comes to rest in rather
+		// than on a chosen number of passes.
+		reconcileUntilSettled := func() {
+			for range 5 {
+				_, err := reconcilePlan(ctx, endPlan)
+				Expect(err).NotTo(HaveOccurred())
+			}
+		}
 
-			requeueFailedEvents(p, stillTainted)
+		// createPlan builds the plan with the given approvals and runs it up to a failed first
+		// attempt, returning the event. A reflash, so the recovery goes straight from approval to
+		// Job: the drain is a reset-only phase and would only add passes here.
+		createPlan := func(approvals ...intelv1a1.RecoveryApproval) intelv1a1.RecoveryEvent {
+			putTaintedSlice(ctx, "slice-failed-terminal", endNode, "0x1234", endBDF, deviceTaintKeyXpumdReflash)
 
+			p := &intelv1a1.GPURecoveryPlan{
+				ObjectMeta: metav1.ObjectMeta{Name: endPlan, Finalizers: []string{recoveryPlanFinalizer}},
+				Spec: intelv1a1.GPURecoveryPlanSpec{
+					DeviceID:         "0x1234",
+					DefaultResetType: intelv1a1.RecoveryTypeSlot,
+					XpuSmi:           intelv1a1.XpuSmiSpec{Image: "registry/xpu-smi:v1"},
+					Firmware: &intelv1a1.FirmwareSpec{
+						File: "gfx_fw.bin",
+						Source: intelv1a1.FirmwareSource{
+							ContainerSource: &intelv1a1.ContainerFirmwareSource{Name: "registry/fw:1"},
+						},
+					},
+					Approvals: approvals,
+				},
+			}
+			Expect(k8sClient.Create(ctx, p)).To(Succeed())
+
+			// Both the plan name and the Job names are derived from the fixture, so they repeat
+			// across the specs below: the cleanup has to wait for the objects to be gone, or the
+			// next spec finds its first attempt already failed.
+			DeferCleanup(func() {
+				stale := &intelv1a1.GPURecoveryPlan{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: endPlan}, stale); err == nil {
+					stale.Finalizers = nil
+					Expect(k8sClient.Update(ctx, stale)).To(Succeed())
+					Expect(k8sClient.Delete(ctx, stale)).To(Succeed())
+				}
+
+				jobs := &batch.JobList{}
+				Expect(k8sClient.List(ctx, jobs, client.InNamespace("default"),
+					client.MatchingLabels{recoveryJobLabelPlan: endPlan})).To(Succeed())
+
+				// Background rather than the default: deleting a Job the default way has the
+				// apiserver add an orphan finalizer for the garbage collector to clear, and
+				// envtest runs no controller-manager, so the Job would sit there terminating.
+				for i := range jobs.Items {
+					Expect(k8sClient.Delete(ctx, &jobs.Items[i],
+						client.PropagationPolicy(metav1.DeletePropagationBackground))).To(Succeed())
+				}
+
+				Eventually(func() int {
+					remaining := &batch.JobList{}
+					Expect(k8sClient.List(ctx, remaining, client.InNamespace("default"),
+						client.MatchingLabels{recoveryJobLabelPlan: endPlan})).To(Succeed())
+
+					return len(remaining.Items)
+				}).Should(BeZero())
+
+				Eventually(func() bool {
+					return errors.IsNotFound(k8sClient.Get(ctx,
+						types.NamespacedName{Name: endPlan}, &intelv1a1.GPURecoveryPlan{}))
+				}).Should(BeTrue())
+			})
+
+			reconcileUntilSettled()
+
+			evt := getPlan().Status.Events[0]
+			Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateInProgress))
+			Expect(evt.JobName).To(Equal(recoveryJobName(evt.ID, 0)))
+
+			By("failing the first attempt the way a pod exiting 1 does")
+			failJob(evt.JobName)
+			reconcileUntilSettled()
+
+			return evt
+		}
+
+		expectNoSecondJob := func(evtID string) {
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: recoveryJobName(evtID, 1), Namespace: "default",
+			}, &batch.Job{})).To(Satisfy(errors.IsNotFound))
+		}
+
+		It("should leave the event failed and tell the admin the plan needs them", func() {
+			first := createPlan(intelv1a1.RecoveryApproval{
+				ID:       "app-one-shot",
+				Selector: &intelv1a1.ApprovalSelector{RecoveryType: intelv1a1.RecoveryTypeReflash},
+			})
+
+			p := getPlan()
 			evt := p.Status.Events[0]
-			Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateWaitingApproval))
-			Expect(evt.ID).To(Equal("evt-requeue"), "the ID must be reused so a standing approval re-matches")
-			Expect(evt.RetryCount).To(BeNumerically("==", 1), "the budget is spent by the failure, not by the re-queue")
-			Expect(evt.PastJobs).To(ContainElement("recovery-evt-requeue-0"))
-			Expect(evt.StateMessage).To(ContainSubstring("re-queued"))
-			Expect(p.Status.Messages).To(ContainElement(ContainSubstring("re-queued for retry 1/3")))
+
+			Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateFailed))
+			Expect(evt.JobName).To(BeEmpty())
+			Expect(evt.PastJobs).To(ConsistOf(first.JobName))
+			Expect(evt.StateMessage).To(SatisfyAll(
+				ContainSubstring("attempt 1 failed"),
+				ContainSubstring("exit code 1"),
+			))
+			Expect(p.Status.State).To(Equal(intelv1a1.PlanStateError),
+				"a failed recovery is the plan's own error; nothing here will move it")
+
+			expectNoSecondJob(evt.ID)
 		})
 
-		It("should leave an event alone once its retry budget is spent", func() {
-			p := failedPlan(2, 2)
+		// The device taint is still there, and a persistent approval goes on matching new events for
+		// as long as it exists — but this event is not a new one. Auto-approving it again would be
+		// the retry loop, arrived at from the other direction.
+		It("should not restart the event under a persistent approval either", func() {
+			createPlan(intelv1a1.RecoveryApproval{
+				ID:         "app-persistent",
+				Selector:   &intelv1a1.ApprovalSelector{RecoveryType: intelv1a1.RecoveryTypeReflash},
+				Persistent: true,
+			})
 
-			requeueFailedEvents(p, stillTainted)
+			evt := getPlan().Status.Events[0]
+			Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateFailed))
+			expectNoSecondJob(evt.ID)
 
-			Expect(p.Status.Events[0].State).To(Equal(intelv1a1.RecoveryEventStateFailed))
-			Expect(p.Status.Messages).To(BeEmpty())
+			// Several more passes, since a persistent approval is never consumed: if anything were
+			// going to pick the event up again, it would be here.
+			reconcileUntilSettled()
+
+			Expect(getPlan().Status.Events[0].State).To(Equal(intelv1a1.RecoveryEventStateFailed))
+			expectNoSecondJob(evt.ID)
 		})
 
-		// maxRetries: 0 turns automatic retrying off entirely, which has to hold on the very first
-		// failure rather than allowing one free attempt.
-		It("should not retry at all when maxRetries is zero", func() {
-			p := failedPlan(0, 0)
+		// The way back. An admin who has read the pod logs and wants another attempt says so about
+		// this event specifically, and that is the only thing that starts one.
+		It("should start another attempt once an admin names the event", func() {
+			createPlan(intelv1a1.RecoveryApproval{
+				ID:       "app-one-shot",
+				Selector: &intelv1a1.ApprovalSelector{RecoveryType: intelv1a1.RecoveryTypeReflash},
+			})
 
-			requeueFailedEvents(p, stillTainted)
+			evtID := getPlan().Status.Events[0].ID
 
-			Expect(p.Status.Events[0].State).To(Equal(intelv1a1.RecoveryEventStateFailed))
-		})
+			By("adding an approval naming the failed event")
 
-		It("should leave a failed event whose taint has cleared for removeResolvedEvents", func() {
-			p := failedPlan(3, 1)
+			p := getPlan()
+			p.Spec.Approvals = append(p.Spec.Approvals, intelv1a1.RecoveryApproval{
+				ID: "app-second-look", EventID: evtID,
+			})
+			Expect(k8sClient.Update(ctx, p)).To(Succeed())
 
-			requeueFailedEvents(p, map[deviceKey]deviceNeed{})
+			reconcileUntilSettled()
 
-			Expect(p.Status.Events[0].State).To(Equal(intelv1a1.RecoveryEventStateFailed))
-		})
+			evt := getPlan().Status.Events[0]
+			Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateInProgress))
+			Expect(evt.JobName).To(Equal(recoveryJobName(evtID, 1)),
+				"the second attempt gets a Job of its own, named after its attempt index")
+			Expect(evt.ApprovalID).To(Equal("app-second-look"))
+			Expect(evt.PastJobs).To(HaveLen(1), "the first attempt's Job stays listed for diagnostics")
 
-		It("should ignore events in any other state", func() {
-			p := failedPlan(3, 0)
-			p.Status.Events[0].State = intelv1a1.RecoveryEventStateInProgress
-
-			requeueFailedEvents(p, stillTainted)
-
-			Expect(p.Status.Events[0].State).To(Equal(intelv1a1.RecoveryEventStateInProgress))
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: evt.JobName, Namespace: "default",
+			}, &batch.Job{})).To(Succeed())
 		})
 	})
 
@@ -4423,7 +4823,6 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 				Spec: intelv1a1.GPURecoveryPlanSpec{
 					DefaultResetType: intelv1a1.RecoveryTypeSlot,
 					DeviceID:         "0x1234",
-					MaxRetries:       3,
 					XpuSmi:           intelv1a1.XpuSmiSpec{Image: "local/xpusmi:devel"},
 					// Spelled out rather than left to CRD defaulting: these specs are about what
 					// the drain does, so what it was asked to do belongs in the fixture.
@@ -4936,7 +5335,7 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 			Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateFailed),
 				"a drain that cannot finish must fail rather than hang; messages: %v", updated.Status.Messages)
 			Expect(evt.JobName).To(BeEmpty(), "the reset must not run after a failed drain")
-			Expect(evt.RetryCount).To(BeNumerically(">", 0))
+			Expect(evt.PastJobs).To(BeEmpty(), "no Job ran, so there is nothing to keep for diagnostics")
 
 			// failed covers two different situations, and this is the one where the GPU was never
 			// touched: what has to change is the workload on the node, not anything about the plan
@@ -5002,7 +5401,6 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 				ContainSubstring("timed out"),
 				ContainSubstring("could not be created"),
 			), "the failure must name what stopped it, which is the Job and not a pod")
-			Expect(evt.RetryCount).To(BeNumerically(">", 0))
 
 			Expect(nodeTaints(drainNode)).NotTo(ContainElement(recoveryTaint(key.Name)),
 				"a node emptied for a reset that never started must not stay cordoned")
@@ -5718,7 +6116,6 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 				Spec: intelv1a1.GPURecoveryPlanSpec{
 					DefaultResetType: intelv1a1.RecoveryTypeSlot,
 					DeviceID:         "0x1234",
-					MaxRetries:       3,
 					XpuSmi:           intelv1a1.XpuSmiSpec{Image: "registry/xpu-smi:latest"},
 					Drain:            intelv1a1.DrainSpec{Enable: ptr.To(false)},
 					Approvals: []intelv1a1.RecoveryApproval{
@@ -5991,7 +6388,6 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 
 		It("should report the plan as active while an event is blocked", func() {
 			p := &intelv1a1.GPURecoveryPlan{
-				Spec: intelv1a1.GPURecoveryPlanSpec{MaxRetries: 3},
 				Status: intelv1a1.GPURecoveryPlanStatus{
 					Events: []intelv1a1.RecoveryEvent{
 						evtOn("evt-held", busyNode, bdfB, intelv1a1.RecoveryEventStateBlocked),

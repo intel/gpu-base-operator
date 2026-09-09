@@ -124,15 +124,6 @@ type GPURecoveryPlanSpec struct {
 	// needs (spec.xpuSmi.image, and the firmware image for a reflash).
 	// +optional
 	SkipImageVerification bool `json:"skipImageVerification,omitempty"`
-
-	// MaxRetries is the maximum number of times a failed recovery event is automatically
-	// re-queued for approval and retried while its device taint persists. Once this limit
-	// is reached the event stays in the failed state and requires manual intervention
-	// (e.g. delete the event entry or increase MaxRetries). Setting 0 disables automatic
-	// retries entirely.
-	// +kubebuilder:default=3
-	// +kubebuilder:validation:Minimum=0
-	MaxRetries int32 `json:"maxRetries"`
 }
 
 // DrainSpec configures the node drain a reset-type recovery performs before it touches the
@@ -392,14 +383,10 @@ type RecoveryEvent struct {
 	// +optional
 	JobName string `json:"jobName,omitempty"`
 
-	// PastJobs is the names of all Jobs created for this event across all attempts.
-	// Jobs are retained alive until the event is removed (i.e. the device taint clears),
-	// so their Pods remain available for diagnostics throughout the event lifecycle.
+	// PastJobs is the names of all Jobs created for this event across all attempts, so its length
+	// is the number of attempts made so far.
 	// +optional
 	PastJobs []string `json:"pastJobs,omitempty"`
-
-	// RetryCount is the number of times this recovery has been retried after failure.
-	RetryCount int32 `json:"retryCount"`
 
 	// LastUpdated is the timestamp of the most recent state change for this event.
 	LastUpdated *metav1.Time `json:"lastUpdated"`

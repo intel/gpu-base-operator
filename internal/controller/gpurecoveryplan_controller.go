@@ -50,9 +50,26 @@ type GPURecoveryPlanReconciler struct {
 	Scheme *runtime.Scheme
 	Opts   ControllerOpts
 
+	// APIReader reads straight from the API server, bypassing the manager cache. Only the plan
+	// itself is read through it, see getPlan.
+	APIReader client.Reader
+
 	// imgVerify is the pre-flight registry check run before a recovery Job is created. An
 	// interface so tests can answer for a registry they do not have.
 	imgVerify ContentImageVerifier
+}
+
+// getPlan reads the plan from the API server rather than from the manager cache.
+//
+// Falls back to the cached client when no APIReader is wired, as in the unit tests, where the
+// client talks to the API server directly anyway.
+func (r *GPURecoveryPlanReconciler) getPlan(ctx context.Context, key types.NamespacedName,
+	plan *intelv1a1.GPURecoveryPlan) error {
+	if r.APIReader != nil {
+		return r.APIReader.Get(ctx, key, plan)
+	}
+
+	return r.Get(ctx, key, plan)
 }
 
 // +kubebuilder:rbac:groups=intel.com,resources=gpurecoveryplans,verbs=get;list;watch;update;patch
@@ -88,7 +105,7 @@ func (r *GPURecoveryPlanReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	plan := &intelv1a1.GPURecoveryPlan{}
 
-	if err := r.Get(ctx, req.NamespacedName, plan); err != nil {
+	if err := r.getPlan(ctx, req.NamespacedName, plan); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
@@ -173,20 +190,19 @@ func (r *GPURecoveryPlanReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 // still read the event as waiting-approval and could act on it twice.
 func (r *GPURecoveryPlanReconciler) persistPlan(ctx context.Context, key types.NamespacedName, orig, plan *intelv1a1.GPURecoveryPlan) error {
 	statusChanged := !reflect.DeepEqual(orig.Status, plan.Status)
-	specChanged := !reflect.DeepEqual(orig.Spec, plan.Spec)
+	approvals := diffApprovals(orig, plan)
 
-	if !statusChanged && !specChanged {
+	if !statusChanged && approvals.empty() {
 		return nil
 	}
 
 	wantStatus := plan.Status.DeepCopy()
-	wantSpec := plan.Spec.DeepCopy()
 
 	var firstErr error
 
 	if statusChanged {
 		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			if err := r.Get(ctx, key, plan); err != nil {
+			if err := r.getPlan(ctx, key, plan); err != nil {
 				return err
 			}
 
@@ -204,15 +220,21 @@ func (r *GPURecoveryPlanReconciler) persistPlan(ctx context.Context, key types.N
 	// Attempted even when the status write failed: an approval that has already produced a Job
 	// must be marked consumed, or the next pass creates a second Job for the same GPU. The
 	// reconcile still fails, so the lost status is rewritten on the retry.
-	if specChanged {
+	if !approvals.empty() {
 		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			if err := r.Get(ctx, key, plan); err != nil {
+			cur := &intelv1a1.GPURecoveryPlan{}
+
+			if err := r.getPlan(ctx, key, cur); err != nil {
 				return err
 			}
 
-			plan.Spec = *wantSpec.DeepCopy()
+			// Nothing left to do: an earlier attempt already landed, or the approvals are gone.
+			// Returning without writing keeps a no-op Update from waking another pass.
+			if !approvals.apply(cur) {
+				return nil
+			}
 
-			return r.Update(ctx, plan)
+			return r.Update(ctx, cur)
 		})
 		if err != nil {
 			klog.Errorf("GPURecoveryPlan %s: failed to update spec: %v", plan.Name, err)
@@ -357,8 +379,8 @@ func (r *GPURecoveryPlanReconciler) syncRecoveryEventsFromSlices(ctx context.Con
 		}
 	}
 
-	// Send failed events round again while their taint persists and their retry budget lasts.
-	requeueFailedEvents(plan, activeKeys)
+	// A failed event is deliberately left where it is: nothing here sends it round again. A reset
+	// that did not bring the card back is not more likely to on a second identical run.
 
 	// Remove events whose taint has cleared. This runs before the add loop so that resolved
 	// events free up room under maxStatusEvents in the same pass.
@@ -387,8 +409,7 @@ func (r *GPURecoveryPlanReconciler) processApprovals(ctx context.Context, plan *
 	for i := range plan.Status.Events {
 		evt := &plan.Status.Events[i]
 
-		// Re-approval path: an event that has spent its retry budget can be restarted by an admin
-		// adding an approval that names it.
+		// Re-approval path: a failed event is terminal, and this is the only way out of it.
 		if evt.State == intelv1a1.RecoveryEventStateFailed {
 			approval, ok := r.findExplicitApprovalForEvent(plan, evt)
 			if !ok {
@@ -396,15 +417,14 @@ func (r *GPURecoveryPlanReconciler) processApprovals(ctx context.Context, plan *
 			}
 
 			now := setEventState(evt, intelv1a1.RecoveryEventStateWaitingApproval,
-				"manually re-approved via approval %s after exhausting its retries; retry budget reset",
-				approval.ID)
-			evt.RetryCount = 0
+				"manually re-approved via approval %s after %d failed attempt(s)",
+				approval.ID, len(evt.PastJobs))
 			evt.ApprovalID = approval.ID
 			evt.ApprovalMatchedAt = &now
 
-			appendMessage(plan, fmt.Sprintf("Event %s manually re-approved via approval %s; retry budget reset",
+			appendMessage(plan, fmt.Sprintf("Event %s manually re-approved via approval %s",
 				evt.ID, approval.ID))
-			klog.Infof("GPURecoveryPlan %s: event %s re-approved via %s, retry budget reset",
+			klog.Infof("GPURecoveryPlan %s: event %s re-approved via %s",
 				plan.Name, evt.ID, approval.ID)
 
 			// State is waiting-approval now; fall through so the Job is created in this same cycle.
@@ -494,6 +514,9 @@ func (r *GPURecoveryPlanReconciler) processApprovals(ctx context.Context, plan *
 //   - it names the event through eventId (a single approval), or
 //   - its selector matches the event's recovery type, node name and node labels (a group
 //     approval). Every field set on the selector must match; unset fields mean "any".
+//
+// A consumed approval is spent: it does not cover another attempt at the event it started either.
+// findExplicitApprovalForEvent is the only way back for a failed event.
 func (r *GPURecoveryPlanReconciler) findMatchingApproval(ctx context.Context, plan *intelv1a1.GPURecoveryPlan,
 	evt *intelv1a1.RecoveryEvent) (intelv1a1.RecoveryApproval, bool) {
 	evtType := evt.RecoveryType.Type
@@ -897,8 +920,8 @@ func (r *GPURecoveryPlanReconciler) devicesForBDF(ctx context.Context,
 // prepareRecoveryJob applies the naming, labelling, ownership, node-pinning and pull settings
 // every recovery Job needs, and returns the Job name.
 func (r *GPURecoveryPlanReconciler) prepareRecoveryJob(job *batch.Job, plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent) string {
-	// The attempt index (how many Jobs this event has already run) goes in the name, so each retry
-	// gets a name of its own and every attempt stays readable until the event is removed.
+	// The attempt index (how many Jobs this event has already run) goes in the name, so a re-approved
+	// event gets a name of its own and every attempt stays readable until the event is removed.
 	jobName := recoveryJobName(evt.ID, len(evt.PastJobs))
 	job.Name = jobName
 	job.Namespace = r.Opts.Namespace
@@ -925,6 +948,9 @@ func (r *GPURecoveryPlanReconciler) prepareRecoveryJob(job *batch.Job, plan *int
 	// watching a clock once the Job exists. Overwrites the template's own value, which is the same
 	// number as the CRD default and is here for objects that bypassed defaulting.
 	job.Spec.ActiveDeadlineSeconds = ptr.To(recoveryJobTimeout(plan, evt))
+
+	// Limit the number of retries to zero.
+	job.Spec.BackoffLimit = ptr.To(int32(0))
 
 	// Pin the pod to the node hosting the affected GPU.
 	job.Spec.Template.Spec.NodeName = evt.NodeName
@@ -1112,7 +1138,7 @@ func (r *GPURecoveryPlanReconciler) parkForFirmware(plan *intelv1a1.GPURecoveryP
 }
 
 // syncJobStatuses polls the Job of every in-progress event and moves the event to succeeded or
-// failed once the Job has finished.
+// failed once the Job has finished — or once it is clear no verdict is coming.
 func (r *GPURecoveryPlanReconciler) syncJobStatuses(ctx context.Context, plan *intelv1a1.GPURecoveryPlan) error { // nolint:unparam
 	for i := range plan.Status.Events {
 		evt := &plan.Status.Events[i]
@@ -1122,53 +1148,72 @@ func (r *GPURecoveryPlanReconciler) syncJobStatuses(ctx context.Context, plan *i
 
 		job := &batch.Job{}
 
-		if err := r.Get(ctx, types.NamespacedName{Name: evt.JobName, Namespace: r.Opts.Namespace}, job); err != nil {
-			klog.Warningf("GPURecoveryPlan %s: failed to get Job %s for event %s: %v",
-				plan.Name, evt.JobName, evt.ID, err)
+		err := r.Get(ctx, types.NamespacedName{Name: evt.JobName, Namespace: r.Opts.Namespace}, job)
+		verdict := jobTerminalCondition(job)
+		deadline := jobDeadlineSeconds(plan, evt, job)
 
-			continue
-		}
+		switch {
+		case k8serrors.IsNotFound(err):
+			// A Job that has gone missing is not in itself a failed recovery: the reset it started
+			// may still be running on the card, and failed is terminal, so calling it now would
+			// need an admin to undo. Hence the wait is bounded rather than ended — but it is
+			// bounded, because an event left in in-progress is stuck for good: nothing else brings
+			// it out, and for a reset the node keeps this plan's drain taint for as long as it lasts.
+			//
+			// The deadline here is the plan's: a deleted Job took its own copy with it.
+			if !jobVerdictOverdue(deadline, evt.LastUpdated) {
+				klog.Warningf("GPURecoveryPlan %s: Job %s for event %s does not exist; waiting out its deadline",
+					plan.Name, evt.JobName, evt.ID)
 
-		for _, cond := range job.Status.Conditions {
-			if cond.Status != core.ConditionTrue {
 				continue
 			}
 
-			switch cond.Type {
-			case batch.JobComplete:
-				klog.Infof("GPURecoveryPlan %s: Job %s succeeded for event %s", plan.Name, evt.JobName, evt.ID)
-				appendMessage(plan, fmt.Sprintf("Event %s: recovery Job %s succeeded — pods retained until taint clears",
-					evt.ID, evt.JobName))
+			failEventJob(plan, evt, "recovery Job %s no longer exists and never reported a verdict", evt.JobName)
 
-				evt.PastJobs = append(evt.PastJobs, evt.JobName)
-				evt.JobName = ""
+		case err != nil:
+			// A read error says nothing about the recovery, so the event keeps its state and the
+			// next pass asks again.
+			klog.Warningf("GPURecoveryPlan %s: failed to get Job %s for event %s: %v",
+				plan.Name, evt.JobName, evt.ID, err)
 
-				// No message: the state is the whole story, and the Job that produced it is the
-				// last entry in pastJobs.
-				setEventState(evt, intelv1a1.RecoveryEventStateSucceeded, "")
+		case verdict != nil:
+			r.applyJobVerdict(plan, evt, *verdict)
 
-			case batch.JobFailed:
-				klog.Warningf("GPURecoveryPlan %s: Job %s failed for event %s", plan.Name, evt.JobName, evt.ID)
-				appendMessage(plan, fmt.Sprintf("Event %s: recovery Job %s failed (retries: %d) — pods retained until taint clears",
-					evt.ID, evt.JobName, evt.RetryCount))
-
-				failedJob := evt.JobName
-
-				evt.PastJobs = append(evt.PastJobs, evt.JobName)
-				evt.JobName = ""
-				evt.RetryCount++
-
-				// Record which attempt this was, since that says whether the operator will try
-				// again, plus the Job's own verdict: BackoffLimitExceeded and DeadlineExceeded are
-				// different problems, and the pod is gone once the event is removed.
-				setEventState(evt, intelv1a1.RecoveryEventStateFailed,
-					"recovery Job %s failed on attempt %d of %d: %s",
-					failedJob, evt.RetryCount, plan.Spec.MaxRetries, jobFailureDetail(cond))
-			}
+		case jobVerdictOverdue(deadline, jobStartedAt(job)):
+			// The Job exists, has outlived its own activeDeadlineSeconds and has still not been
+			// failed by the Job controller. Whatever is wrong is outside this controller, and
+			// leaving the event in-progress would hide it behind a state that means "working on it".
+			failEventJob(plan, evt,
+				"recovery Job %s reported no verdict within its %ds deadline",
+				evt.JobName, deadline)
 		}
 	}
 
 	return nil
+}
+
+// applyJobVerdict moves an in-progress event to succeeded or failed from its Job's terminal
+// condition.
+func (r *GPURecoveryPlanReconciler) applyJobVerdict(plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent, cond batch.JobCondition) {
+	if cond.Type == batch.JobComplete {
+		klog.Infof("GPURecoveryPlan %s: Job %s succeeded for event %s", plan.Name, evt.JobName, evt.ID)
+		appendMessage(plan, fmt.Sprintf("Event %s: recovery Job %s succeeded — pods retained until taint clears",
+			evt.ID, evt.JobName))
+
+		evt.PastJobs = append(evt.PastJobs, evt.JobName)
+		evt.JobName = ""
+
+		// No message: the state is the whole story, and the Job that produced it is the
+		// last entry in pastJobs.
+		setEventState(evt, intelv1a1.RecoveryEventStateSucceeded, "")
+
+		return
+	}
+
+	// The Job's own verdict is carried onto the event: BackoffLimitExceeded, DeadlineExceeded and
+	// PodFailurePolicy are different problems, and the pod that proves which is gone once the event
+	// is removed.
+	failEventJob(plan, evt, "recovery Job %s failed: %s", evt.JobName, jobFailureDetail(cond))
 }
 
 // deleteEventJobs deletes the event's current Job, if any, and every Job it has already run.
@@ -1317,6 +1362,9 @@ func (r *GPURecoveryPlanReconciler) SetupWithManager(mgr ctrl.Manager, opts Cont
 	// The API reader, not the cached client: the pull secret lives in the operator namespace but is
 	// read before any Job exists, and the manager cache is not started yet at Setup time.
 	r.imgVerify = newContentImageVerifier(mgr.GetAPIReader(), opts.Namespace)
+
+	// Every read of the plan itself goes through the API server, see getPlan.
+	r.APIReader = mgr.GetAPIReader()
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&intelv1a1.GPURecoveryPlan{}).
