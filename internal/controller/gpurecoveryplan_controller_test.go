@@ -860,6 +860,46 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 			Expect(r.syncRecoveryEventsFromSlices(ctx, p)).To(Succeed())
 			Expect(p.Status.Events).To(BeEmpty())
 		})
+
+		// A BDF that is not a PCI address is dropped at the same point, and for a sharper reason:
+		// it would otherwise be interpolated into the command line of a privileged root container.
+		// Detection is the only place the value enters the plan, so this is what lets both command
+		// builders interpolate it without escaping.
+		It("should skip a tainted device whose pciAddress is not a PCI address", func() {
+			slice := &resv1.ResourceSlice{
+				ObjectMeta: metav1.ObjectMeta{Name: "slice-bad-bdf"},
+				Spec: resv1.ResourceSliceSpec{
+					Driver:   "gpu.intel.com",
+					NodeName: ptr.To("node-bad-bdf"),
+					Pool:     resv1.ResourcePool{Name: "pool-bad-bdf", ResourceSliceCount: 1},
+					Devices: []resv1.Device{{
+						Name: "dev-bad-bdf",
+						Attributes: map[resv1.QualifiedName]resv1.DeviceAttribute{
+							deviceAttrDeviceID: {StringValue: ptr.To("0xabcd")},
+							deviceAttrBDF:      {StringValue: ptr.To("0000:02:00.0; touch /tmp/pwned")},
+						},
+						Taints: []resv1.DeviceTaint{
+							{Key: deviceTaintKeyReset, Effect: resv1.DeviceTaintEffectNoSchedule},
+						},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, slice)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, slice)
+			})
+
+			r := newTestReconciler()
+			p := &intelv1a1.GPURecoveryPlan{
+				ObjectMeta: metav1.ObjectMeta{Name: "plan-bad-bdf"},
+				Spec: intelv1a1.GPURecoveryPlanSpec{
+					DeviceID: "0xabcd", DefaultResetType: intelv1a1.RecoveryTypeSlot,
+				},
+			}
+
+			Expect(r.syncRecoveryEventsFromSlices(ctx, p)).To(Succeed())
+			Expect(p.Status.Events).To(BeEmpty())
+		})
 	})
 
 	Context("Helper: taintToDeviceNeed", func() {
@@ -2231,8 +2271,8 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 
 			Expect(evt.RecoveryType.Type).To(Equal(intelv1a1.RecoveryTypeSlot))
 			Expect(evt.RecoveryType.SuggestedType).To(Equal(intelv1a1.RecoveryTypeSBR))
-			Expect(recoveryTypeToArgs("0000:02:00.0", evt.RecoveryType.Type)).To(
-				ContainElement("--coldreset"), "an override must change the command actually run")
+			Expect(buildResetCommand("0000:02:00.0", evt.RecoveryType.Type)).To(
+				ContainSubstring("--coldreset"), "an override must change the command actually run")
 		})
 
 		It("should be a no-op when the approval has no override", func() {
@@ -2816,7 +2856,7 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 		})
 	})
 
-	Context("Helper: recoveryTypeToArgs", func() {
+	Context("Helper: buildResetCommand", func() {
 		const bdf = "0000:02:00.0"
 
 		// Every reset type in the enum must map to a distinct xpu-smi invocation, or an admin's
@@ -2831,30 +2871,73 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 			seen := map[string]intelv1a1.RecoveryType{}
 
 			for _, rt := range resetTypes {
-				args := recoveryTypeToArgs(bdf, rt)
-				Expect(args).NotTo(BeEmpty(), "reset type %q must map to a command", rt)
+				cmd := buildResetCommand(bdf, rt)
+				Expect(cmd).NotTo(BeEmpty(), "reset type %q must map to a command", rt)
 
-				key := strings.Join(args, " ")
-				Expect(seen).NotTo(HaveKey(key),
+				Expect(seen).NotTo(HaveKey(cmd),
 					"reset types %q and %q share the command %q, so an override between them is a no-op",
-					seen[key], rt, key)
+					seen[cmd], rt, cmd)
 
-				seen[key] = rt
+				seen[cmd] = rt
 			}
 		})
 
+		// The binary is named, not pathed: the plan can point spec.xpuSmi.image at any image that
+		// has xpu-smi on PATH, which is not the same set of images as those that keep it in
+		// /usr/local/bin.
+		It("should invoke xpu-smi by name rather than by path", func() {
+			Expect(buildResetCommand(bdf, intelv1a1.RecoveryTypeSlot)).To(HavePrefix("xpu-smi "))
+		})
+
 		It("should address the BDF the event names", func() {
-			Expect(recoveryTypeToArgs("0000:af:00.0", intelv1a1.RecoveryTypeSBR)).
-				To(ContainElement("0000:af:00.0"))
+			Expect(buildResetCommand("0000:af:00.0", intelv1a1.RecoveryTypeSBR)).
+				To(ContainSubstring("0000:af:00.0"))
 		})
 
-		It("should return nil for reflash, which is not an xpu-smi reset", func() {
-			Expect(recoveryTypeToArgs(bdf, intelv1a1.RecoveryTypeReflash)).To(BeNil())
+		It("should return no command for reflash, which is not an xpu-smi reset", func() {
+			Expect(buildResetCommand(bdf, intelv1a1.RecoveryTypeReflash)).To(BeEmpty())
 		})
 
-		It("should return nil for a type outside the enum", func() {
-			Expect(recoveryTypeToArgs(bdf, intelv1a1.RecoveryType("flr"))).To(BeNil())
+		It("should return no command for a type outside the enum", func() {
+			Expect(buildResetCommand(bdf, intelv1a1.RecoveryType("flr"))).To(BeEmpty())
 		})
+	})
+
+	// Both command lines interpolate the BDF into a string /bin/sh parses, so the shape of the
+	// ResourceSlice attribute they come from is what stands between a free-form driver-written
+	// string and a privileged root shell.
+	Context("Helper: validDeviceBDF", func() {
+		DescribeTable("should accept the addresses the kernel prints",
+			func(bdf string) {
+				Expect(validDeviceBDF(bdf)).To(BeTrue(), "%q is a PCI address", bdf)
+			},
+			Entry("domain zero", "0000:02:00.0"),
+			Entry("non-zero domain", "0001:af:00.0"),
+			// lspci prints PCI addresses in uppercase hex, so this is a likely spelling rather
+			// than a pathological one.
+			Entry("uppercase hex", "0000:AF:00.0"),
+			Entry("highest function", "0000:00:1f.7"),
+		)
+
+		DescribeTable("should reject anything else",
+			func(bdf string) {
+				Expect(validDeviceBDF(bdf)).To(BeFalse(), "%q is not a PCI address", bdf)
+			},
+			Entry("empty", ""),
+			Entry("no domain", "02:00.0"),
+			Entry("no function", "0000:02:00"),
+			Entry("function out of range", "0000:02:00.8"),
+			Entry("non-hex digits", "0000:0g:00.0"),
+			Entry("unexpected separators", "0000/02_00,0"),
+			Entry("trailing separator", "0000:02:00.0:"),
+			Entry("leading separator", ":02:00.0"),
+			Entry("trailing newline", "0000:02:00.0\n"),
+			// The one that matters: a shell metacharacter must not reach a command line run as
+			// root in a privileged container.
+			Entry("shell command substitution", "0000:02:00.0; touch /tmp/pwned"),
+			Entry("shell pipeline", "0000:02:00.0 | sh"),
+			Entry("backticks", "`id`"),
+		)
 	})
 
 	// The deadline is the only clock running once a recovery Job exists: nothing in the reconcile
@@ -3190,8 +3273,10 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 			Expect(resetter).NotTo(BeNil())
 			Expect(resetter.Image).To(Equal("registry/xpu-smi:v1"))
 			Expect(resetter.ImagePullPolicy).To(Equal(core.PullAlways))
-			// The BDF has to reach the command line, not just the event.
-			Expect(resetter.Args).To(Equal([]string{"config", "-d", "0000:02:00.0", "--coldreset"}))
+			// The BDF has to reach the command line, not just the event. One argument, because the
+			// template runs /bin/sh -c: see the reflash Job's specs for what splitting it costs.
+			Expect(resetter.Command).To(Equal([]string{"/bin/sh", "-c"}))
+			Expect(resetter.Args).To(Equal([]string{"xpu-smi config -d 0000:02:00.0 --coldreset"}))
 		})
 
 		It("should give the Job the operator's own pull secret", func() {
@@ -3262,6 +3347,28 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 			expectOwned("recovery-evt-own-retry-1", p)
 			Expect(p.Status.Events[0].JobName).To(Equal("recovery-evt-own-retry-1"))
 		})
+	})
+
+	// Both createResetJob and createReflashJob hand their container exactly one argument, so both
+	// templates have to keep a shell as their command. This is a contract between Go and YAML that
+	// nothing else checks: a template switched back to running the binary directly would exec a whole
+	// command line as argv[0] and fail inside a pod with a "no such file" naming the entire string.
+	//
+	// Going through a shell is also what keeps the path to xpu-smi out of the operator. The plan names
+	// an image; where that image keeps its binary is its own business, so the command line invokes
+	// xpu-smi by name and lets PATH resolve it.
+	Context("Recovery Job templates: the shell contract", func() {
+		DescribeTable("should run xpu-smi through a shell, one command line at a time",
+			func(job *batch.Job, containerName string) {
+				c := containerByName(job.Spec.Template.Spec.Containers, containerName)
+				Expect(c).NotTo(BeNil())
+				Expect(c.Command).To(Equal([]string{"/bin/sh", "-c"}))
+				Expect(c.Args).To(HaveLen(1),
+					"the template's own args stand in for what the operator writes, so they must be one command line too")
+			},
+			Entry("reset", deployments.XpuManagerResetJob(), resetJobContainer),
+			Entry("reflash", deployments.XpuManagerFWUpdateJob(), reflashJobContainer),
+		)
 	})
 
 	// A card in survivability mode has firmware that no reset can fix, so the recovery is to write a
@@ -3359,9 +3466,13 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 			Expect(flashC.ImagePullPolicy).To(Equal(core.PullAlways))
 
 			// The template runs /bin/sh -c, so the flash has to stay one command line: replacing the
-			// command with an argv, as a reset does, would leave the shell nothing to run.
+			// command with an argv, as a reset does, would leave the shell nothing to run. The length
+			// is the assertion that matters — sh -c takes its command from the first operand and turns
+			// the rest into $0, $1, …, so a flash split across arguments runs a bare "xpu-smi" and
+			// silently flashes nothing.
 			Expect(flashC.Command).To(Equal([]string{"/bin/sh", "-c"}))
-			Expect(flashC.Args).To(Equal(buildFDOFlashCommand(reflashBDF, reflashFile)))
+			Expect(flashC.Args).To(HaveLen(1))
+			Expect(flashC.Args[0]).To(Equal(buildFDOFlashCommand(reflashBDF, reflashFile)))
 
 			// An admin who has to check what was flashed onto which card reads this, not the pod log.
 			Expect(p.Status.Messages).To(ContainElement(SatisfyAll(
@@ -3403,7 +3514,7 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 			Expect(mountedAt(copyC, reflashStagingDir)).NotTo(BeEmpty())
 			Expect(mountedAt(flashC, reflashStagingDir)).To(Equal(mountedAt(copyC, reflashStagingDir)))
 
-			Expect(strings.Join(buildFDOFlashCommand(reflashBDF, reflashFile), " ")).To(
+			Expect(buildFDOFlashCommand(reflashBDF, reflashFile)).To(
 				ContainSubstring(reflashStagingDir + "/" + reflashFile))
 			Expect(firmwareImagePath(reflashFile)).To(Equal(firmwareImageDir + "/" + reflashFile))
 		})
@@ -3412,7 +3523,7 @@ var _ = Describe("GPURecoveryPlan Controller", func() {
 		// survivability mode: xpu-smi otherwise declines to write an image it judges no newer than
 		// what is on the device, and what is on the device is exactly what has to go.
 		It("should force an unattended FDO flash", func() {
-			Expect(strings.Join(buildFDOFlashCommand("0000:02:00.0", "fw.bin"), " ")).To(
+			Expect(buildFDOFlashCommand("0000:02:00.0", "fw.bin")).To(
 				Equal("xpu-smi updatefw -d 0000:02:00.0 -t FDO -f /update/fw.bin -y --force"))
 		})
 

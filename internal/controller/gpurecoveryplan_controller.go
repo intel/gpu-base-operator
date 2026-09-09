@@ -332,6 +332,17 @@ func (r *GPURecoveryPlanReconciler) syncRecoveryEventsFromSlices(ctx context.Con
 				continue
 			}
 
+			// The attribute is a free-form string the DRA driver writes, and it reaches the shell
+			// command line of a privileged root container. A device the operator cannot name a
+			// PCI address for is one it cannot recover either way, so the shape is required here
+			// rather than escaped later.
+			if !validDeviceBDF(bdf) {
+				klog.Warningf("ResourceSlice %s device %s has %s %q, which is not a PCI address, skipping",
+					slice.Name, dev.Name, deviceAttrBDF, bdf)
+
+				continue
+			}
+
 			key := deviceKey{node: nodeName, bdf: bdf}
 
 			for _, taint := range dev.Taints {
@@ -983,8 +994,8 @@ func (r *GPURecoveryPlanReconciler) createRecoveryJob(ctx context.Context, plan 
 func (r *GPURecoveryPlanReconciler) createResetJob(ctx context.Context, plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent) error {
 	rt := evt.RecoveryType.Type
 
-	args := recoveryTypeToArgs(evt.GPUBDF, rt)
-	if args == nil {
+	cmd := buildResetCommand(evt.GPUBDF, rt)
+	if cmd == "" {
 		klog.Warningf("GPURecoveryPlan %s: unsupported recovery type %s for event %s; skipping", plan.Name, rt, evt.ID)
 
 		return nil
@@ -993,10 +1004,13 @@ func (r *GPURecoveryPlanReconciler) createResetJob(ctx context.Context, plan *in
 	job := deployments.XpuManagerResetJob()
 	jobName := r.prepareRecoveryJob(job, plan, evt)
 
-	// Inject the xpu-smi image and the reset command from the plan and the event.
+	// Inject the xpu-smi image and the reset command from the plan and the event. The template's
+	// command is /bin/sh -c, as the reflash template's is, so the reset is one argument: a command
+	// line, not an argv. Going through a shell is what lets xpu-smi be found on PATH, rather than
+	// the operator having to know where the image the plan names keeps its binary.
 	if c := containerByName(job.Spec.Template.Spec.Containers, resetJobContainer); c != nil {
 		applyXpuSmiImage(c, plan)
-		c.Args = args
+		c.Args = []string{cmd}
 	}
 
 	if err := r.Create(ctx, job); err != nil {
@@ -1058,8 +1072,8 @@ func (r *GPURecoveryPlanReconciler) createReflashJob(ctx context.Context, plan *
 
 		// The template's command is /bin/sh -c, so the flash is one argument: a command line, not an
 		// argv. Overwriting args rather than command keeps the shell, which the template needs
-		// anyway.
-		c.Args = buildFDOFlashCommand(evt.GPUBDF, fw.File)
+		// anyway, and leaves xpu-smi to be found on PATH inside whichever image the plan names.
+		c.Args = []string{buildFDOFlashCommand(evt.GPUBDF, fw.File)}
 	}
 
 	if err := r.Create(ctx, job); err != nil {

@@ -43,6 +43,10 @@ authorise the heavier one.
 Recovery Jobs run `xpu-smi` from the image in `spec.xpuSmi`, privileged, pinned to the affected node,
 and are retained after completion for post-mortem diagnostics (they are removed when the event is).
 
+The command is run as `/bin/sh -c "xpu-smi …"`, so an image supplied through `spec.xpuSmi.image` has
+to provide a shell and have `xpu-smi` on `PATH`. The operator deliberately does not assume an install
+path: where the binary lives is the image's business.
+
 ### Reset types
 
 | Type | Command | Notes |
