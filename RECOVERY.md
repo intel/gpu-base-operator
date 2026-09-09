@@ -71,14 +71,14 @@ run to `succeeded` over a GPU that was never touched.
 | `blocked` | Approved, but another recovery is already running on this node. The approval is kept, so it resumes on its own |
 | `draining` | Node is being drained before a reset |
 | `in-progress` | Recovery Job is running |
-| `succeeded` / `failed` | Job finished. A failure inside `spec.maxRetries` is re-queued for approval |
+| `succeeded` / `failed` | Job finished. `failed` is terminal: only an approval naming the event starts another attempt |
 
 `status.events[].stateMessage` explains any state that is not self-explanatory (which recovery holds
 the node, which image cannot be pulled, what a stalled drain was waiting on). An empty value means
 there is nothing to add.
 
-The plan-level `status.state` is `idle`, `active`, or `error`. `error` means an admin is needed: an
-event out of retries, or one blocked on missing firmware.
+The plan-level `status.state` is `idle`, `active`, or `error`. `error` means an admin is needed: a
+failed event, or one blocked on missing firmware.
 
 ## Safety mechanisms
 
@@ -104,8 +104,13 @@ event out of retries, or one blocked on missing firmware.
   against their registries before a Job is created, so a mistyped reference does not produce a Job
   that reports `in-progress` from `ImagePullBackOff`. Checked once per spec generation; disable with
   `spec.skipImageVerification` where nodes hold pull credentials the operator cannot see.
-* **Retry budget.** `spec.maxRetries` bounds automatic retries; an exhausted event needs an explicit
-  per-event re-approval, so a standing group approval cannot loop a dying card forever.
+* **No automatic retries.** A failed event is terminal. A reset that did not bring the card back is
+  unlikely to on an identical second run.
+* **One pod per approval.** Recovery Jobs are created with `backoffLimit: 0`, so a pod that exits
+  non-zero — in `xpu-smi` or in the reflash's firmware-copy init container — fails the Job.
+* **A verdict is always reached.** An event stays `in-progress` only while its Job can still
+  conclude. Past the Job's deadline plus a minute, a Job that has reported nothing — or that has been
+  deleted from under the operator — fails the event.
 * **Finalizer.** Deleting a plan blocks until every recovery Job is terminal, and releases all drain
   taints first.
 * **The operator tolerates its own drain taint**, since it is the only thing that removes it.
@@ -120,7 +125,6 @@ metadata:
 spec:
   deviceId: "0xe20b"          # mandatory; one plan per GPU model
   defaultResetType: "slot"    # mandatory: "slot" or "amc"
-  maxRetries: 3
 
   drain:
     enable: true
@@ -176,6 +180,17 @@ spec:
 
 The operator fills in a missing `id`, and marks non-persistent approvals `consumed: true` once acted
 upon; consumed entries stay as an audit trail and can be removed by hand.
+
+A `consumed` approval authorises nothing further, including another attempt at the event it started.
+Restarting a failed event therefore means a new entry naming it, which is also the record of who
+decided to try again:
+
+```yaml
+spec:
+  approvals:
+    - id: second-look-evt-node03-reflash-0000-4b-00-0
+      eventId: evt-node03-reflash-0000-4b-00-0
+```
 
 ### kubectl plugin
 

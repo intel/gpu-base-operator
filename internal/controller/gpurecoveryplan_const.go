@@ -96,6 +96,10 @@ const (
 	defaultResetJobTimeout   int64 = 300
 	defaultReflashJobTimeout int64 = 600
 
+	// recoveryJobVerdictGrace is how long past a recovery Job's own activeDeadlineSeconds the
+	// operator waits for the Job controller's verdict before failing the event itself.
+	recoveryJobVerdictGrace = 60 * time.Second
+
 	// maxRecoveryNameLen is the hard ceiling on a recovery Job name, and therefore on the
 	// event ID it is built from.
 	//

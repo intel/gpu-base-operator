@@ -371,20 +371,87 @@ func (c *nodeLabelCache) get(nodeName string) (map[string]string, bool) {
 	return node.Labels, true
 }
 
-// jobIsTerminal reports whether a Job has finished, successfully or not. Only Complete and Failed
-// are terminal; a Job with no conditions yet is still running.
+// jobIsTerminal reports whether a Job has finished, successfully or not.
 func jobIsTerminal(job *batch.Job) bool {
-	for _, cond := range job.Status.Conditions {
+	return jobTerminalCondition(job) != nil
+}
+
+// jobTerminalCondition returns the Complete or Failed condition a Job has settled on, or nil while
+// it is still running.
+func jobTerminalCondition(job *batch.Job) *batch.JobCondition {
+	for i := range job.Status.Conditions {
+		cond := &job.Status.Conditions[i]
+
 		if cond.Status != core.ConditionTrue {
 			continue
 		}
 
 		if cond.Type == batch.JobComplete || cond.Type == batch.JobFailed {
-			return true
+			return cond
 		}
 	}
 
-	return false
+	return nil
+}
+
+// jobStartedAt is when a Job's clock began.
+func jobStartedAt(job *batch.Job) *metav1.Time {
+	if job.Status.StartTime != nil {
+		return job.Status.StartTime
+	}
+
+	if job.CreationTimestamp.IsZero() {
+		return nil
+	}
+
+	return &job.CreationTimestamp
+}
+
+// jobDeadlineSeconds returns the deadline the recovery Job is actually running under, or if
+// the Job is not given, the plan's deadline.
+func jobDeadlineSeconds(plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent, job *batch.Job) int64 {
+	if job != nil && job.Spec.ActiveDeadlineSeconds != nil && *job.Spec.ActiveDeadlineSeconds > 0 {
+		return *job.Spec.ActiveDeadlineSeconds
+	}
+
+	return recoveryJobTimeout(plan, evt)
+}
+
+// jobVerdictOverdue reports whether a recovery Job has had longer than deadlineSeconds, plus a
+// grace period, to reach a verdict.
+func jobVerdictOverdue(deadlineSeconds int64, since *metav1.Time) bool {
+	if since == nil {
+		return false
+	}
+
+	deadline := time.Duration(deadlineSeconds)*time.Second + recoveryJobVerdictGrace
+
+	return time.Since(since.Time) > deadline
+}
+
+// failEventJob records a failed recovery attempt: the Job moves to pastJobs and the event lands in
+// failed with detail as the reason.
+func failEventJob(plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent, format string, args ...any) {
+	detail := fmt.Sprintf(format, args...)
+	failedJob := evt.JobName
+
+	evt.PastJobs = append(evt.PastJobs, failedJob)
+	evt.JobName = ""
+
+	// pastJobs holds one entry per Job this event has run, so its length after the append is the
+	// number of this attempt.
+	attempt := len(evt.PastJobs)
+
+	// The attempt number leads the sentence because a Job controller message can be long enough
+	// that stateMessage's cap would cut a trailing one off (jobFailureDetail quotes the whole
+	// message, pod name included), and on a re-approved event it says which attempt this was.
+	setEventState(evt, intelv1a1.RecoveryEventStateFailed,
+		"attempt %d failed: %s", attempt, detail)
+
+	klog.Warningf("GPURecoveryPlan %s: event %s: attempt %d failed: %s",
+		plan.Name, evt.ID, attempt, detail)
+	appendMessage(plan, fmt.Sprintf("Event %s: attempt %d failed: %s — pods retained until taint clears",
+		evt.ID, attempt, detail))
 }
 
 // jobFailureDetail renders a failed Job's condition as the reason it failed. The Reason is the
@@ -569,7 +636,6 @@ func drainBlockerDetail(blocking, claims []string) string {
 // failDrain gives up on an event that has sat in draining past its deadline, and records the cause
 // the caller observed on the pass that ran out of time.
 func failDrain(plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent, cause string) {
-	evt.RetryCount++
 	evt.DrainStartedAt = nil
 
 	// The state alone does not say which kind of failure this is: no reset was attempted, so the
@@ -640,7 +706,6 @@ func addRecoveryEvent(plan *intelv1a1.GPURecoveryPlan, nodeName, bdf string, nee
 		GPUBDF:       bdf,
 		Reason:       need.reason,
 		RecoveryType: intelv1a1.RecoveryTypeSpec{Type: need.rt},
-		RetryCount:   0,
 	}
 
 	// No message: reason, nodeName, gpuBDF and recoveryType already say everything about a new
@@ -696,11 +761,7 @@ func updatePlanState(plan *intelv1a1.GPURecoveryPlan) {
 			anyStuck = true
 
 		case intelv1a1.RecoveryEventStateFailed:
-			// A failure within the retry budget is re-queued for another approval, so only an
-			// event that has spent its budget needs an admin.
-			if evt.RetryCount >= plan.Spec.MaxRetries {
-				anyStuck = true
-			}
+			anyStuck = true
 		}
 	}
 
@@ -754,44 +815,6 @@ func appendMessage(plan *intelv1a1.GPURecoveryPlan, msg string) {
 
 	for len(plan.Status.Messages) > maxStatusMessages {
 		plan.Status.Messages = plan.Status.Messages[1:]
-	}
-}
-
-// requeueFailedEvents sends a failed event back to waiting-approval while its device taint is
-// still there and its retry budget (spec.maxRetries) is not spent.
-func requeueFailedEvents(plan *intelv1a1.GPURecoveryPlan, active map[deviceKey]deviceNeed) {
-	maxRetries := plan.Spec.MaxRetries
-
-	for i := range plan.Status.Events {
-		evt := &plan.Status.Events[i]
-		if evt.State != intelv1a1.RecoveryEventStateFailed {
-			continue
-		}
-
-		key := deviceKey{node: evt.NodeName, bdf: evt.GPUBDF}
-		if _, stillActive := active[key]; !stillActive {
-			// The recovery worked, or something else fixed the GPU: removeResolvedEvents has it.
-			continue
-		}
-
-		if evt.RetryCount >= maxRetries {
-			klog.V(2).Infof("GPURecoveryPlan %s: event %s for %s/%s has reached max retries (%d); leaving as failed",
-				plan.Name, evt.ID, evt.NodeName, evt.GPUBDF, maxRetries)
-
-			continue
-		}
-
-		// The message is what distinguishes a re-queued event from one asking for its first
-		// approval. It replaces the explanation of the failure, which described the state the
-		// event is now leaving.
-		setEventState(evt, intelv1a1.RecoveryEventStateWaitingApproval,
-			"re-queued for retry %d of %d after the previous attempt failed; the device taint persists",
-			evt.RetryCount, maxRetries)
-
-		klog.Infof("GPURecoveryPlan %s: re-queuing failed event %s for %s/%s (retry %d/%d)",
-			plan.Name, evt.ID, evt.NodeName, evt.GPUBDF, evt.RetryCount, maxRetries)
-		appendMessage(plan, fmt.Sprintf("Event %s re-queued for retry %d/%d (taint persists on %s/%s)",
-			evt.ID, evt.RetryCount, maxRetries, evt.NodeName, evt.GPUBDF))
 	}
 }
 
@@ -854,8 +877,8 @@ func escalateEvent(plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent
 	// The cause changed too — the device is in survivability mode now, not merely wedged.
 	evt.Reason = need.reason
 
-	// Reset event back to initial state.
-	evt.RetryCount = 0
+	// Reset event back to initial state. PastJobs is left alone so the earlier attempts stay
+	// visible for diagnostics.
 	evt.ApprovalID = ""
 	evt.ApprovalMatchedAt = nil
 
@@ -904,6 +927,77 @@ func runningRecoveryJobs(cli client.Reader, ctx context.Context, ns string, plan
 	}
 
 	return running, nil
+}
+
+// approvalChanges is what one reconcile pass did to spec.approvals: the one-shot approvals it spent
+// and the spent ones it pruned. Marking an approval consumed and dropping it again are the only
+// spec writes the operator ever makes, so the whole write-back can be expressed as those two sets
+// applied to whatever the API server currently holds.
+type approvalChanges struct {
+	consumed map[string]bool
+	removed  map[string]bool
+}
+
+// diffApprovals derives the changes a pass made from the copy of the plan it started with.
+func diffApprovals(orig, plan *intelv1a1.GPURecoveryPlan) approvalChanges {
+	ch := approvalChanges{consumed: map[string]bool{}, removed: map[string]bool{}}
+
+	was := make(map[string]bool, len(orig.Spec.Approvals))
+	for _, a := range orig.Spec.Approvals {
+		was[a.ID] = a.Consumed
+	}
+
+	present := make(map[string]bool, len(plan.Spec.Approvals))
+
+	for _, a := range plan.Spec.Approvals {
+		present[a.ID] = true
+
+		// Only a flag this pass flipped. An approval that arrived already consumed is left out, so
+		// that an ID an admin has reused for a fresh approval is not spent before it is matched.
+		if a.Consumed && !was[a.ID] {
+			ch.consumed[a.ID] = true
+		}
+	}
+
+	for _, a := range orig.Spec.Approvals {
+		if !present[a.ID] {
+			ch.removed[a.ID] = true
+		}
+	}
+
+	return ch
+}
+
+// empty reports whether the pass left spec.approvals alone.
+func (ch approvalChanges) empty() bool {
+	return len(ch.consumed) == 0 && len(ch.removed) == 0
+}
+
+// apply writes the changes into plan.Spec.Approvals, leaving every other approval — including one
+// added since the pass began — as it stands. Returns whether anything actually changed, so a write
+// that has nothing left to do can be skipped.
+func (ch approvalChanges) apply(plan *intelv1a1.GPURecoveryPlan) bool {
+	kept := make([]intelv1a1.RecoveryApproval, 0, len(plan.Spec.Approvals))
+	changed := false
+
+	for _, a := range plan.Spec.Approvals {
+		if ch.removed[a.ID] {
+			changed = true
+
+			continue
+		}
+
+		if ch.consumed[a.ID] && !a.Consumed {
+			a.Consumed = true
+			changed = true
+		}
+
+		kept = append(kept, a)
+	}
+
+	plan.Spec.Approvals = kept
+
+	return changed
 }
 
 // setApprovalConsumed marks the approval with the given ID as consumed
