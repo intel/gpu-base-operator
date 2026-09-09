@@ -6,6 +6,10 @@
 # The operator fills in: spec.template.spec.nodeName, containers[resetter].image,
 # and containers[resetter].args with the appropriate xpu-smi reset command.
 #
+# The command is /bin/sh -c and the reset is a single command line in args, so
+# xpu-smi is resolved on PATH: where the image keeps its binary is the image's
+# business, not the operator's.
+#
 # Supported commands (set by the operator from the event's recoveryType):
 #   sbr:   xpu-smi config -d <BDF> --reset
 #   slot:  xpu-smi config -d <BDF> --coldreset
@@ -39,12 +43,10 @@ spec:
       - name: resetter
         image: intel/gpu-fwupdater-mock:devel # replaced by the operator (spec.xpuSmi.image)
         imagePullPolicy: IfNotPresent
-        command: [ "/usr/local/bin/xpu-smi" ]
+        command: [ "/bin/sh", "-c" ]
         args:
-          - "config"
-          - "-d"
-          - "0000:00:00.0"  # replaced by the operator
-          - "--reset"       # replaced by the operator
+          # Replaced by the operator with the reset the event calls for.
+          - "xpu-smi config -d 0000:00:00.0 --reset"
         resources:
           requests:
             cpu: 50m

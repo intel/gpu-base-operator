@@ -21,6 +21,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -219,26 +220,54 @@ func hashSegment(s string) string {
 	return hex.EncodeToString(sum[:])[:idHashLen]
 }
 
-// recoveryTypeToArgs returns the xpu-smi command-line arguments that carry out the given reset
-// against the given BDF. Returns nil for a type xpu-smi has no reset for, reflash above all: it
-// writes firmware rather than resetting the device, so it is a different Job entirely.
-func recoveryTypeToArgs(bdf string, rt intelv1a1.RecoveryType) []string {
+// deviceBDFPattern is the shape the kernel prints a PCI address in ("%04x:%02x:%02x.%d", function
+// 0-7), accepting either hex case because lspci and some drivers spell the bus uppercase.
+//
+// Both recovery command lines interpolate the BDF into a string a privileged root container hands
+// to /bin/sh, and it arrives from a free-form ResourceSlice attribute rather than from a validated
+// API field, so it is checked on the way in — see validDeviceBDF's callers.
+var deviceBDFPattern = regexp.MustCompile(`^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$`)
+
+// validDeviceBDF reports whether bdf is a PCI address the recovery Jobs can be handed.
+//
+// Deliberately an allow-list of the one shape that is ever correct, not a deny-list of shell
+// metacharacters, for the same reason firmwareFileNamePattern is: the value ends up in a command
+// line inside a privileged root container, where anything unanticipated is worse than a device the
+// operator declines to recover and says so about.
+func validDeviceBDF(bdf string) bool {
+	return deviceBDFPattern.MatchString(bdf)
+}
+
+// buildResetCommand returns the shell command line that carries out the given reset against the
+// given BDF. Returns "" for a type xpu-smi has no reset for, reflash above all: it writes firmware
+// rather than resetting the device, so it is a different Job entirely.
+//
+// One string rather than an argv, as buildFDOFlashCommand is and for the same reason — see there.
+func buildResetCommand(bdf string, rt intelv1a1.RecoveryType) string {
 	switch rt {
 	case intelv1a1.RecoveryTypeSBR:
-		return []string{"config", "-d", bdf, "--reset"}
+		return fmt.Sprintf("xpu-smi config -d %s --reset", bdf)
 	case intelv1a1.RecoveryTypeSlot:
-		return []string{"config", "-d", bdf, "--coldreset"}
+		return fmt.Sprintf("xpu-smi config -d %s --coldreset", bdf)
 	case intelv1a1.RecoveryTypeAMC:
-		return []string{"amc", "--gpureset", "-d", bdf, "-y"}
+		return fmt.Sprintf("xpu-smi amc --gpureset -d %s -y", bdf)
 	default:
-		return nil
+		return ""
 	}
 }
 
 // buildFDOFlashCommand returns the shell command line that reflashes one GPU from a firmware file the
 // fw-copy initContainer has staged in the shared volume.
-func buildFDOFlashCommand(bdf, file string) []string {
-	return []string{"xpu-smi", "updatefw", "-d", bdf, "-t", "FDO", "-f", fmt.Sprintf("%s/%s", reflashStagingDir, file), "-y", "--force"}
+//
+// One string, not an argv: the container it lands on runs /bin/sh -c, which takes the command from
+// its first operand only and turns the rest into positional parameters. As an argv this flashed
+// nothing — the shell ran a bare "xpu-smi" and everything after it became $0, $1 and so on.
+//
+// Both interpolated values are shape-checked before they can reach here: the webhook allow-lists
+// spec.firmware.file down to [a-zA-Z0-9._-] (firmwareFileNamePattern) and detection drops any device
+// whose PCI address is not a BDF (validDeviceBDF).
+func buildFDOFlashCommand(bdf, file string) string {
+	return fmt.Sprintf("xpu-smi updatefw -d %s -t FDO -f %s/%s -y --force", bdf, reflashStagingDir, file)
 }
 
 // firmwareImagePath returns path to the firmware file inside the firmware image.
