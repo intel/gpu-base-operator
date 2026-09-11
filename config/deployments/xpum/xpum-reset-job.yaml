@@ -12,7 +12,7 @@
 #
 # Supported commands (set by the operator from the event's recoveryType):
 #   sbr:   xpu-smi config -d <BDF> --reset
-#   slot:  xpu-smi config -d <BDF> --coldreset
+#   slot:  xpu-smi config -d <BDF> --coldreset --force-reset-gpus
 #   amc:   xpu-smi amc --gpureset -d <BDF> -y
 ---
 apiVersion: batch/v1

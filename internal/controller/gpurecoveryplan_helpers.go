@@ -250,7 +250,7 @@ func buildResetCommand(bdf string, rt intelv1a1.RecoveryType) string {
 	case intelv1a1.RecoveryTypeSBR:
 		return fmt.Sprintf("xpu-smi config -d %s --reset", bdf)
 	case intelv1a1.RecoveryTypeSlot:
-		return fmt.Sprintf("xpu-smi config -d %s --coldreset", bdf)
+		return fmt.Sprintf("xpu-smi config -d %s --coldreset --force-reset-gpus", bdf)
 	case intelv1a1.RecoveryTypeAMC:
 		return fmt.Sprintf("xpu-smi amc --gpureset -d %s -y", bdf)
 	default:
