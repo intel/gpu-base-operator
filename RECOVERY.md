@@ -13,6 +13,20 @@ detects the need, reports it, and waits for a cluster admin to approve the opera
 
 Recovery is driven by the cluster-scoped `GPURecoveryPlan` CRD.
 
+> **NOTE:** Recovery functionality is dependent on multiple components external to the operator: xpumd, DRA and xpu-smi.
+> Current versions of xpumd and xpu-smi (v2.1.0) are not yet compatible with the recovery functionality.
+
+## Hardware dependency
+
+Recovery functionality is dependent on both the underlying system as well as the installed Intel GPU.
+
+| Recovery | Requirements |
+| --- | --- |
+| SBR | A BMG Pro card (B50, B60 etc.). |
+| Slot | `HotPlug` and `PwrCtrl` support in the PCIe bus. Intel GPU supporting HotPlug. |
+| AMC | Intel GPU equipped with AMC. |
+| Reflash | Intel GPU supporting FDO mode. |
+
 ## How it works
 
 ```
@@ -53,14 +67,16 @@ path: where the binary lives is the image's business.
 |---|---|---|
 | `slot` | `xpu-smi config -d <bdf> --coldreset` | PCIe slot power cycle; requires PCIe hot-plug support |
 | `amc` | `xpu-smi amc --gpuReset -d <bdf>` | Out-of-band reset through the card's AMC |
-| `sbr` | `xpu-smi config -d <bdf> --reset` | Secondary Bus Reset; per-card backup, via an approval override only |
+| `sbr` | `xpu-smi config -d <bdf> --reset` | Secondary Bus Reset |
 | `reflash` | `xpu-smi updatefw -d <bdf> -t FDO -f <file>` | Flash the known good firmware onto a card in FDO mode |
 
-These are **not** a severity ladder. Exactly one of `slot` and `amc` works on a given platform —
-slot where the PCIe slots do hot-plug, AMC where they do not — and the DRA driver can only say "this
-device needs a reset", not which mechanism applies. That is why `spec.defaultResetType` is mandatory
-with no default: a reset the platform cannot perform **exits 0**, so a wrong value produces a clean
-run to `succeeded` over a GPU that was never touched.
+The three resets are **not** a severity ladder. Which one works is a property of the platform, not of
+the fault — `slot` where the PCIe slots do hot-plug, `sbr` on a BMG Pro card with a new enough kernel,
+`amc` on cards carrying an AMC — and the DRA driver can only say "this device needs a reset", not
+which mechanism applies. That is why `spec.defaultResetType` is mandatory with no default: a reset the
+platform cannot perform **exits 0**, so a wrong value produces a clean run to `succeeded` over a GPU
+that was never touched. Any of the three can be the plan-wide default, and
+`spec.approvals[].override` still switches a single event to a different one.
 
 ### Event states
 
@@ -124,7 +140,7 @@ metadata:
   name: recoveryplan-bmg
 spec:
   deviceId: "0xe20b"          # mandatory; one plan per GPU model
-  defaultResetType: "slot"    # mandatory: "slot" or "amc"
+  defaultResetType: "slot"    # mandatory: "slot", "sbr" or "amc"
 
   drain:
     enable: true
@@ -222,20 +238,6 @@ kubectl patch gpurecoveryplan <plan> --type=json \
   -p='[{"op":"add","path":"/spec/approvals/-","value":{"eventId":"<event-id>"}}]'
 ```
 
-## Metrics
-
-Exposed on the operator's own `/metrics` endpoint (there is deliberately no `status.stats` field —
-the CR holds current state, the counters hold history):
-
-| Metric | Labels |
-|---|---|
-| `gpu_recovery_events_total` | `plan`, `type`, `reason` |
-| `gpu_recovery_attempts_total` | `plan`, `type` |
-| `gpu_recovery_outcomes_total` | `plan`, `type`, `result` |
-| `gpu_recovery_overrides_total` | `plan`, `suggested_type`, `chosen_type` |
-| `gpu_recovery_events` (gauge) | `plan`, `node`, `type`, `state` |
-| `gpu_recovery_plan_state` (gauge) | `plan`, `state` |
-
 ## Current limitations
 
 * **Sibling devices are not protected.** Nothing stops a slot reset or SBR on one card from
@@ -247,8 +249,4 @@ the CR holds current state, the counters hold history):
   driver does not publish those attributes yet.
 * **`firmware.source.volumeSource` is not implemented.** A reflash event on a
   volume-only plan stays in `missing-firmware`; use `containerSource`.
-* **Reset efficacy on BMG.** On some B580 cards a reset leaves the GPU non-working; end-to-end
-  validation depends on driver/firmware fixes.
-* **The `health-xpumd-gpu.wedged` taint key is not yet confirmed against a shipping DRA driver.**
-  The survivability key and the `pciId` / `pciAddress` device attributes are.
 

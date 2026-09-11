@@ -55,7 +55,7 @@ spec:
 
   # The xpu-smi image every recovery Job runs, for both the resets and the reflash.
   xpuSmi:
-    image: "docker.io/intel/gpu-fwupdater-mock:devel"
+    image: "registry.local/xpu-smi:devel"
     pullPolicy: "Always"
 
     # Skip registry certificate validation for the operator's pre-flight check on the image
@@ -69,7 +69,7 @@ spec:
   firmware:
     source:
       containerSource:
-        name: "docker.io/intel/intel-gpu-fw-binaries:devel"
+        name: registry.local/intel-gpu-fw-binaries:devel
 
         # Same as spec.xpuSmi.insecureSkipTLSVerify, and separate from it because the known good
         # firmware for one card model often lives on an internal registry while xpu-smi comes
