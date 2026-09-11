@@ -65,7 +65,7 @@ path: where the binary lives is the image's business.
 
 | Type | Command | Notes |
 |---|---|---|
-| `slot` | `xpu-smi config -d <bdf> --coldreset` | PCIe slot power cycle; requires PCIe hot-plug support |
+| `slot` | `xpu-smi config -d <bdf> --coldreset --force-reset-gpus` | PCIe slot power cycle; requires PCIe hot-plug support |
 | `amc` | `xpu-smi amc --gpuReset -d <bdf>` | Out-of-band reset through the card's AMC |
 | `sbr` | `xpu-smi config -d <bdf> --reset` | Secondary Bus Reset |
 | `reflash` | `xpu-smi updatefw -d <bdf> -t FDO -f <file>` | Flash the known good firmware onto a card in FDO mode |

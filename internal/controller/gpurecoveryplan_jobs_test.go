@@ -342,7 +342,7 @@ var _ = Describe("GPURecoveryPlan Controller: recovery Job construction", func()
 			// The BDF has to reach the command line, not just the event. One argument, because the
 			// template runs /bin/sh -c: see the reflash Job's specs for what splitting it costs.
 			Expect(resetter.Command).To(Equal([]string{"/bin/sh", "-c"}))
-			Expect(resetter.Args).To(Equal([]string{"xpu-smi config -d 0000:02:00.0 --coldreset"}))
+			Expect(resetter.Args).To(Equal([]string{"xpu-smi config -d 0000:02:00.0 --coldreset --force-reset-gpus"}))
 		})
 
 		It("should give the Job the operator's own pull secret", func() {
