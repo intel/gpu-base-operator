@@ -94,9 +94,9 @@ type GPURecoveryPlanSpec struct {
 	XpuSmi XpuSmiSpec `json:"xpuSmi,omitempty"`
 
 	// DefaultResetType is the reset the operator runs for every reset-type recovery event it
-	// creates on this plan. Either "slot" (PCIe slot power cycle, also called the PM reset) or
-	// "amc" (out-of-band reset through the card's AMC).
-	// +kubebuilder:validation:Enum=slot;amc
+	// creates on this plan. One of "slot" (PCIe slot power cycle, also called the PM reset),
+	// "amc" (out-of-band reset through the card's AMC) or "sbr" (Secondary Bus Reset).
+	// +kubebuilder:validation:Enum=sbr;slot;amc
 	// +kubebuilder:validation:Required
 	DefaultResetType RecoveryType `json:"defaultResetType"`
 

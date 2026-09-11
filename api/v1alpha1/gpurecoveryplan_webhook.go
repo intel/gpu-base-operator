@@ -186,15 +186,15 @@ func validateRecoveryPlanSpec(spec *GPURecoveryPlanSpec) error {
 		return fmt.Errorf("spec.deviceId %q must match pattern 0x[0-9a-fA-F]{4}", spec.DeviceID)
 	}
 
-	// Mandatory, and restricted to the two platform-selected resets.
+	// Mandatory, and restricted to the resets: reflash is not one, and no value is safe to guess.
 	if spec.DefaultResetType == "" {
-		return fmt.Errorf("spec.defaultResetType is required: %q where the PCIe slots support hot-plug, %q otherwise",
-			RecoveryTypeSlot, RecoveryTypeAMC)
+		return fmt.Errorf("spec.defaultResetType is required: %q, %q or %q",
+			RecoveryTypeSlot, RecoveryTypeSBR, RecoveryTypeAMC)
 	}
 
-	if spec.DefaultResetType != RecoveryTypeSlot && spec.DefaultResetType != RecoveryTypeAMC {
-		return fmt.Errorf("spec.defaultResetType %q is not a platform reset; use %q or %q, and "+
-			"spec.approvals[].override to run %q on a single event",
+	if spec.DefaultResetType != RecoveryTypeSlot && spec.DefaultResetType != RecoveryTypeAMC &&
+		spec.DefaultResetType != RecoveryTypeSBR {
+		return fmt.Errorf("spec.defaultResetType %q is not a reset; use %q, %q or %q",
 			spec.DefaultResetType, RecoveryTypeSlot, RecoveryTypeAMC, RecoveryTypeSBR)
 	}
 

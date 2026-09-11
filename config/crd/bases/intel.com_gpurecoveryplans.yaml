@@ -148,12 +148,13 @@ spec:
                   - amc
                   - reflash
                 - enum:
+                  - sbr
                   - slot
                   - amc
                 description: |-
                   DefaultResetType is the reset the operator runs for every reset-type recovery event it
-                  creates on this plan. Either "slot" (PCIe slot power cycle, also called the PM reset) or
-                  "amc" (out-of-band reset through the card's AMC).
+                  creates on this plan. One of "slot" (PCIe slot power cycle, also called the PM reset),
+                  "amc" (out-of-band reset through the card's AMC) or "sbr" (Secondary Bus Reset).
                 type: string
               deviceId:
                 description: 'DeviceID is the mandatory PCI device ID of the target
