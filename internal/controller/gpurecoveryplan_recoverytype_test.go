@@ -49,8 +49,8 @@ var _ = Describe("GPURecoveryPlan Controller: recovery type selection", func() {
 		})
 
 		// The field is mandatory, so an empty value means an object that never reached the API
-		// server. Falling back matters because an empty type produces a malformed event ID. SBR
-		// rather than slot or amc: guessing between those two is guessing at the platform.
+		// server. Falling back matters because an empty type produces a malformed event ID; which
+		// reset it picks hardly matters, since nothing runs without an approval anyway.
 		It("should fall back to SBR when the plan carries no default reset type", func() {
 			need, ok := taintToDeviceNeed(deviceTaintKeyReset, "")
 			Expect(ok).To(BeTrue())
@@ -101,8 +101,8 @@ var _ = Describe("GPURecoveryPlan Controller: recovery type selection", func() {
 	})
 
 	// Which reset works is a property of the platform (hot-plug capable slots → the slot power
-	// cycle, otherwise AMC), and the DRA driver only reports "needs a reset".
-	// spec.defaultResetType is the only thing that can tell the two apart.
+	// cycle, a BMG Pro card → SBR, otherwise AMC), and the DRA driver only
+	// reports "needs a reset". spec.defaultResetType is the only thing that can tell them apart.
 	Context("spec.defaultResetType", func() {
 		const (
 			drtSlice = "drt-slice"
@@ -141,6 +141,7 @@ var _ = Describe("GPURecoveryPlan Controller: recovery type selection", func() {
 			},
 			Entry("slot, where the PCIe slots support hot-plug", intelv1a1.RecoveryTypeSlot),
 			Entry("amc, where they do not", intelv1a1.RecoveryTypeAMC),
+			Entry("sbr, on a BMG Pro cards", intelv1a1.RecoveryTypeSBR),
 		)
 
 		// The field is a default for events created afterwards, not a retroactive rewrite. An

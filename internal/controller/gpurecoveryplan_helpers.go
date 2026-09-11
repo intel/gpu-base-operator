@@ -80,8 +80,10 @@ func taintToDeviceNeed(taintKey string, defaultReset intelv1a1.RecoveryType) (de
 // resetTypeOrDefault resolves spec.defaultResetType, falling back to SBR when it is unset.
 //
 // The field is required by the CRD, so an empty value means an object that never went through
-// the API server. Falling back matters because an empty type produces a malformed event ID: SBR
-// rather than slot or amc, because guessing between those two is guessing at the platform.
+// the API server. Falling back matters because an empty type produces a malformed event ID. Which
+// reset actually works is a platform property the operator cannot discover, so the value picked
+// here is arbitrary — SBR only because it is the least invasive of the three, and the event still
+// needs an admin approval before anything runs.
 func resetTypeOrDefault(rt intelv1a1.RecoveryType) intelv1a1.RecoveryType {
 	if rt == "" {
 		klog.Warningf("GPURecoveryPlan has no spec.defaultResetType; falling back to %s",

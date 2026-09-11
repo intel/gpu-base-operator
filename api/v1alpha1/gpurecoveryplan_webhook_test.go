@@ -81,9 +81,9 @@ var _ = Describe("GPURecoveryPlan Webhook", func() {
 			Expect(obj.Spec.Approvals).To(BeEmpty())
 		})
 
-		// defaultResetType is deliberately not defaulted: neither accepted value is safe to
-		// assume, and a wrong guess is silent — the Job runs a reset the platform cannot perform
-		// and exits 0. The validator rejects the omission instead.
+		// defaultResetType is deliberately not defaulted: no accepted value is safe to assume,
+		// and a wrong guess is silent — the Job runs a reset the platform cannot perform and
+		// exits 0. The validator rejects the omission instead.
 		It("should not invent a defaultResetType", func() {
 			obj.Spec.DefaultResetType = ""
 
@@ -162,30 +162,34 @@ var _ = Describe("GPURecoveryPlan Webhook", func() {
 			obj.Spec.DefaultResetType = ""
 			_, err := validator.ValidateCreate(ctx, obj)
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("defaultResetType"))
-			Expect(err.Error()).To(ContainSubstring("hot-plug"))
+			Expect(err.Error()).To(ContainSubstring("defaultResetType is required"))
 		})
 
-		// sbr and reflash are valid RecoveryTypes but not platform defaults: sbr is the per-card
-		// backup and reflash is not a reset. As a cluster-wide default either would apply to every
-		// wedged GPU the DRA driver reports.
-		DescribeTable("should reject a defaultResetType that is not a platform reset",
+		// reflash is a valid RecoveryType but not a reset, so it cannot stand in as the default
+		// for every wedged GPU the DRA driver reports.
+		DescribeTable("should reject a defaultResetType that is not a reset",
 			func(rt RecoveryType) {
 				obj.Spec.DefaultResetType = rt
 				_, err := validator.ValidateCreate(ctx, obj)
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("defaultResetType"))
 			},
-			Entry("sbr, the per-card backup", RecoveryTypeSBR),
 			Entry("reflash, not a reset at all", RecoveryTypeReflash),
 			Entry("a value outside the enum", RecoveryType("flr")),
 		)
 
-		It("should accept amc as a defaultResetType", func() {
-			obj.Spec.DefaultResetType = RecoveryTypeAMC
-			_, err := validator.ValidateCreate(ctx, obj)
-			Expect(err).NotTo(HaveOccurred())
-		})
+		DescribeTable("should accept any of the resets as a defaultResetType",
+			func(rt RecoveryType) {
+				obj.Spec.DefaultResetType = rt
+				_, err := validator.ValidateCreate(ctx, obj)
+				Expect(err).NotTo(HaveOccurred())
+			},
+			Entry("slot", RecoveryTypeSlot),
+			Entry("amc", RecoveryTypeAMC),
+			// SBR works cluster-wide on BMG Pro cards (B50, B60, …), so it is
+			// a legitimate platform default there, not only a per-event override.
+			Entry("sbr", RecoveryTypeSBR),
+		)
 
 		It("should reject an invalid subDeviceId format", func() {
 			obj.Spec.SubDeviceID = "0xGGGG"

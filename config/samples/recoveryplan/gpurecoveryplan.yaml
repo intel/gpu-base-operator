@@ -9,12 +9,12 @@ spec:
   deviceId: "0xe20b"
 
   # Mandatory. Which reset works is a property of the platform, not of the fault: use slot — the
-  # PCIe slot power cycle, also called the PM reset — where the slots support hot-plug, and amc
-  # where they do not. The DRA driver only reports "needs a reset", so this is the operator's only
-  # way to know which one to run, and getting it wrong is silent: the Job runs a reset the platform
-  # cannot perform, exits 0, and the event succeeds with the GPU still broken.
-  # sbr is not accepted here — it is the per-card backup, reached through an approval's override
-  # when the platform's normal reset does not revive one particular GPU.
+  # PCIe slot power cycle, also called the PM reset — where the slots support hot-plug, sbr on a
+  # BMG Pro card (B50, B60 etc.), and amc otherwise. The DRA driver only
+  # reports "needs a reset", so this is the operator's only way to know which one to run, and
+  # getting it wrong is silent: the Job runs a reset the platform cannot perform, exits 0, and the
+  # event succeeds with the GPU still broken. An approval's override switches a single event to a
+  # different reset when the plan's default does not revive one particular GPU.
   defaultResetType: "slot"
 
   # The node drain that runs before a reset. None of it applies to a reflash: that writes firmware to
