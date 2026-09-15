@@ -30,28 +30,36 @@
   <rect x="295" y="56" width="215" height="60" rx="8"
         fill="#E3F2FD" stroke="#0068B5" stroke-width="1.5"/>
   <text x="402" y="75" text-anchor="middle" font-size="12" font-weight="bold" fill="#0068B5">GPUFirmwareUpdate</text>
-  <text x="310" y="92" font-size="10" fill="#444">nodeSelector, fwImageTag</text>
-  <text x="310" y="107" font-size="10" fill="#444">retryLimit, timeout</text>
+  <text x="310" y="92" font-size="10" fill="#444">nodeSelector, updaterImage</text>
+  <text x="310" y="107" font-size="10" fill="#444">holdAfterCanary, pciDeviceID</text>
+
+  <!-- GPURecoveryPlan CR -->
+  <rect x="540" y="56" width="215" height="60" rx="8"
+        fill="#E3F2FD" stroke="#0068B5" stroke-width="1.5"/>
+  <text x="647" y="75" text-anchor="middle" font-size="12" font-weight="bold" fill="#0068B5">GPURecoveryPlan</text>
+  <text x="555" y="92" font-size="10" fill="#444">deviceId, approvals, defaultResetType</text>
+  <text x="555" y="107" font-size="10" fill="#444">reset / reflash, drain, timeouts</text>
 
   <!-- CRs → Admission Webhook arrows -->
   <path d="M 157,116 V 128" stroke="#0068B5" stroke-width="1.5" fill="none" marker-end="url(#arr-blue)"/>
   <path d="M 402,116 V 128" stroke="#0068B5" stroke-width="1.5" fill="none" marker-end="url(#arr-blue)"/>
+  <path d="M 647,116 V 128" stroke="#0068B5" stroke-width="1.5" fill="none" marker-end="url(#arr-blue)"/>
 
   <!-- ── Admission Webhook (between CRDs and operator) ── -->
-  <rect x="30" y="128" width="545" height="42" rx="8"
+  <rect x="30" y="128" width="745" height="42" rx="8"
         fill="#F1F8E9" stroke="#66BB6A" stroke-width="1.8"/>
-  <text x="302" y="147" text-anchor="middle" font-size="12" font-weight="bold" fill="#2E7D32">&#x1F512;  Admission Webhook</text>
-  <text x="302" y="162" text-anchor="middle" font-size="10" fill="#444">Validates ClusterPolicy &amp; GPUFirmwareUpdate on create / update — rejects malformed CRs</text>
+  <text x="402" y="147" text-anchor="middle" font-size="12" font-weight="bold" fill="#2E7D32">&#x1F512;  Admission Webhook</text>
+  <text x="402" y="162" text-anchor="middle" font-size="10" fill="#444">Validates ClusterPolicy, GPUFirmwareUpdate &amp; GPURecoveryPlan on create / update — rejects malformed CRs</text>
 
   <!-- Webhook → Operator arrow -->
-  <path d="M 302,170 V 180" stroke="#0068B5" stroke-width="1.5" fill="none" marker-end="url(#arr-blue)"/>
+  <path d="M 402,170 V 180" stroke="#0068B5" stroke-width="1.5" fill="none" marker-end="url(#arr-blue)"/>
 
   <!-- ── Intel GPU Base Operator ── -->
-  <rect x="30" y="180" width="545" height="242" rx="10"
+  <rect x="30" y="180" width="600" height="242" rx="10"
         fill="#E8F4FD" stroke="#0068B5" stroke-width="2"/>
-  <rect x="30" y="180" width="545" height="34" rx="10" fill="#0068B5"/>
-  <rect x="30" y="198" width="545" height="16" fill="#0068B5"/>
-  <text x="302" y="202" text-anchor="middle" font-size="13" font-weight="bold" fill="white">Intel GPU Base Operator  (controller-manager)</text>
+  <rect x="30" y="180" width="600" height="34" rx="10" fill="#0068B5"/>
+  <rect x="30" y="198" width="600" height="16" fill="#0068B5"/>
+  <text x="402" y="202" text-anchor="middle" font-size="13" font-weight="bold" fill="white">Intel GPU Base Operator  (controller-manager)</text>
 
   <!-- ClusterPolicy Controller sub-box -->
   <rect x="50" y="218" width="280" height="196" rx="7"
@@ -63,10 +71,10 @@
   <text x="66" y="260" font-size="10" fill="#333">• Device Plugin Reconciler</text>
   <text x="66" y="276" font-size="10" fill="#333">• DRA Reconciler</text>
   <text x="66" y="292" font-size="10" fill="#333">• XPU-Manager Reconciler</text>
-  <text x="66" y="308" font-size="10" fill="#333">• Misc / NFD Rule Reconciler</text>
-  <text x="66" y="324" font-size="10" fill="#333">• Kueue Reconciler</text>
+  <text x="66" y="308" font-size="10" fill="#333">• Misc / Kueue / NFD Reconciler</text>
+  <text x="66" y="324" font-size="10" fill="#333">• KMM Reconciler</text>
   <line x1="66" y1="333" x2="322" y2="333" stroke="#DDD" stroke-width="1"/>
-  <text x="66" y="348" font-size="10" fill="#888" font-style="italic">Detects at startup: DRA · OpenShift · Prometheus · Kueue</text>
+  <text x="66" y="348" font-size="10" fill="#888" font-style="italic">Detects at startup: DRA · OpenShift · Prometheus</text>
   <text x="66" y="363" font-size="10" fill="#888" font-style="italic">Enables / disables reconcilers accordingly</text>
   <text x="66" y="378" font-size="10" fill="#888" font-style="italic">Watches one ClusterPolicy per cluster</text>
   <text x="66" y="393" font-size="10" fill="#888" font-style="italic">Reconciles on CR create / update / delete</text>
@@ -83,34 +91,48 @@
   <text x="362" y="292" font-size="10" fill="#333">• Node selection</text>
   <text x="362" y="308" font-size="10" fill="#333">• Status / conditions reporting</text>
 
+  <!-- RecoveryPlan Controller sub-box -->
+  <rect x="346" y="348" width="200" height="66" rx="7"
+        fill="white" stroke="#2196F3" stroke-width="1.5"/>
+  <rect x="346" y="348" width="200" height="26" rx="7" fill="#2196F3"/>
+  <rect x="346" y="360" width="200" height="14" fill="#2196F3"/>
+  <text x="446" y="365" text-anchor="middle" font-size="11" font-weight="bold" fill="white">RecoveryPlan Controller</text>
+  <text x="362" y="390" font-size="10" fill="#333">• Approval, drain &amp; recovery Jobs</text>
+  <text x="362" y="406" font-size="10" fill="#333">• Reset / reflash status</text>
+
   <!-- ── Managed K8s Resources (right column) ── -->
   <text x="811" y="192" text-anchor="middle" font-size="11" fill="#666" font-style="italic">Managed K8s Resources</text>
 
   <!-- Stem: operator right → vertical rail → branches -->
-  <path d="M 575,295 H 600" stroke="#666" stroke-width="1.5" fill="none"/>
-  <line x1="600" y1="217" x2="600" y2="373" stroke="#999" stroke-width="1"/>
+  <path d="M 630,305 H 660" stroke="#666" stroke-width="1.5" fill="none"/>
+  <line x1="660" y1="217" x2="660" y2="395" stroke="#999" stroke-width="1"/>
 
-  <path d="M 600,217 H 626" stroke="#555" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
-  <path d="M 600,269 H 626" stroke="#555" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
-  <path d="M 600,321 H 626" stroke="#555" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
-  <path d="M 600,373 H 626" stroke="#555" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+  <path d="M 660,217 H 720" stroke="#555" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+  <path d="M 660,261 H 720" stroke="#555" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+  <path d="M 660,305 H 720" stroke="#555" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+  <path d="M 660,349 H 720" stroke="#555" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+  <path d="M 660,393 H 720" stroke="#555" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
 
   <!-- DaemonSet boxes (title only, no subtext) -->
-  <rect x="632" y="198" width="358" height="38" rx="7"
+  <rect x="732" y="198" width="200" height="38" rx="7"
         fill="#FFF8E1" stroke="#F59E0B" stroke-width="1.5"/>
-  <text x="811" y="222" text-anchor="middle" font-size="11" font-weight="bold" fill="#B45309">DaemonSet: Intel GPU Device Plugin</text>
+  <text x="811" y="222" text-anchor="middle" font-size="11" font-weight="bold" fill="#B45309">DS: GPU Device Plugin</text>
 
-  <rect x="632" y="250" width="358" height="38" rx="7"
+  <rect x="732" y="242" width="200" height="38" rx="7"
         fill="#FFF8E1" stroke="#F59E0B" stroke-width="1.5"/>
-  <text x="811" y="274" text-anchor="middle" font-size="11" font-weight="bold" fill="#B45309">DaemonSet: DRA Plugin</text>
+  <text x="811" y="266" text-anchor="middle" font-size="11" font-weight="bold" fill="#B45309">DS: GPU DRA Plugin</text>
 
-  <rect x="632" y="302" width="358" height="38" rx="7"
+  <rect x="732" y="286" width="200" height="38" rx="7"
         fill="#FFF8E1" stroke="#F59E0B" stroke-width="1.5"/>
-  <text x="811" y="326" text-anchor="middle" font-size="11" font-weight="bold" fill="#B45309">DaemonSet: Intel XPU-Manager</text>
+  <text x="800" y="310" text-anchor="middle" font-size="11" font-weight="bold" fill="#B45309">DS: Intel Xpumd</text>
 
-  <rect x="632" y="354" width="358" height="38" rx="7"
+  <rect x="732" y="330" width="200" height="38" rx="7"
         fill="#FFF8E1" stroke="#F59E0B" stroke-width="1.5"/>
-  <text x="811" y="378" text-anchor="middle" font-size="11" font-weight="bold" fill="#B45309">Job: GPU Firmware Update</text>
+  <text x="825" y="354" text-anchor="middle" font-size="11" font-weight="bold" fill="#B45309">Job: GPU Firmware Update</text>
+
+  <rect x="732" y="374" width="200" height="38" rx="7"
+        fill="#FFF8E1" stroke="#F59E0B" stroke-width="1.5"/>
+  <text x="811" y="398" text-anchor="middle" font-size="11" font-weight="bold" fill="#B45309">Jobs: GPU Recovery</text>
 
   <!-- ── Cluster dependencies ── -->
   <text x="55" y="436" font-size="11" fill="#666" font-style="italic">Cluster dependencies &amp; integrations:</text>
@@ -133,6 +155,12 @@
   <text x="497" y="481" text-anchor="middle" font-size="10" fill="#444">workload queueing</text>
   <text x="497" y="496" text-anchor="middle" font-size="10" fill="#444">&amp; resource reservation</text>
 
+  <rect x="615" y="444" width="155" height="68" rx="8"
+        fill="#E8F5E9" stroke="#4CAF50" stroke-width="1.5"/>
+  <text x="692" y="465" text-anchor="middle" font-size="12" font-weight="bold" fill="#2E7D32">KMM</text>
+  <text x="692" y="481" text-anchor="middle" font-size="10" fill="#444">out-of-tree Xe driver</text>
+  <text x="692" y="496" text-anchor="middle" font-size="10" fill="#444">kernel module builds</text>
+
   <!-- ── GPU Worker Nodes ── -->
   <rect x="30" y="524" width="960" height="118" rx="10"
         fill="#FFF3E0" stroke="#E65100" stroke-width="2"/>
@@ -140,18 +168,18 @@
 
   <rect x="48" y="552" width="210" height="80" rx="6" fill="white" stroke="#F57C00" stroke-width="1.2"/>
   <text x="153" y="570" text-anchor="middle" font-size="11" font-weight="bold" fill="#333">Device Plugin</text>
-  <text x="153" y="586" text-anchor="middle" font-size="10" fill="#555">gpu.intel.com/i915 extended resource</text>
-  <text x="153" y="601" text-anchor="middle" font-size="10" fill="#555">LevelZero health checks</text>
+  <text x="153" y="586" text-anchor="middle" font-size="10" fill="#555">gpu.intel.com/xe extended resource</text>
+  <text x="153" y="601" text-anchor="middle" font-size="10" fill="#555">Xpumd health data</text>
   <text x="153" y="616" text-anchor="middle" font-size="10" fill="#555">scheduling via kubelet</text>
 
   <rect x="270" y="552" width="210" height="80" rx="6" fill="white" stroke="#F57C00" stroke-width="1.2"/>
   <text x="375" y="570" text-anchor="middle" font-size="11" font-weight="bold" fill="#333">DRA Plugin</text>
   <text x="375" y="586" text-anchor="middle" font-size="10" fill="#555">ResourceSlice · driver: gpu.intel.com</text>
-  <text x="375" y="601" text-anchor="middle" font-size="10" fill="#555">health via XPU-Manager</text>
+  <text x="375" y="601" text-anchor="middle" font-size="10" fill="#555">health via Xpumd</text>
   <text x="375" y="616" text-anchor="middle" font-size="10" fill="#555">scheduling via ResourceClaim</text>
 
   <rect x="492" y="552" width="210" height="80" rx="6" fill="white" stroke="#F57C00" stroke-width="1.2"/>
-  <text x="597" y="570" text-anchor="middle" font-size="11" font-weight="bold" fill="#333">XPU-Manager</text>
+  <text x="597" y="570" text-anchor="middle" font-size="11" font-weight="bold" fill="#333">Xpumd</text>
   <text x="597" y="586" text-anchor="middle" font-size="10" fill="#555">per-GPU telemetry &amp; health</text>
   <text x="597" y="601" text-anchor="middle" font-size="10" fill="#555">metrics endpoint (REST/gRPC)</text>
   <text x="597" y="616" text-anchor="middle" font-size="10" fill="#555">scraped by Prometheus</text>
@@ -163,7 +191,7 @@
   <text x="843" y="616" text-anchor="middle" font-size="10" fill="#555">nodeSelector + Kueue queuing</text>
 
   <!-- DaemonSets → GPU Nodes arrow -->
-  <path d="M 811,394 V 520" stroke="#BF360C" stroke-width="1.5" fill="none"
+  <path d="M 811,415 V 520" stroke="#BF360C" stroke-width="1.5" fill="none"
         marker-end="url(#arr-orange)"/>
   <text x="840" y="464" font-size="10" fill="#BF360C" font-style="italic">deployed to</text>
   <text x="840" y="477" font-size="10" fill="#BF360C" font-style="italic">/ runs on</text>
