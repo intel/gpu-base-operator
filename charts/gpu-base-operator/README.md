@@ -2,6 +2,10 @@
 
 Helm chart is for installing the Intel GPU base operator. Operator installation is a dependency for the [policy chart](../gpu-base-operator-policy/README.md). Once the operator is installed, the policy chart can configure the cluster in a certain way.
 
+For the recommended production baseline, image pinning, webhook TLS, RBAC,
+metrics, and optional integration security considerations, see the
+[Security Configuration Guide](../../SECURITY-CONFIGURATION.md).
+
 ## Prerequisites
 - [cert-manager](https://cert-manager.io/docs/installation/) [required — provisions TLS certificates for the admission webhook]
 - [Node Feature Discovery NFD](https://kubernetes-sigs.github.io/node-feature-discovery/master/get-started/deployment-and-usage.html) [recommended, optional]

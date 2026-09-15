@@ -6,6 +6,10 @@ CAUTION: This is an beta / non-production software, do not use on production clu
 
 Intel GPU Base operator allows automatic deployment of GPU related components to enable use of Intel GPU hardware within the Kubernetes cluster.
 
+For the production security baseline, image guidance, RBAC, webhook TLS,
+metrics, firmware updates, and optional integration risks, see the
+[Security Configuration Guide](SECURITY-CONFIGURATION.md).
+
 ## Description
 
 ![Architecture diagram](docs/architecture.svg)
