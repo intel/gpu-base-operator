@@ -116,16 +116,37 @@ func gpuNode() *core.Node {
 	}
 }
 
+const (
+	vendorString = "vendor"
+	classString  = "class"
+	deviceString = "device"
+)
+
 var _ = Describe("Misc", func() {
 
 	Context("NFR creation", func() {
 		checkValues := func(matchSet *nfdcrd.MatchExpressionSet) {
 			for k, v := range *matchSet {
 				switch k {
-				case "vendor":
+				case vendorString:
 					Expect(v.Value).To(Equal(nfdcrd.MatchValue{"8086"}))
-				case "class":
+				case classString:
 					Expect(v.Value).To(Equal(nfdcrd.MatchValue{"0300", "0380"}))
+				default:
+					Fail("unexpected match expression key: " + k)
+				}
+			}
+		}
+
+		checkValues1200 := func(matchSet *nfdcrd.MatchExpressionSet) {
+			for k, v := range *matchSet {
+				switch k {
+				case vendorString:
+					Expect(v.Value).To(Equal(nfdcrd.MatchValue{"8086"}))
+				case classString:
+					Expect(v.Value).To(Equal(nfdcrd.MatchValue{"1200"}))
+				case deviceString:
+					Expect(v.Value).To(Equal(nfdcrd.MatchValue{"674c", "674d", "674e", "674f", "6750"}))
 				default:
 					Fail("unexpected match expression key: " + k)
 				}
@@ -135,11 +156,11 @@ var _ = Describe("Misc", func() {
 		checkValuesForB60 := func(rule nfdcrd.Rule) {
 			for k, v := range *rule.MatchFeatures[0].MatchExpressions {
 				switch k {
-				case "vendor":
+				case vendorString:
 					Expect(v.Value).To(Equal(nfdcrd.MatchValue{"8086"}))
-				case "class":
+				case classString:
 					Expect(v.Value).To(Equal(nfdcrd.MatchValue{"0300"}))
-				case "device":
+				case deviceString:
 					Expect(v.Value).To(Equal(nfdcrd.MatchValue{"e211"}))
 				default:
 					Fail("unexpected match expression key: " + k)
@@ -166,12 +187,12 @@ var _ = Describe("Misc", func() {
 			nfr := createNfdRule(spec, "")
 			Expect(nfr).NotTo(BeNil())
 
-			Expect(nfr.Spec.Rules).To(HaveLen(10))
-			rule := nfr.Spec.Rules[0]
+			Expect(nfr.Spec.Rules).To(HaveLen(12))
 
-			checkValues(rule.MatchFeatures[0].MatchExpressions)
+			checkValues(nfr.Spec.Rules[0].MatchFeatures[0].MatchExpressions)
+			checkValues1200(nfr.Spec.Rules[1].MatchFeatures[0].MatchExpressions)
 
-			b60Rule := nfr.Spec.Rules[3]
+			b60Rule := nfr.Spec.Rules[5]
 			checkValuesForB60(b60Rule)
 		})
 	})
