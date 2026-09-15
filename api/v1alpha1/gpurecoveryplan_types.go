@@ -69,17 +69,17 @@ const (
 
 // GPURecoveryPlanSpec defines the desired state of GPURecoveryPlan.
 type GPURecoveryPlanSpec struct {
-	// DeviceID is the mandatory PCI device ID of the target GPU. Format: '0x' followed by 4 hex digits.
-	// +kubebuilder:validation:Pattern=`^0x[0-9a-fA-F]{4}$`
+	// DeviceID is the mandatory PCI device ID of the target GPU. Format: '0x' followed by 4 lower-case hex digits.
+	// +kubebuilder:validation:Pattern=`^0x[0-9a-f]{4}$`
 	DeviceID string `json:"deviceId"`
 
-	// SubDeviceID is the optional PCI sub-device ID. Format: '0x' followed by 4 hex digits.
-	// +kubebuilder:validation:Pattern=`^0x[0-9a-fA-F]{4}$`
+	// SubDeviceID is the optional PCI sub-device ID. Format: '0x' followed by 4 lower-case hex digits.
+	// +kubebuilder:validation:Pattern=`^0x[0-9a-f]{4}$`
 	// +optional
 	SubDeviceID string `json:"subDeviceId,omitempty"`
 
-	// SubVendorID is the optional PCI sub-vendor ID. Format: '0x' followed by 4 hex digits.
-	// +kubebuilder:validation:Pattern=`^0x[0-9a-fA-F]{4}$`
+	// SubVendorID is the optional PCI sub-vendor ID. Format: '0x' followed by 4 lower-case hex digits.
+	// +kubebuilder:validation:Pattern=`^0x[0-9a-f]{4}$`
 	// +optional
 	SubVendorID string `json:"subVendorId,omitempty"`
 
@@ -261,7 +261,9 @@ type FirmwareSpec struct {
 	Source FirmwareSource `json:"source"`
 
 	// File is the filename of the FDO firmware image to flash, relative to the root of the
-	// source (no path components).
+	// source (no path components). Must start with an alphanumeric character or '_',
+	// which also rules out "." and "..".
+	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9_][a-zA-Z0-9._-]*$`
 	File string `json:"file"`
 }
 

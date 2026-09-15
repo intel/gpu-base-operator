@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // validPlan returns a minimal valid GPURecoveryPlan for use in tests. Minimal includes
@@ -207,10 +208,25 @@ var _ = Describe("GPURecoveryPlan Webhook", func() {
 
 		It("should accept valid optional PCI IDs", func() {
 			obj.Spec.SubDeviceID = "0xabcd"
-			obj.Spec.SubVendorID = "0xABCD"
+			obj.Spec.SubVendorID = "0x56c0"
 			_, err := validator.ValidateCreate(ctx, obj)
 			Expect(err).NotTo(HaveOccurred())
 		})
+
+		// PCI IDs are compared byte-for-byte against the deviceId attribute the DRA
+		// driver publishes on its ResourceSlices, which is lower-case. An upper-case
+		// ID would validate and then never match a device, so reject it up front.
+		DescribeTable("should reject upper-case hex in PCI IDs",
+			func(mutate func(*GPURecoveryPlan), field string) {
+				mutate(obj)
+				_, err := validator.ValidateCreate(ctx, obj)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring(field))
+			},
+			Entry("deviceId", func(p *GPURecoveryPlan) { p.Spec.DeviceID = "0xABCD" }, "deviceId"),
+			Entry("subDeviceId", func(p *GPURecoveryPlan) { p.Spec.SubDeviceID = "0xABCD" }, "subDeviceId"),
+			Entry("subVendorId", func(p *GPURecoveryPlan) { p.Spec.SubVendorID = "0x56C0" }, "subVendorId"),
+		)
 
 		Context("approvals validation", func() {
 			It("should reject an approval with both eventId and selector", func() {
@@ -468,6 +484,11 @@ var _ = Describe("GPURecoveryPlan Webhook", func() {
 				Entry("space", "fw file.bin", "invalid characters"),
 				Entry("command substitution", "gfx.bin$(id)", "invalid characters"),
 				Entry("shell separator", "gfx.bin;rm", "invalid characters"),
+				// filepath.Base leaves "." and ".." unchanged, so only the character
+				// allow-list stands between these and the reflash command line.
+				Entry("current directory", ".", "invalid characters"),
+				Entry("parent directory", "..", "invalid characters"),
+				Entry("leading dash reads as a flag", "-rf", "invalid characters"),
 			)
 		})
 	})
@@ -484,6 +505,19 @@ var _ = Describe("GPURecoveryPlan Webhook", func() {
 			obj.Spec.DeviceID = "bad"
 			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
 			Expect(err).To(HaveOccurred())
+		})
+
+		// The controller removes its finalizer with a plain Update, which this
+		// webhook sees. If spec validation ran then, a plan whose spec no longer
+		// passes current validation could never be deleted.
+		It("should not block a deletion in progress on an invalid spec", func() {
+			now := metav1.Now()
+			obj.DeletionTimestamp = &now
+			obj.Finalizers = []string{"gpurecoveryplan.intel.com/finalizer"}
+			obj.Spec.DeviceID = "0xABCD"
+
+			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).NotTo(HaveOccurred())
 		})
 
 		It("should reject firmware changes while a reflash event is in-progress", func() {

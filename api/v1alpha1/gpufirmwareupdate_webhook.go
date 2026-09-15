@@ -60,7 +60,12 @@ var inProgressStates = map[string]bool{
 var _ admission.Validator[*GPUFirmwareUpdate] = &GPUFirmwareUpdateCustomValidator{}
 
 func validateInputs(spec *GPUFirmwareUpdateSpec) error {
-	fileNameReg := regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+	// The first character must be alphanumeric or '_' so that "." and ".." are
+	// rejected: filepath.Base leaves both unchanged, so the path-component check
+	// below does not catch them. A leading '-' is excluded for the same reason
+	// the name is quoted in the update command - it must not read as a flag.
+	// Keep in sync with the Pattern marker on GPUFirmwareFile.FileName.
+	fileNameReg := regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9._-]*$`)
 
 	hasChecksum := false
 
@@ -129,6 +134,16 @@ func (v *GPUFirmwareUpdateCustomValidator) ValidateCreate(newObj context.Context
 
 // ValidateUpdate rejects changes to fields that are immutable once an update is in progress.
 func (v *GPUFirmwareUpdateCustomValidator) ValidateUpdate(_ context.Context, oldFU, newFU *GPUFirmwareUpdate) (admission.Warnings, error) {
+	// Skip input validation once deletion has started. The controller drops its
+	// finalizer with a plain Update, which this webhook sees; rejecting it would
+	// leave the CR undeletable if its spec no longer passes current validation.
+	// The immutability checks below still apply.
+	if newFU.DeletionTimestamp.IsZero() {
+		if err := validateInputs(&newFU.Spec); err != nil {
+			return nil, err
+		}
+	}
+
 	if !inProgressStates[oldFU.Status.State] {
 		return nil, nil
 	}
@@ -154,7 +169,7 @@ func (v *GPUFirmwareUpdateCustomValidator) ValidateUpdate(_ context.Context, old
 		}
 	}
 
-	return nil, validateInputs(&newFU.Spec)
+	return nil, nil
 }
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type GPUFirmwareUpdate.

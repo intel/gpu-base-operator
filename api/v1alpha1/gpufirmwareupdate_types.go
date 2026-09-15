@@ -38,6 +38,7 @@ type GPUFirmwareUpdateSpec struct {
 	ImagePullSecret string `json:"imagePullSecret,omitempty"`
 
 	// Target PCI Device ID in case the node has multiple GPU types. Format is '0xabcd'.
+	// +kubebuilder:validation:Pattern=`^0x[0-9a-f]{4}$`
 	PCIDeviceID string `json:"pciDeviceID,omitempty"`
 
 	// Taint key to be applied to nodes during firmware update.
@@ -101,7 +102,9 @@ type GPUFirmwareUpdateList struct {
 type GPUFirmwareFile struct {
 	// +kubebuilder:validation:Enum=GFX;GFX_DATA;GFX_CODE_DATA;GFX_PSCBIN;AMC;FAN_TABLE;VR_CONFIG;OPROM_CODE;OPROM_DATA
 	Type string `json:"type"`
-	// Filename of the firmware file without any directories.
+	// Filename of the firmware file without any directories. Must start with an
+	// alphanumeric character or '_', which also rules out "." and "..".
+	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9_][a-zA-Z0-9._-]*$`
 	FileName string `json:"filename"`
 	// SHA256 checksum of the firmware file. Format: sha256:<64 hex characters>.
 	// When set, content.containerImage must be digest-pinned (image@sha256:...).

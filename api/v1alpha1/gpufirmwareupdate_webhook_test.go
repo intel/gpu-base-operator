@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 var _ = Describe("GPUFirmwareUpdate Webhook", func() {
@@ -234,6 +235,12 @@ var _ = Describe("GPUFirmwareUpdate Webhook", func() {
 				"someimage.bin&&rm -rf /",
 				"someimage.bin$(echo foo)",
 				"someimage.bin`echo foo`",
+				// filepath.Base leaves "." and ".." unchanged, so the path-component
+				// check above does not reject them - the character allow-list must.
+				".",
+				"..",
+				".hidden.bin",
+				"-rf",
 			}
 
 			for _, fname := range filenames {
@@ -250,6 +257,8 @@ var _ = Describe("GPUFirmwareUpdate Webhook", func() {
 				"0x12G4",
 				"0x123",
 				"0x12345",
+				// Lower-case only, matching every other PCI ID field in the API.
+				"0x12AB",
 			}
 
 			for _, pciId := range pciIds {
@@ -295,8 +304,60 @@ var _ = Describe("GPUFirmwareUpdate Webhook", func() {
 		It("Should validate updates correctly", func() {
 			By("simulating a valid update scenario")
 			oldObj.Status.State = "" // Not started state
-			oldObj.Spec.UpdaterImage = oldImageName
+			oldObj.Spec = GPUFirmwareUpdateSpec{
+				UpdaterImage: oldImageName,
+				UpdateMethod: "canary",
+				Content: GPUFirmwareContent{
+					ContainerImage: updaterImageName,
+					Files:          []GPUFirmwareFile{{Type: "GFX", FileName: "gfx.bin"}},
+				},
+				PCIDeviceID: "0x1234",
+			}
+			obj.Spec = oldObj.Spec
 			obj.Spec.UpdaterImage = newImageName
+			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("Should validate inputs on updates outside in-progress states", func() {
+			By("rejecting shell metacharacters in a firmware filename")
+			obj.Spec = GPUFirmwareUpdateSpec{
+				UpdaterImage: updaterImageName,
+				UpdateMethod: "direct",
+				Content: GPUFirmwareContent{
+					ContainerImage: updaterImageName,
+					Files:          []GPUFirmwareFile{{Type: "GFX", FileName: `gfx.bin";echo pwned;"`}},
+				},
+				PCIDeviceID: "0x1234",
+			}
+
+			for _, state := range []string{"", "completed", "error"} {
+				oldObj.Status.State = state
+				_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+				Expect(err).To(HaveOccurred(), "state %q", state)
+				Expect(err.Error()).To(ContainSubstring("invalid firmware filename"), "state %q", state)
+			}
+		})
+
+		// The controller removes its finalizer with a plain Update, which this
+		// webhook sees. If input validation ran then, a CR whose spec no longer
+		// passes current validation could never be deleted.
+		It("Should not block a deletion in progress on an invalid spec", func() {
+			now := metav1.Now()
+			obj.DeletionTimestamp = &now
+			obj.Finalizers = []string{"gpufirmwareupdate.intel.com/finalizer"}
+			obj.Spec = GPUFirmwareUpdateSpec{
+				UpdaterImage: updaterImageName,
+				UpdateMethod: "direct",
+				Content: GPUFirmwareContent{
+					ContainerImage: updaterImageName,
+					Files:          []GPUFirmwareFile{{Type: "GFX", FileName: `gfx.bin";echo pwned;"`}},
+				},
+				PCIDeviceID: "0x1234",
+			}
+			oldObj.Status.State = ""
+			oldObj.Spec = *obj.Spec.DeepCopy()
+
 			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
 			Expect(err).NotTo(HaveOccurred())
 		})
