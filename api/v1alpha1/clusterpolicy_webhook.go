@@ -342,6 +342,13 @@ func (v *ClusterPolicyCustomValidator) ValidateCreate(_ context.Context, cp *Clu
 
 // ValidateUpdate implements webhook.CustomValidator.
 func (v *ClusterPolicyCustomValidator) ValidateUpdate(_ context.Context, _ *ClusterPolicy, cp *ClusterPolicy) (admission.Warnings, error) {
+	// Skip spec validation once deletion has started. The controller drops its
+	// finalizer with a plain Update, which this webhook sees; rejecting it would
+	// leave the policy undeletable if its spec no longer passes current validation.
+	if !cp.DeletionTimestamp.IsZero() {
+		return nil, nil
+	}
+
 	return validateClusterPolicySpec(&cp.Spec)
 }
 

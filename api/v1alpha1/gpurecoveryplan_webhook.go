@@ -126,12 +126,16 @@ type GPURecoveryPlanCustomValidator struct{}
 
 var _ admission.Validator[*GPURecoveryPlan] = &GPURecoveryPlanCustomValidator{}
 
-var pciIDPattern = regexp.MustCompile(`^0x[0-9a-fA-F]{4}$`)
+var pciIDPattern = regexp.MustCompile(`^0x[0-9a-f]{4}$`)
 
 // firmwareFileNamePattern is the allow-list for spec.firmware.file. Deliberately an
 // allow-list and not a deny-list of shell metacharacters: the name ends up in a command line
 // inside a privileged root container, where anything unanticipated is worse than a rejected CR.
-var firmwareFileNamePattern = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+// The first character must be alphanumeric or '_', which rules out "." and ".." (filepath.Base
+// leaves both unchanged, so the path-component check does not catch them) and a leading '-'.
+// Keep in sync with the Pattern marker on FirmwareSpec.File, which enforces the same shape in
+// the API server so the schema still rejects these names if this webhook is not in the path.
+var firmwareFileNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9._-]*$`)
 
 // ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type GPURecoveryPlan.
 func (v *GPURecoveryPlanCustomValidator) ValidateCreate(_ context.Context, plan *GPURecoveryPlan) (admission.Warnings, error) {
@@ -153,8 +157,14 @@ func (v *GPURecoveryPlanCustomValidator) ValidateUpdate(_ context.Context, oldPl
 
 	gpurecoveryplanlog.Info("Validation for GPURecoveryPlan upon update", "name", newPlan.GetName())
 
-	if err := validateRecoveryPlanSpec(&newPlan.Spec); err != nil {
-		return nil, err
+	// Skip spec validation once deletion has started. The controller drops its
+	// finalizer with a plain Update, which this webhook sees; rejecting it would
+	// leave the plan undeletable if its spec no longer passes current validation.
+	// The firmware immutability check below still applies.
+	if newPlan.DeletionTimestamp.IsZero() {
+		if err := validateRecoveryPlanSpec(&newPlan.Spec); err != nil {
+			return nil, err
+		}
 	}
 
 	if firmwareUpdateActive(oldPlan) && !reflect.DeepEqual(oldPlan.Spec.Firmware, newPlan.Spec.Firmware) {
@@ -183,7 +193,7 @@ func validateRecoveryPlanSpec(spec *GPURecoveryPlanSpec) error {
 	}
 
 	if !pciIDPattern.MatchString(spec.DeviceID) {
-		return fmt.Errorf("spec.deviceId %q must match pattern 0x[0-9a-fA-F]{4}", spec.DeviceID)
+		return fmt.Errorf("spec.deviceId %q must match pattern 0x[0-9a-f]{4}", spec.DeviceID)
 	}
 
 	// Mandatory, and restricted to the resets: reflash is not one, and no value is safe to guess.
@@ -199,11 +209,11 @@ func validateRecoveryPlanSpec(spec *GPURecoveryPlanSpec) error {
 	}
 
 	if spec.SubDeviceID != "" && !pciIDPattern.MatchString(spec.SubDeviceID) {
-		return fmt.Errorf("spec.subDeviceId %q must match pattern 0x[0-9a-fA-F]{4}", spec.SubDeviceID)
+		return fmt.Errorf("spec.subDeviceId %q must match pattern 0x[0-9a-f]{4}", spec.SubDeviceID)
 	}
 
 	if spec.SubVendorID != "" && !pciIDPattern.MatchString(spec.SubVendorID) {
-		return fmt.Errorf("spec.subVendorId %q must match pattern 0x[0-9a-fA-F]{4}", spec.SubVendorID)
+		return fmt.Errorf("spec.subVendorId %q must match pattern 0x[0-9a-f]{4}", spec.SubVendorID)
 	}
 
 	if err := validateApprovals(spec.Approvals); err != nil {

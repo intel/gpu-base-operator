@@ -158,8 +158,8 @@ spec:
                 type: string
               deviceId:
                 description: 'DeviceID is the mandatory PCI device ID of the target
-                  GPU. Format: ''0x'' followed by 4 hex digits.'
-                pattern: ^0x[0-9a-fA-F]{4}$
+                  GPU. Format: ''0x'' followed by 4 lower-case hex digits.'
+                pattern: ^0x[0-9a-f]{4}$
                 type: string
               drain:
                 default:
@@ -201,7 +201,9 @@ spec:
                   file:
                     description: |-
                       File is the filename of the FDO firmware image to flash, relative to the root of the
-                      source (no path components).
+                      source (no path components). Must start with an alphanumeric character or '_',
+                      which also rules out "." and "..".
+                    pattern: ^[a-zA-Z0-9_][a-zA-Z0-9._-]*$
                     type: string
                   source:
                     description: Source specifies where the firmware file can be found.
@@ -250,13 +252,13 @@ spec:
                 type: boolean
               subDeviceId:
                 description: 'SubDeviceID is the optional PCI sub-device ID. Format:
-                  ''0x'' followed by 4 hex digits.'
-                pattern: ^0x[0-9a-fA-F]{4}$
+                  ''0x'' followed by 4 lower-case hex digits.'
+                pattern: ^0x[0-9a-f]{4}$
                 type: string
               subVendorId:
                 description: 'SubVendorID is the optional PCI sub-vendor ID. Format:
-                  ''0x'' followed by 4 hex digits.'
-                pattern: ^0x[0-9a-fA-F]{4}$
+                  ''0x'' followed by 4 lower-case hex digits.'
+                pattern: ^0x[0-9a-f]{4}$
                 type: string
               timeouts:
                 default:

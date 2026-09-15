@@ -212,12 +212,6 @@ var _ = Describe("GPURecoveryPlan Controller: reflash Jobs", func() {
 			},
 			Entry("no firmware at all", "plan-reflash-nofw", "evt-reflash-nofw",
 				nil, "spec.firmware"),
-			Entry("a source but no file", "plan-reflash-nofile", "evt-reflash-nofile",
-				&intelv1a1.FirmwareSpec{
-					Source: intelv1a1.FirmwareSource{
-						ContainerSource: &intelv1a1.ContainerFirmwareSource{Name: fwImage},
-					},
-				}, "spec.firmware"),
 			// volumeSource is accepted by the CRD but not acted on: the reflash Job copies firmware
 			// out of a container image. Parking says so rather than building a Job whose
 			// initContainer would copy from an image that holds no firmware.
@@ -229,5 +223,48 @@ var _ = Describe("GPURecoveryPlan Controller: reflash Jobs", func() {
 					File: reflashFile,
 				}, "containerSource"),
 		)
+
+		// Kept out of the table above because the state is no longer expressible through the
+		// API server: spec.firmware.file carries a Pattern that an empty string fails, so the
+		// plan is created with a real filename and the in-memory copy is emptied afterwards.
+		// The controller guard is still worth exercising - it is what stands between an
+		// unset filename and a privileged reflash Job built around "/update/".
+		It("should park in missing-firmware when the firmware filename is empty", func() {
+			r := newTestReconciler()
+			p := reflashPlan("plan-reflash-nofile", "evt-reflash-nofile", containerFirmware())
+			p.Spec.Firmware.File = ""
+
+			Expect(r.createRecoveryJob(ctx, p, &p.Status.Events[0])).To(Succeed())
+
+			evt := p.Status.Events[0]
+			Expect(evt.State).To(Equal(intelv1a1.RecoveryEventStateMissingFirmware))
+			Expect(evt.JobName).To(BeEmpty())
+			Expect(evt.StateMessage).To(ContainSubstring("spec.firmware"))
+			Expect(p.Status.Messages).To(ContainElement(ContainSubstring("spec.firmware")))
+
+			expectNoJob(recoveryJobName("evt-reflash-nofile", 0))
+		})
+
+		// The schema layer for the same condition: with no webhook in the path, an empty
+		// filename is rejected by the API server itself.
+		It("should reject an empty firmware filename at the API server", func() {
+			p := &intelv1a1.GPURecoveryPlan{
+				ObjectMeta: metav1.ObjectMeta{Name: "plan-reflash-emptyfile"},
+				Spec: intelv1a1.GPURecoveryPlanSpec{
+					DefaultResetType: intelv1a1.RecoveryTypeSlot,
+					DeviceID:         "0xabcd",
+					XpuSmi:           intelv1a1.XpuSmiSpec{Image: "registry/xpu-smi:latest"},
+					Firmware: &intelv1a1.FirmwareSpec{
+						Source: intelv1a1.FirmwareSource{
+							ContainerSource: &intelv1a1.ContainerFirmwareSource{Name: fwImage},
+						},
+					},
+				},
+			}
+
+			err := k8sClient.Create(ctx, p)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("spec.firmware.file"))
+		})
 	})
 })

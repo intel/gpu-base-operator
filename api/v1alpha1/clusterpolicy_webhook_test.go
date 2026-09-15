@@ -23,6 +23,7 @@ import (
 	"github.com/distribution/reference"
 
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
@@ -666,6 +667,21 @@ var _ = Describe("ClusterPolicy Webhook", func() {
 			old := validCP()
 			obj.Spec.ResourceRegistration = draName
 			obj.Spec.DynamicResourceAllocationSpec.Image = "intel/gpu-dra:v2.0"
+			_, err := validator.ValidateUpdate(ctx, old, obj)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		// The controller removes its finalizer with a plain Update, which this
+		// webhook sees. If spec validation ran then, a policy whose spec no longer
+		// passes current validation could never be deleted.
+		It("does not block a deletion in progress on an invalid spec", func() {
+			old := validCP()
+			now := metav1.Now()
+			obj.DeletionTimestamp = &now
+			obj.Finalizers = []string{"gpu.intel.com/clusterpolicy-protection"}
+			obj.Spec.DevicePluginSpec.AllowIDs = []string{"0x56c0"}
+			obj.Spec.DevicePluginSpec.DenyIDs = []string{"0x1234"}
+
 			_, err := validator.ValidateUpdate(ctx, old, obj)
 			Expect(err).NotTo(HaveOccurred())
 		})

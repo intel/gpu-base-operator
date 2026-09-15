@@ -56,7 +56,10 @@ spec:
                           pattern: ^sha256:[0-9a-f]{64}$
                           type: string
                         filename:
-                          description: Filename of the firmware file without any directories.
+                          description: |-
+                            Filename of the firmware file without any directories. Must start with an
+                            alphanumeric character or '_', which also rules out "." and "..".
+                          pattern: ^[a-zA-Z0-9_][a-zA-Z0-9._-]*$
                           type: string
                         type:
                           enum:
@@ -105,6 +108,7 @@ spec:
               pciDeviceID:
                 description: Target PCI Device ID in case the node has multiple GPU
                   types. Format is '0xabcd'.
+                pattern: ^0x[0-9a-f]{4}$
                 type: string
               tolerations:
                 description: Tolerations needed to be scheduled to the node.
