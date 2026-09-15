@@ -2,6 +2,9 @@
 
 Helm chart is for installing the Intel GPU base operator policy. The operator has to be installed before the policy. See [the operator chart](../gpu-base-operator/README.md).
 
+Review the [Security Configuration Guide](../../SECURITY-CONFIGURATION.md)
+before enabling privileged GPU components or optional integrations.
+
 
 ## Helm install
 ```
