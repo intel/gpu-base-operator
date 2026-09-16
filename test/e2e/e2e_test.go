@@ -485,6 +485,76 @@ var _ = Describe("Kubectl apply", Ordered, func() {
 	})
 })
 
+func runTestSSLPodAndVerifyTLS(namespace, endpoint string) {
+	podName, err := createTestSSLPod(namespace, endpoint)
+	Expect(err).NotTo(HaveOccurred(), "Failed to deploy testssl.sh pod")
+
+	defer func() {
+		err := deletePod(namespace, podName)
+		Expect(err).NotTo(HaveOccurred(), "Failed to delete testssl.sh pod")
+	}()
+
+	Eventually(waitForTestSSLPodToBecomeComplete).WithTimeout(5 * time.Minute).Should(Succeed())
+
+	By("checking the TLS ciphers used by the operator's webhook")
+	cmd := exec.Command("kubectl", "logs", podName, "-n", namespace)
+	output, err := utils.Run(cmd)
+	Expect(err).NotTo(HaveOccurred(), "Failed to get logs from testssl.sh pod")
+
+	By(output)
+
+	// TLS
+	Expect(output).To(ContainSubstring("TLS 1.1    not offered"))
+	Expect(output).To(ContainSubstring("TLS 1.3    not offered"))
+	Expect(output).To(Not(ContainSubstring("TLS 1.2    not offered")))
+	Expect(output).To(ContainSubstring("TLS 1.2    offered (OK)"))
+
+	// No http/2
+	Expect(output).To(ContainSubstring("ALPN/HTTP2 http/1.1 (offered)"))
+}
+
+func runTestNMAPPodAndVerifyPorts(allowedPorts map[string]bool) {
+	By("deploy nmap pod")
+	nmapPod, err := createTestNMAPPod(namespace, getControllerPodIP(namespace))
+	Expect(err).NotTo(HaveOccurred(), "Failed to deploy testnmap pod")
+
+	defer func() {
+		err := deletePod(namespace, nmapPod)
+		Expect(err).NotTo(HaveOccurred(), "Failed to delete testnmap pod")
+	}()
+
+	Eventually(waitForTestNMAPPodToBecomeComplete).WithTimeout(2 * time.Minute).Should(Succeed())
+
+	By("checking NMAP scan output")
+	cmd := exec.Command("kubectl", "logs", nmapPod, "-n", namespace)
+	output, err := utils.Run(cmd)
+	Expect(err).NotTo(HaveOccurred(), "Failed to get logs from testnmap pod")
+
+	By(output)
+
+	foundPorts := map[string]bool{}
+
+	// Extract open ports from nmap output using regex
+	// Host: 10.244.0.64 (<service>)	Ports:
+	//   8081/open/tcp//blackice-icecap///, 9443/open/tcp//tungsten-https///	Ignored State: closed (65533)
+	//   ^^^^                               ^^^^
+	portRe := regexp.MustCompile(`(\d+)/open`)
+
+	matches := portRe.FindAllStringSubmatch(string(output), -1)
+	Expect(matches).NotTo(BeEmpty(), "No open ports found in nmap output")
+
+	for _, match := range matches {
+		port := match[1]
+		Expect(port).To(BeKeyOf(allowedPorts), "unexpected open port: %s", port)
+
+		foundPorts[port] = true
+	}
+
+	for port := range allowedPorts {
+		Expect(foundPorts).To(HaveKey(port), "expected open port not found in nmap output: %s", port)
+	}
+}
+
 var _ = Describe("Helm", Ordered, Label("helm"), func() {
 	Context("install", func() {
 		operatorInstallArgsBase := []string{"install", "--create-namespace", "-n", namespace, helmOperatorName, helmOperatorChartPath, "--wait"}
@@ -621,82 +691,61 @@ var _ = Describe("Helm", Ordered, Label("helm"), func() {
 			serviceName := "intel-gpu-base-operator-webhook-service"
 			serviceIP := getServiceClusterIP(serviceName, namespace)
 
-			podName, err := createTestSSLPod(namespace, serviceIP)
-			Expect(err).NotTo(HaveOccurred(), "Failed to deploy testssl.sh pod")
-
-			defer func() {
-				err := deletePod(namespace, podName)
-				Expect(err).NotTo(HaveOccurred(), "Failed to delete testssl.sh pod")
-			}()
-
-			Eventually(waitForTestSSLPodToBecomeComplete).WithTimeout(5 * time.Minute).Should(Succeed())
-
-			By("checking the TLS ciphers used by the operator's webhook")
-			cmd = exec.Command("kubectl", "logs", podName, "-n", namespace)
-			output, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Failed to get logs from testssl.sh pod")
-
-			By(output)
-
-			// TLS
-			Expect(output).To(ContainSubstring("TLS 1.1    not offered"))
-			Expect(output).To(ContainSubstring("TLS 1.3    not offered"))
-			Expect(output).To(Not(ContainSubstring("TLS 1.2    not offered")))
-			Expect(output).To(ContainSubstring("TLS 1.2    offered (OK)"))
-
-			// No http/2
-			Expect(output).To(ContainSubstring("ALPN/HTTP2 http/1.1 (offered)"))
+			runTestSSLPodAndVerifyTLS(namespace, serviceIP)
 		})
 
-		It("check operator's open ports", Label("helm", "ports", "long"), func() {
-			By("install operator helm chart")
-			cmd := exec.Command("helm", operatorInstallArgsBase...)
+		It("check operator's metrics TLS cipher selection", Label("helm", "tls", "long"), func() {
+			operatorHelmArgs := []string{}
+			operatorHelmArgs = append(operatorHelmArgs, operatorInstallArgsBase...)
+			operatorHelmArgs = append(operatorHelmArgs, "--set", "metrics.enabled=true")
+
+			By("install operator helm chart with metrics enabled")
+			cmd := exec.Command("helm", operatorHelmArgs...)
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to deploy operator helm chart")
 
-			By("deploy nmap pod")
-			nmapPod, err := createTestNMAPPod(namespace, getControllerPodIP(namespace))
-			Expect(err).NotTo(HaveOccurred(), "Failed to deploy testnmap pod")
+			By("deploy testssl.sh pod")
 
-			defer func() {
-				err := deletePod(namespace, nmapPod)
-				Expect(err).NotTo(HaveOccurred(), "Failed to delete testnmap pod")
-			}()
+			serviceName := helmOperatorName + "-controller-manager-metrics-service"
+			serviceIP := getServiceClusterIP(serviceName, namespace)
 
-			Eventually(waitForTestNMAPPodToBecomeComplete).WithTimeout(2 * time.Minute).Should(Succeed())
+			// Metrics service is exposed on port 8443
+			serviceIP = fmt.Sprintf("%s:8443", serviceIP)
 
-			By("checking NMAP scan output")
-			cmd = exec.Command("kubectl", "logs", nmapPod, "-n", namespace)
-			output, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Failed to get logs from testnmap pod")
+			runTestSSLPodAndVerifyTLS(namespace, serviceIP)
+		})
 
-			By(output)
+		It("check operator's open ports", Label("helm", "ports", "long"), func() {
+			By("install operator helm chart with metrics enabled")
+			cmd := exec.Command("helm", operatorInstallArgsBase...)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to deploy operator helm chart")
 
 			allowedPorts := map[string]bool{
 				"9443": true, // webhook
 				"8081": true, // healthz
 			}
-			foundPorts := map[string]bool{}
 
-			// Extract open ports from nmap output using regex
-			// Host: 10.244.0.64 (<service>)	Ports:
-			//   8081/open/tcp//blackice-icecap///, 9443/open/tcp//tungsten-https///	Ignored State: closed (65533)
-			//   ^^^^                               ^^^^
-			portRe := regexp.MustCompile(`(\d+)/open`)
+			runTestNMAPPodAndVerifyPorts(allowedPorts)
+		})
 
-			matches := portRe.FindAllStringSubmatch(string(output), -1)
-			Expect(matches).NotTo(BeEmpty(), "No open ports found in nmap output")
+		It("check operator's open ports with metrics enabled", Label("helm", "ports", "long"), func() {
+			operatorHelmArgs := []string{}
+			operatorHelmArgs = append(operatorHelmArgs, operatorInstallArgsBase...)
+			operatorHelmArgs = append(operatorHelmArgs, "--set", "metrics.enabled=true")
 
-			for _, match := range matches {
-				port := match[1]
-				Expect(port).To(BeKeyOf(allowedPorts), "unexpected open port: %s", port)
+			By("install operator helm chart with metrics enabled")
+			cmd := exec.Command("helm", operatorHelmArgs...)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to deploy operator helm chart")
 
-				foundPorts[port] = true
+			allowedPorts := map[string]bool{
+				"9443": true, // webhook
+				"8081": true, // healthz
+				"8443": true, // metrics
 			}
 
-			for port := range allowedPorts {
-				Expect(foundPorts).To(HaveKey(port), "expected open port not found in nmap output: %s", port)
-			}
+			runTestNMAPPodAndVerifyPorts(allowedPorts)
 		})
 
 		It("device plugin with xpumd", Label("deviceplugin", "xpum"), func() {
