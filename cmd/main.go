@@ -383,20 +383,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	// nolint:goconst
-	if os.Getenv("DISABLE_WEBHOOKS") != "true" {
-		if err := intelcomv1alpha1.SetupGPUFirmwareUpdateWebhookWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create webhook", "webhook", "GPUFirmwareUpdate")
-			os.Exit(1)
-		}
-		if err := intelcomv1alpha1.SetupClusterPolicyWebhookWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create webhook", "webhook", "ClusterPolicy")
-			os.Exit(1)
-		}
-		if err := intelcomv1alpha1.SetupGPURecoveryPlanWebhookWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create webhook", "webhook", "GPURecoveryPlan")
-			os.Exit(1)
-		}
+	// Webhooks are critical for operator's FW update and recovery operations.
+	if err := intelcomv1alpha1.SetupGPUFirmwareUpdateWebhookWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create webhook", "webhook", "GPUFirmwareUpdate")
+		os.Exit(1)
+	}
+	if err := intelcomv1alpha1.SetupClusterPolicyWebhookWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create webhook", "webhook", "ClusterPolicy")
+		os.Exit(1)
+	}
+	if err := intelcomv1alpha1.SetupGPURecoveryPlanWebhookWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create webhook", "webhook", "GPURecoveryPlan")
+		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder
 
