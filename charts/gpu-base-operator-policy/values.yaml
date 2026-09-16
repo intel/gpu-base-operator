@@ -37,7 +37,7 @@ dra:
 #           operator: DoesNotExist
 
 xpu:
-  image: ghcr.io/intel/xpumanager/xpumd:v2.1.0@sha256:67b492e40dd3c99a05abac67d45f480261b4521ed4415ff49f660f2db269126
+  image: ghcr.io/intel/xpumanager/xpumd:v2.1.0@sha256:67b492e40dd3c99a05abac67d45f480261b4521ed4415ff49f660f2db2691263
   logLevel: 2
   monitoringResource: monitoring
   configMapOverride: ""
