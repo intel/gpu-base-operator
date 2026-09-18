@@ -15,6 +15,7 @@ jobs:
       pull-requests: read # for golangci/golangci-lint-action to fetch pull requests
       contents: read
       packages: write
+      id-token: write # for cosign to get an OIDC token from Actions
     uses: "./.github/workflows/build-push-common.yaml"
     with:
       runner: ubuntu-24.04

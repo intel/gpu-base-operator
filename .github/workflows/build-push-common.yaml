@@ -19,6 +19,7 @@ jobs:
       pull-requests: read # for golangci/golangci-lint-action to fetch pull requests
       contents: read
       packages: write
+      id-token: write # for cosign to get an OIDC token from Actions
     runs-on: ${{ inputs.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
@@ -54,8 +55,15 @@ jobs:
       - name: Install cosign
         if: ${{ steps.gentag.outputs.TAG != 'devel' }}
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 #v4.1.2
+        with:
+          # Pinned: the legacy-format sign below relies on --new-bundle-format,
+          # which is deprecated in cosign v3.1+ and goes away in v4.
+          cosign-release: 'v3.0.6'
       - name: Keyless image sign
         if: ${{ steps.gentag.outputs.TAG != 'devel' }}
         run: |
-          cosign sign --yes ${{ steps.digest.outputs.image_sha }}
+          cosign sign --yes --oidc-provider=github-actions ${{ steps.digest.outputs.image_sha }}
+          # Also sign in the legacy format: sigstore policy-controller cannot verify
+          # plain image signatures in the new bundle format yet.
+          cosign sign --yes --oidc-provider=github-actions --new-bundle-format=false ${{ steps.digest.outputs.image_sha }}
 
