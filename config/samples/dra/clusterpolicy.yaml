@@ -12,6 +12,6 @@ spec:
     checkIntervalSeconds: 12
 
   dra:
-    image: ghcr.io/intel/intel-resource-drivers-for-kubernetes/intel-gpu-resource-driver:v0.11.0@sha256:49f38fcbee4f98d748b537b1a728a12f39e56fd208c86dc3fa32ab2162c21197
+    image: ghcr.io/intel/intel-gpu-resource-driver:v0.12.0@sha256:5be06e1cf810c6091cec17ed78a775be64323f2084038c8840f283f643ce4207
     logLevel: 2
     podHealthCheck: true

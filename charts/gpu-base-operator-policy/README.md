@@ -37,16 +37,16 @@ See [Customizing the Chart Before Installing](https://helm.sh/docs/intro/using_h
 | health.coreTemperatureThreshold | 88 | Core temperature threshold for health checks (°C). |
 | health.memoryTemperatureThreshold | 99 | Memory temperature threshold for health checks (°C). |
 | health.checkIntervalSeconds | 12 | Interval for health checks (seconds). |
-| dp.plugin | intel/intel-gpu-plugin:0.36.0 | DP plugin image. |
+| dp.plugin | intel/intel-gpu-plugin:0.37.0 | DP plugin image. |
 | dp.logLevel | 2 | DP log level. |
 | dp.byPathMode | single | DP by-path mounting mode |
 | dp.allowIDs | [] | Allowed PCI Device IDs |
 | dp.denyIDs | [] | Denied PCI Device IDs |
-| dra.image | ghcr.io/intel/intel-resource-drivers-for-kubernetes/intel-gpu-resource-driver:v0.11.0 | DRA driver image. |
+| dra.image | ghcr.io/intel/intel-gpu-resource-driver:v0.12.0 | DRA driver image. |
 | dra.logLevel | 2 | DRA log level. |
 | dra.podHealthCheck | true | Health check for DRA Pod. |
 | dra.manageBinding | false | Allow DRA plugin to manage device binding between xe/i915 and vfio drivers. Needed for dynamic switching between normal and KubeVirt workloads. |
-| xpu.image | ghcr.io/intel/xpumanager/xpumd:v2.1.0 | XPU manager image. |
+| xpu.image | ghcr.io/intel/xpumanager/xpumd:v2.2.0 | XPU manager image. |
 | xpu.logLevel | 2 | XPU manager log level. |
 | xpu.monitoringResource | monitoring | Monitoring resource for XPUMD with device plugin. |
 | xpu.configMapOverride | "" | Override the default XPUM configuration ConfigMap name. |

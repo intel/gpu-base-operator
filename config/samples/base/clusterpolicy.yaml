@@ -15,7 +15,7 @@ spec:
     checkIntervalSeconds: 5
 
   xpu:
-    image: ghcr.io/intel/xpumanager/xpumd:v2.1.0@sha256:67b492e40dd3c99a05abac67d45f480261b4521ed4415ff49f660f2db2691263
+    image: ghcr.io/intel/xpumanager/xpumd:v2.2.0@sha256:fdefec8e5d93f76a1c7b4dda56001b7f3c2c15eae29bfbbc8971b900e6e74ae8
     logLevel: 2
     # Device Plugin monitoring resource.
     monitoringResource: monitoring
