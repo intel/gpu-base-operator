@@ -89,7 +89,7 @@ spec:
             # kustomize prepends the namePrefix (intel-gpu-base-operator-) to the
             # ServiceAccount, but not to this literal, so set the resolved name here.
             value: intel-gpu-base-operator-module-loader
-        image: ghcr.io/intel/intel-gpu-base-operator:devel
+        image: ghcr.io/intel/intel-gpu-base-operator:0.4.0
         imagePullPolicy: IfNotPresent
         name: manager
         ports: []
