@@ -223,7 +223,7 @@ func (r *DRAReconciler) deleteAll(ctx context.Context, crName string) error {
 	for _, o := range objects {
 		if err := r.Delete(ctx, o); err != nil {
 			if errors.IsNotFound(err) {
-				klog.Warningf("unable to delete object, not found: %+v (%+v)", err, o)
+				klog.V(4).Infof("unable to delete object, not found: %+v (%+v)", err, o)
 
 				continue
 			}
