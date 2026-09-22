@@ -491,7 +491,7 @@ var _ = Describe("Device Plugin", func() {
 			}
 			args := dpArgs(spec)
 			Expect(args).To(ContainElement("-enable-monitoring"))
-			Expect(args).To(ContainElement("-xpumd-endpoint=/run/xpumd/intelxpuinfo.sock"))
+			Expect(args).To(ContainElement("-xpumd-endpoint=/run/xpumd/intel_xpu_info.sock"))
 		})
 
 		It("Log level set", func() {
@@ -559,7 +559,7 @@ var _ = Describe("Device Plugin", func() {
 			Expect(args).To(HaveLen(5))
 			Expect(args).To(ContainElement("-enable-monitoring"))
 			Expect(args).To(ContainElement("-v=3"))
-			Expect(args).To(ContainElement("-xpumd-endpoint=/run/xpumd/intelxpuinfo.sock"))
+			Expect(args).To(ContainElement("-xpumd-endpoint=/run/xpumd/intel_xpu_info.sock"))
 			Expect(args).To(ContainElement("-allow-ids=0x1id1"))
 			Expect(args).To(ContainElement("-deny-ids=0x2id2"))
 		})

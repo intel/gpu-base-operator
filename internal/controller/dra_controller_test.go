@@ -493,7 +493,8 @@ var _ = Describe("ClusterPolicy Controller for DRA", func() {
 		It("with health monitoring", func() {
 			cp := &v1alpha.ClusterPolicy{
 				Spec: v1alpha.ClusterPolicySpec{
-					LogLevel: 2,
+					LogLevel:           2,
+					ResourceMonitoring: true,
 					DynamicResourceAllocationSpec: v1alpha.DynamicResourceAllocationSpec{
 						LogLevel:       3,
 						PodHealthCheck: false,
@@ -509,9 +510,10 @@ var _ = Describe("ClusterPolicy Controller for DRA", func() {
 
 			args := controller.generateArgs(cp)
 
-			Expect(args).To(HaveLen(4))
+			Expect(args).To(HaveLen(5))
 			Expect(args).To(ContainElement("-v=3"))
 			Expect(args).To(ContainElement("--health-monitoring=true"))
+			Expect(args).To(ContainElement("--xpumd-socket=/run/xpumd/intel_xpu_info.sock"))
 			Expect(args).To(ContainElement("--healthcheck-port=-1"))
 			Expect(args).To(ContainElement("--manage-binding=false"))
 		})
@@ -519,7 +521,8 @@ var _ = Describe("ClusterPolicy Controller for DRA", func() {
 		It("with device taint", func() {
 			cp := &v1alpha.ClusterPolicy{
 				Spec: v1alpha.ClusterPolicySpec{
-					LogLevel: 2,
+					LogLevel:           2,
+					ResourceMonitoring: true,
 					DynamicResourceAllocationSpec: v1alpha.DynamicResourceAllocationSpec{
 						LogLevel:       3,
 						PodHealthCheck: true,
@@ -535,9 +538,10 @@ var _ = Describe("ClusterPolicy Controller for DRA", func() {
 
 			args := controller.generateArgs(cp)
 
-			Expect(args).To(HaveLen(4))
+			Expect(args).To(HaveLen(5))
 			Expect(args).To(ContainElement("-v=3"))
 			Expect(args).To(ContainElement("--health-monitoring=true"))
+			Expect(args).To(ContainElement("--xpumd-socket=/run/xpumd/intel_xpu_info.sock"))
 			Expect(args).To(ContainElement("--healthcheck-port=51516"))
 			Expect(args).To(ContainElement("--manage-binding=false"))
 		})

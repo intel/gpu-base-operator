@@ -121,6 +121,8 @@ const (
 
 	draNotEnabledMsg = "DRA is not enabled in the cluster, but ClusterPolicy requests it."
 
+	xpumdSocketPath = "/run/xpumd/intel_xpu_info.sock"
+
 	resourceModeDRA = "dra"
 	resourceModeDP  = "dp"
 

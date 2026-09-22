@@ -439,8 +439,10 @@ func (r *DRAReconciler) generateArgs(spec *v1alpha.ClusterPolicy) []string {
 
 	args := []string{fmt.Sprintf("-v=%d", targetLevel)}
 
-	if spec.Spec.HealthinessSpec != nil {
-		args = append(args, "--health-monitoring=true")
+	if spec.Spec.ResourceMonitoring {
+		args = append(args,
+			"--health-monitoring=true",
+			fmt.Sprintf("--xpumd-socket=%s", xpumdSocketPath))
 	}
 
 	if spec.Spec.DynamicResourceAllocationSpec.PodHealthCheck {

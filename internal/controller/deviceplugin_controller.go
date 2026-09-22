@@ -122,7 +122,7 @@ func dpArgs(spec *v1alpha.ClusterPolicy) []string {
 	if spec.Spec.ResourceMonitoring {
 		args = append(args,
 			"-enable-monitoring",
-			"-xpumd-endpoint=/run/xpumd/intelxpuinfo.sock")
+			fmt.Sprintf("-xpumd-endpoint=%s", xpumdSocketPath))
 	}
 
 	logLevel := logLevelForDp(spec)
