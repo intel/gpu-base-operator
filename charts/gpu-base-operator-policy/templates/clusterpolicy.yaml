@@ -1,7 +1,7 @@
 apiVersion: intel.com/v1alpha1
 kind: ClusterPolicy
 metadata:
-  name: gpu-{{ .Values.resourceRegistration }}
+  name: {{ .Values.policyName }}
 spec:
   resourceRegistration: {{ .Values.resourceRegistration }}
   useNFDLabeling: {{ .Values.useNFDLabeling }}

@@ -1,3 +1,4 @@
+policyName: intel-gpu-policy
 resourceRegistration: dp
 useNFDLabeling: false
 resourceMonitoring: true
