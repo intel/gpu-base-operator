@@ -64,7 +64,7 @@ processors:
 
 exporters:
   intel_xpu_info:
-    endpoint: "/run/xpumd/intelxpuinfo.sock"
+    endpoint: "/run/xpumd/intel_xpu_info.sock"
     hw_status_mappings:
       # A wedged GPU and a card that has fallen into survivability (FDO) mode are both
       # unusable, so report them as "failed" under their own health domains. Together with
