@@ -4,76 +4,46 @@ metadata:
   name: intel-gpu-devices
 spec:
   rules:
+
     - name: "intel.gpu"
       labels:
         "intel.feature.node.kubernetes.io/gpu": "true"
-      matchFeatures:
-        - feature: pci.device
-          matchExpressions:
-            vendor: {op: In, value: ["8086"]}
-            class: {op: In, value: ["0300", "0380"]}
       matchAny:
+        # Display/3D class GPUs with i915 or xe
         - matchFeatures:
-          - feature: kernel.loadedmodule
+          - feature: pci.device
             matchExpressions:
-              i915: {op: Exists}
-        - matchFeatures:
+              vendor: {op: In, value: ["8086"]}
+              class: {op: In, value: ["0300", "0380"]}
           - feature: kernel.enabledmodule
-            matchExpressions:
-              i915: {op: Exists}
+            matchName: {op: In, value: ["i915", "xe"]}
+        # Processing-accelerator class GPUs (xe only)
         - matchFeatures:
-          - feature: kernel.loadedmodule
+          - feature: pci.device
             matchExpressions:
-              xe: {op: Exists}
-        - matchFeatures:
-          - feature: kernel.enabledmodule
-            matchExpressions:
-              xe: {op: Exists}
-    # Having a duplicate rule is ok. Worker will execute both and the label is generated
-    # if either rule matches.
-    - name: "intel.gpu.1200"
-      labels:
-        "intel.feature.node.kubernetes.io/gpu": "true"
-      matchFeatures:
-        - feature: pci.device
-          matchExpressions:
-            vendor: {op: In, value: ["8086"]}
-            class: {op: In, value: ["1200"]}
-            device: {op: In, value: ["674c", "674d", "674e", "674f", "6750"]}
-      matchAny:
-        - matchFeatures:
-          - feature: kernel.loadedmodule
-            matchExpressions:
-              i915: {op: Exists}
-        - matchFeatures:
-          - feature: kernel.enabledmodule
-            matchExpressions:
-              i915: {op: Exists}
-        - matchFeatures:
-          - feature: kernel.loadedmodule
-            matchExpressions:
-              xe: {op: Exists}
-        - matchFeatures:
+              vendor: {op: In, value: ["8086"]}
+              class: {op: In, value: ["1200"]}
+              device: {op: In, value: ["674c", "674d", "674e", "674f", "6750", "6751"]}
           - feature: kernel.enabledmodule
             matchExpressions:
               xe: {op: Exists}
+
     - name: "intel.gpu.without-driver"
       labels:
         "intel.feature.node.kubernetes.io/gpu-pci": "true"
-      matchFeatures:
-        - feature: pci.device
-          matchExpressions:
-            vendor: {op: In, value: ["8086"]}
-            class: {op: In, value: ["0300", "0380"]}
-    - name: "intel.gpu.without-driver.1200"
-      labels:
-        "intel.feature.node.kubernetes.io/gpu-pci": "true"
-      matchFeatures:
-        - feature: pci.device
-          matchExpressions:
-            vendor: {op: In, value: ["8086"]}
-            class: {op: In, value: ["1200"]}
-            device: {op: In, value: ["674c", "674d", "674e", "674f", "6750"]}
+      matchAny:
+        - matchFeatures:
+          - feature: pci.device
+            matchExpressions:
+              vendor: {op: In, value: ["8086"]}
+              class: {op: In, value: ["0300", "0380"]}
+        - matchFeatures:
+          - feature: pci.device
+            matchExpressions:
+              vendor: {op: In, value: ["8086"]}
+              class: {op: In, value: ["1200"]}
+              device: {op: In, value: ["674c", "674d", "674e", "674f", "6750", "6751"]}
+
     # Assumes there are only one model of GPU per node.
     # source: https://dgpu-docs.intel.com/overview/supported-hardware/xe-driver-gpus.html
     - name: "intel.gpu.pro.b50"

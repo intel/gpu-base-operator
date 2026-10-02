@@ -146,7 +146,7 @@ var _ = Describe("Misc", func() {
 				case classString:
 					Expect(v.Value).To(Equal(nfdcrd.MatchValue{"1200"}))
 				case deviceString:
-					Expect(v.Value).To(Equal(nfdcrd.MatchValue{"674c", "674d", "674e", "674f", "6750"}))
+					Expect(v.Value).To(Equal(nfdcrd.MatchValue{"674c", "674d", "674e", "674f", "6750", "6751"}))
 				default:
 					Fail("unexpected match expression key: " + k)
 				}
@@ -187,12 +187,12 @@ var _ = Describe("Misc", func() {
 			nfr := createNfdRule(spec, "")
 			Expect(nfr).NotTo(BeNil())
 
-			Expect(nfr.Spec.Rules).To(HaveLen(12))
+			Expect(nfr.Spec.Rules).To(HaveLen(10))
 
-			checkValues(nfr.Spec.Rules[0].MatchFeatures[0].MatchExpressions)
-			checkValues1200(nfr.Spec.Rules[1].MatchFeatures[0].MatchExpressions)
+			checkValues(nfr.Spec.Rules[0].MatchAny[0].MatchFeatures[0].MatchExpressions)
+			checkValues1200(nfr.Spec.Rules[0].MatchAny[1].MatchFeatures[0].MatchExpressions)
 
-			b60Rule := nfr.Spec.Rules[5]
+			b60Rule := nfr.Spec.Rules[3]
 			checkValuesForB60(b60Rule)
 		})
 	})
