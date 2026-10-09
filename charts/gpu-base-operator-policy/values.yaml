@@ -51,6 +51,10 @@ xpu:
 #           operator: DoesNotExist
   # Restart a node's XPU Manager pod so it can monitor a GPU its container cannot reach.
   restartOnDeviceRecovery: OnRecoveredDevice
+  # Collect GPU info logs (CPER records via tracefs) and crash logs (/var/log/crashlog).
+  # Both depend on kernel and xe KMD support.
+  infoLogs: false
+  crashLog: false
 
 kueue:
   equalResources:

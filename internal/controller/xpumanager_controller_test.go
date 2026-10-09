@@ -21,7 +21,9 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	apps "k8s.io/api/apps/v1"
 	core "k8s.io/api/core/v1"
+	"sigs.k8s.io/yaml"
 
 	v1alpha "github.com/intel/gpu-base-operator/api/v1alpha1"
 	"github.com/intel/gpu-base-operator/config/deployments"
@@ -201,6 +203,95 @@ var _ = Describe("XPU manager daemonset", func() {
 
 			Expect(ds.Spec.Template.Spec.AutomountServiceAccountToken).NotTo(BeNil())
 			Expect(*ds.Spec.Template.Spec.AutomountServiceAccountToken).To(BeFalse())
+		})
+
+		It("mounts crashlog and tracefs only when enabled", func() {
+			cp := newCp()
+
+			volumeNames := func(ds *apps.DaemonSet) []string {
+				names := []string{}
+				for _, v := range ds.Spec.Template.Spec.Volumes {
+					names = append(names, v.Name)
+				}
+
+				return names
+			}
+			mountNames := func(ds *apps.DaemonSet) []string {
+				names := []string{}
+				for _, m := range ds.Spec.Template.Spec.Containers[0].VolumeMounts {
+					names = append(names, m.Name)
+				}
+
+				return names
+			}
+
+			ds := deployments.XpuManagerDaemonset()
+			controller.updateDaemonSetObject(ds, cp, "", "test-otel-cm", "hash-a")
+			Expect(volumeNames(ds)).NotTo(ContainElements(crashlogVolume, tracefsVolume))
+			Expect(mountNames(ds)).NotTo(ContainElements(crashlogVolume, tracefsVolume))
+
+			cp.Spec.XpuManagerSpec.CrashLog = true
+			cp.Spec.XpuManagerSpec.InfoLogs = true
+			controller.updateDaemonSetObject(ds, cp, "", "test-otel-cm", "hash-a")
+			// Reconciling twice must not duplicate the entries.
+			controller.updateDaemonSetObject(ds, cp, "", "test-otel-cm", "hash-a")
+			Expect(volumeNames(ds)).To(ContainElements(crashlogVolume, tracefsVolume))
+			Expect(mountNames(ds)).To(ContainElements(crashlogVolume, tracefsVolume))
+			Expect(volumeNames(ds)).To(HaveLen(len(deployments.XpuManagerDaemonset().Spec.Template.Spec.Volumes) + 2))
+
+			for _, m := range ds.Spec.Template.Spec.Containers[0].VolumeMounts {
+				switch m.Name {
+				case crashlogVolume:
+					Expect(m.MountPath).To(Equal(crashlogHostDir))
+					Expect(m.ReadOnly).To(BeTrue())
+				case tracefsVolume:
+					Expect(m.MountPath).To(Equal(tracefsHostDir))
+					Expect(m.ReadOnly).To(BeFalse())
+				}
+			}
+
+			cp.Spec.XpuManagerSpec.CrashLog = false
+			cp.Spec.XpuManagerSpec.InfoLogs = false
+			controller.updateDaemonSetObject(ds, cp, "", "test-otel-cm", "hash-a")
+			Expect(volumeNames(ds)).NotTo(ContainElements(crashlogVolume, tracefsVolume))
+			Expect(mountNames(ds)).NotTo(ContainElements(crashlogVolume, tracefsVolume))
+		})
+	})
+
+	Context("OTel config generation", func() {
+		controller := &XpuManagerReconciler{}
+
+		buildConfig := func(cp *v1alpha.ClusterPolicy) *deployments.OTelConfig {
+			data, err := controller.buildOTelConfigData(cp)
+			Expect(err).NotTo(HaveOccurred())
+
+			cfg := &deployments.OTelConfig{}
+			Expect(yaml.Unmarshal([]byte(data), cfg)).To(Succeed())
+
+			return cfg
+		}
+
+		It("keeps info logs and crashlog disabled by default", func() {
+			cfg := buildConfig(&v1alpha.ClusterPolicy{})
+
+			Expect(cfg.Receivers.IntelXPU.InfoLogs).NotTo(BeNil())
+			Expect(cfg.Receivers.IntelXPU.InfoLogs.Enabled).To(BeFalse())
+			Expect(cfg.Receivers.IntelCrashlog).To(BeNil())
+			Expect(cfg.Service.Pipelines.Logs.Receivers).NotTo(ContainElement(crashlogReceiver))
+		})
+
+		It("enables info logs and crashlog when requested", func() {
+			cp := &v1alpha.ClusterPolicy{}
+			cp.Spec.XpuManagerSpec.InfoLogs = true
+			cp.Spec.XpuManagerSpec.CrashLog = true
+
+			cfg := buildConfig(cp)
+
+			Expect(cfg.Receivers.IntelXPU.InfoLogs.Enabled).To(BeTrue())
+			Expect(cfg.Receivers.IntelXPU.InfoLogs.InstanceName).To(Equal("xpumd"))
+			Expect(cfg.Receivers.IntelCrashlog).NotTo(BeNil())
+			Expect(cfg.Receivers.IntelCrashlog.Directory).To(Equal(crashlogHostDir))
+			Expect(cfg.Service.Pipelines.Logs.Receivers).To(ContainElement(crashlogReceiver))
 		})
 	})
 

@@ -21,6 +21,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"strings"
 
 	apps "k8s.io/api/apps/v1"
@@ -47,6 +48,12 @@ const (
 
 	xpumdContainerName = "xpumd"
 	xpumdConfigVolume  = "config"
+
+	crashlogVolume   = "crashlog"
+	crashlogHostDir  = "/var/log/crashlog"
+	crashlogReceiver = "intel_crashlog"
+	tracefsVolume    = "tracefs"
+	tracefsHostDir   = "/sys/kernel/tracing"
 
 	monResourcePrefix = "gpu.intel.com"
 	monClaim          = "monitor-claim"
@@ -135,6 +142,48 @@ func processXpumdConfigMapMount(ds *apps.DaemonSet, otelConfigMapName string) {
 	}
 }
 
+// setXpumdHostPathMount adds or removes a hostPath volume and its xpumd container mount.
+func setXpumdHostPathMount(ds *apps.DaemonSet, enabled bool, name, path string, pathType core.HostPathType, readOnly bool) {
+	cspec := &ds.Spec.Template.Spec
+
+	cspec.Volumes = slices.DeleteFunc(cspec.Volumes, func(v core.Volume) bool { return v.Name == name })
+
+	if enabled {
+		cspec.Volumes = append(cspec.Volumes, core.Volume{
+			Name: name,
+			VolumeSource: core.VolumeSource{
+				HostPath: &core.HostPathVolumeSource{Path: path, Type: ptr.To(pathType)},
+			},
+		})
+	}
+
+	for c := range cspec.Containers {
+		cont := &cspec.Containers[c]
+
+		if cont.Name != xpumdContainerName {
+			continue
+		}
+
+		cont.VolumeMounts = slices.DeleteFunc(cont.VolumeMounts, func(m core.VolumeMount) bool { return m.Name == name })
+
+		if enabled {
+			cont.VolumeMounts = append(cont.VolumeMounts, core.VolumeMount{
+				Name:      name,
+				MountPath: path,
+				ReadOnly:  readOnly,
+			})
+		}
+	}
+}
+
+func processXpumdLogMounts(ds *apps.DaemonSet, spec *v1alpha.ClusterPolicy) {
+	xspec := &spec.Spec.XpuManagerSpec
+
+	setXpumdHostPathMount(ds, xspec.CrashLog, crashlogVolume, crashlogHostDir, core.HostPathDirectoryOrCreate, true)
+	// Writable: enabling the collection creates a tracefs instance.
+	setXpumdHostPathMount(ds, xspec.InfoLogs, tracefsVolume, tracefsHostDir, core.HostPathDirectory, false)
+}
+
 func processContainerResources(ds *apps.DaemonSet, spec *v1alpha.ClusterPolicy, draClaim string) {
 	xspec := &spec.Spec.XpuManagerSpec
 
@@ -203,6 +252,22 @@ func (r *XpuManagerReconciler) buildOTelConfigData(cp *v1alpha.ClusterPolicy) (s
 	cfg := deployments.XpuManagerOTelConfig()
 
 	cfg.Service.Telemetry.Logs.Level = logLevelForXpum(cp)
+
+	xspec := &cp.Spec.XpuManagerSpec
+
+	if cfg.Receivers.IntelXPU.InfoLogs != nil {
+		cfg.Receivers.IntelXPU.InfoLogs.Enabled = xspec.InfoLogs
+	}
+
+	if xspec.CrashLog && cfg.Receivers.IntelCrashlog != nil && cfg.Service.Pipelines.Logs != nil {
+		logs := cfg.Service.Pipelines.Logs
+		if !slices.Contains(logs.Receivers, crashlogReceiver) {
+			logs.Receivers = append(logs.Receivers, crashlogReceiver)
+		}
+	} else {
+		// The receiver is only valid with its host directory mounted, drop it altogether.
+		cfg.Receivers.IntelCrashlog = nil
+	}
 
 	if health := cp.Spec.HealthinessSpec; health != nil {
 		cfg.Receivers.IntelXPU.CollectionInterval = fmt.Sprintf("%ds", health.CheckIntervalSeconds)
@@ -407,6 +472,7 @@ func (r *XpuManagerReconciler) updateDaemonSetObject(ds *apps.DaemonSet, spec *v
 
 	processContainerResources(ds, spec, draClaim)
 	processXpumdConfigMapMount(ds, otelConfigMapName)
+	processXpumdLogMounts(ds, spec)
 	ds.Spec.Template.Spec.NodeSelector = generateNodeSelector(spec, r.Opts)
 	ds.Spec.Template.Spec.Tolerations = generateTolerations(spec)
 	ds.Spec.Template.Spec.Affinity = generateAffinity(spec.Spec.XpuManagerSpec.Affinity)

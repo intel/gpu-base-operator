@@ -51,6 +51,8 @@ See [Customizing the Chart Before Installing](https://helm.sh/docs/intro/using_h
 | xpu.monitoringResource | monitoring | Monitoring resource for XPUMD with device plugin. |
 | xpu.configMapOverride | "" | Override the default XPUM configuration ConfigMap name. |
 | xpu.restartOnDeviceRecovery | OnRecoveredDevice | When to restart a node's XPUMD pod so it can monitor a GPU its container cannot reach: `OnRecoveredDevice`, `Always` or `Disabled`. |
+| xpu.infoLogs | false | Collect GPU info logs (CPER records) via the host tracefs, which gets mounted writable into XPUMD. Requires kernel and xe KMD support. |
+| xpu.crashLog | false | Collect GPU crash logs from the host's `/var/log/crashlog`. Requires kernel and xe KMD support. |
 | kueue.equalResources | [] | List of ClusterQueue configurations. |
 | pullSecret | null | Image pull secret. |
 | nodeSelector | {} | Node selector for scheduling pods. |

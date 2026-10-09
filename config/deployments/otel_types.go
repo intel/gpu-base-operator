@@ -25,7 +25,8 @@ type OTelConfig struct {
 
 // OTelReceivers holds receiver configurations.
 type OTelReceivers struct {
-	IntelXPU IntelXPUReceiver `json:"intel_xpu"`
+	IntelXPU      IntelXPUReceiver       `json:"intel_xpu"`
+	IntelCrashlog *IntelCrashlogReceiver `json:"intel_crashlog,omitempty"`
 }
 
 // IntelXPUReceiver is the configuration for the intel_xpu receiver.
@@ -34,7 +35,23 @@ type IntelXPUReceiver struct {
 	InitialDelay       string                 `json:"initial_delay"`
 	Timeout            int                    `json:"timeout"`
 	SamplingInterval   string                 `json:"sampling_interval"`
+	FailOnSysmanInit   bool                   `json:"fail_on_sysman_init_error"`
+	InfoLogs           *InfoLogsConfig        `json:"info_logs,omitempty"`
 	Metrics            map[string]interface{} `json:"metrics,omitempty"`
+}
+
+// InfoLogsConfig configures the collection of the GPU info logs (CPER records).
+type InfoLogsConfig struct {
+	Enabled      bool   `json:"enabled"`
+	InstanceName string `json:"instance_name,omitempty"`
+}
+
+// IntelCrashlogReceiver is the configuration for the intel_crashlog receiver.
+type IntelCrashlogReceiver struct {
+	Directory       string            `json:"directory"`
+	Glob            string            `json:"glob"`
+	IgnoreOlderThan string            `json:"ignore_older_than,omitempty"`
+	AddAttributes   map[string]string `json:"add_attributes,omitempty"`
 }
 
 // OTelProcessors holds processor configurations.
@@ -122,9 +139,10 @@ type OTelTelemetry struct {
 	Logs OTelLogs `json:"logs"`
 }
 
-// OTelLogs configures the log level for the collector itself.
+// OTelLogs configures the log output of the collector itself.
 type OTelLogs struct {
-	Level string `json:"level"`
+	Level             string `json:"level"`
+	DisableStacktrace bool   `json:"disable_stacktrace,omitempty"`
 }
 
 // OTelPipelines defines the data pipelines in the collector.

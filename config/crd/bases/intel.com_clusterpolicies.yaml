@@ -3177,8 +3177,26 @@ spec:
                       Configmap has to be in the same namespace as the operator and contain a key "config.yaml" with the configuration content.
                       The value should be a YAML string containing the configuration. If not set, a default configuration will be used.
                     type: string
+                  crashLog:
+                    default: false
+                    description: |-
+                      CrashLog enables collection of the GPU crash logs written to /var/log/crashlog on the
+                      host. The host directory is mounted read-only into the XPU Manager container.
+                      Requires kernel and xe KMD support, hence disabled by default.
+                      With ConfigMapOverride set, only the mount is managed; the override has to configure
+                      the intel_crashlog receiver and its logs pipeline itself.
+                    type: boolean
                   image:
                     type: string
+                  infoLogs:
+                    default: false
+                    description: |-
+                      InfoLogs enables collection of the GPU info logs, i.e. the CPER records the GPU driver
+                      exposes via the kernel tracing filesystem. The host tracefs is mounted writable into the
+                      XPU Manager container. Requires kernel and xe KMD support, hence disabled by default.
+                      With ConfigMapOverride set, only the mount is managed; the override has to enable
+                      info_logs in the intel_xpu receiver itself.
+                    type: boolean
                   logLevel:
                     format: int32
                     type: integer

@@ -170,6 +170,24 @@ type XpuManagerSpec struct {
 	// +kubebuilder:default:=OnRecoveredDevice
 	// +optional
 	RestartOnDeviceRecovery XpumRestartMode `json:"restartOnDeviceRecovery,omitempty"`
+
+	// InfoLogs enables collection of the GPU info logs, i.e. the CPER records the GPU driver
+	// exposes via the kernel tracing filesystem. The host tracefs is mounted writable into the
+	// XPU Manager container. Requires kernel and xe KMD support, hence disabled by default.
+	// With ConfigMapOverride set, only the mount is managed; the override has to enable
+	// info_logs in the intel_xpu receiver itself.
+	// +kubebuilder:default:=false
+	// +optional
+	InfoLogs bool `json:"infoLogs,omitempty"`
+
+	// CrashLog enables collection of the GPU crash logs written to /var/log/crashlog on the
+	// host. The host directory is mounted read-only into the XPU Manager container.
+	// Requires kernel and xe KMD support, hence disabled by default.
+	// With ConfigMapOverride set, only the mount is managed; the override has to configure
+	// the intel_crashlog receiver and its logs pipeline itself.
+	// +kubebuilder:default:=false
+	// +optional
+	CrashLog bool `json:"crashLog,omitempty"`
 }
 
 // RegistryTLSSpec configures TLS behavior for accessing container image registries.

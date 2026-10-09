@@ -10,11 +10,36 @@ receivers:
     timeout: 0
     # Sampling interval for the high-frequency metrics.
     sampling_interval: 1s
+    # Whether to fail collector startup if the L0 Sysman API cannot be
+    # initialized (e.g. no GPU driver or device access). Defaults to false.
+    fail_on_sysman_init_error: false
+    # Collection of the GPU info logs, i.e. the CPER records provided by the GPU driver.
+    # Enabled by the operator via ClusterPolicy spec.xpu.infoLogs, which also mounts the
+    # host tracefs into the container.
+    info_logs:
+      # Whether the info logs are collected. Enabling requires elevated
+      # privileges (for the CPER records, access to the kernel tracing filesystem).
+      enabled: false
+      # Name of the collection instance that the records are collected into
+      # (a tracefs instance in the case of the CPER records).
+      # Required, and must not contain '/'.
+      instance_name: xpumd
     # Configuration for enabling/disabling individual metrics.
     # See receiver/intelxpu/sysman/documentation.md for list of available metrics.
     metrics:
 #      hw.memory.size:
 #        enabled: false
+
+  # Enabled by the operator via ClusterPolicy spec.xpu.crashLog, which also mounts the
+  # host directory and adds the receiver to the logs pipeline. Dropped otherwise.
+  intel_crashlog:
+    # Directory to watch for new crashlog files (must exist!).
+    directory: /var/log/crashlog
+    # Filename glob pattern (matched against the base name of each file).
+    glob: "*.crashlog"
+    # Ignore files whose modification time is older than this duration before
+    # startup. Zero means only files created after startup are processed.
+    ignore_older_than: 0s
 
 processors:
   intel_xpu_status:
@@ -135,11 +160,13 @@ service:
   telemetry:
     logs:
       level: info
+      disable_stacktrace: true
   pipelines:
     metrics:
       receivers: [intel_xpu]
       processors: [intel_xpu_status]
       exporters: [intel_xpu_info,prometheus]
     logs:
+      # "intel_crashlog" is added by the operator when crashlog collection is enabled
       receivers: [intel_xpu]
       exporters: [intel_xpu_info]
