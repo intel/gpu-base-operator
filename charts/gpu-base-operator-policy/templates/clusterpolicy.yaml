@@ -76,6 +76,12 @@ spec:
 {{- if .Values.xpu.restartOnDeviceRecovery }}
     restartOnDeviceRecovery: {{ .Values.xpu.restartOnDeviceRecovery | quote }}
 {{- end }}
+{{- if .Values.xpu.infoLogs }}
+    infoLogs: true
+{{- end }}
+{{- if .Values.xpu.crashLog }}
+    crashLog: true
+{{- end }}
 
 {{- if .Values.kernelModule }}
   kernelModule:
