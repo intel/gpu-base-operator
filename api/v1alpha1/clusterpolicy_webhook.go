@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -100,6 +101,10 @@ func validateClusterPolicySpec(spec *ClusterPolicySpec) (admission.Warnings, err
 	errs = append(errs, validateConfigMapOverride(spec)...)
 	errs = append(errs, validateKueueSpec(spec)...)
 	errs = append(errs, validateKernelModuleSpec(spec)...)
+
+	otlpErrs, otlpWarnings := validateOTLPSpec(spec.XpuManagerSpec.OTLP)
+	errs = append(errs, otlpErrs...)
+	warnings = append(warnings, otlpWarnings...)
 
 	if w := warnForSpecProblems(spec); w != "" {
 		warnings = append(warnings, w)
@@ -182,6 +187,177 @@ func validateConfigMapOverride(spec *ClusterPolicySpec) []error {
 	}
 
 	return nil
+}
+
+func validateObjectName(field, name string) error {
+	if msgs := validation.IsDNS1123Subdomain(name); len(msgs) > 0 {
+		return fmt.Errorf("%s %q is not a valid Kubernetes object name: %s", field, name, strings.Join(msgs, "; "))
+	}
+
+	return nil
+}
+
+func validateObjectKey(field, key string) error {
+	if msgs := validation.IsConfigMapKey(key); len(msgs) > 0 {
+		return fmt.Errorf("%s %q is not a valid key: %s", field, key, strings.Join(msgs, "; "))
+	}
+
+	return nil
+}
+
+func validateOTLPSpec(otlp *OTLPSpec) ([]error, admission.Warnings) {
+	if otlp == nil {
+		return nil, nil
+	}
+
+	switch {
+	case otlp.HTTP != nil && otlp.GRPC != nil:
+		return []error{fmt.Errorf("xpu.otlp: only one of http or grpc can be set")}, nil
+	case otlp.HTTP != nil:
+		return validateOTLPExporterSpec("xpu.otlp.http", otlp.HTTP, false)
+	case otlp.GRPC != nil:
+		return validateOTLPExporterSpec("xpu.otlp.grpc", otlp.GRPC, true)
+	default:
+		return []error{fmt.Errorf("xpu.otlp: one of http or grpc has to be set")}, nil
+	}
+}
+
+var grpcMetadataKeyRegexp = regexp.MustCompile(`^[0-9a-z_.-]+$`)
+
+// grpcTransportHeaders are set by the gRPC client itself or are forbidden by HTTP/2, so a
+// user supplied value is overwritten, dropped or makes the request fail.
+var grpcTransportHeaders = map[string]bool{
+	"content-type":      true,
+	"te":                true,
+	"user-agent":        true,
+	"host":              true,
+	"connection":        true,
+	"keep-alive":        true,
+	"proxy-connection":  true,
+	"transfer-encoding": true,
+	"upgrade":           true,
+}
+
+// validateGRPCMetadataKey checks a header name against the gRPC metadata rules, which are
+// stricter than the HTTP header token syntax enforced by the CRD schema. gRPC lowercases the
+// keys and only allows digits, lowercase letters, '_', '-' and '.' in them. The "grpc-" prefix
+// is reserved for gRPC and the "-bin" suffix marks binary values, which the Secret value isn't.
+func validateGRPCMetadataKey(field, name string) (string, error) {
+	lower := strings.ToLower(name)
+
+	switch {
+	case !grpcMetadataKeyRegexp.MatchString(lower):
+		return "", fmt.Errorf("%s %q is not a valid gRPC metadata key: only letters, digits, '_', '-' and '.' are allowed", field, name)
+	case strings.HasPrefix(lower, "grpc-"):
+		return "", fmt.Errorf("%s %q: the grpc- prefix is reserved for gRPC", field, name)
+	case strings.HasSuffix(lower, "-bin"):
+		return "", fmt.Errorf("%s %q: the -bin suffix is reserved for binary gRPC metadata", field, name)
+	case grpcTransportHeaders[lower]:
+		return fmt.Sprintf("%s %q is a transport header managed by the gRPC client, the configured value may be overwritten or dropped.", field, name), nil
+	}
+
+	return "", nil
+}
+
+func validateOTLPExporterSpec(prefix string, exp *OTLPExporterSpec, grpc bool) ([]error, admission.Warnings) {
+	var errs []error
+	var warnings admission.Warnings
+
+	u, err := url.Parse(exp.Endpoint)
+
+	switch {
+	case err != nil:
+		errs = append(errs, fmt.Errorf("%s.endpoint %q is not a valid URL: %w", prefix, exp.Endpoint, err))
+	case u.Scheme != "http" && u.Scheme != "https":
+		errs = append(errs, fmt.Errorf("%s.endpoint %q has to use the http:// or https:// scheme", prefix, exp.Endpoint))
+	case u.Host == "":
+		errs = append(errs, fmt.Errorf("%s.endpoint %q is missing the host", prefix, exp.Endpoint))
+	case u.User != nil:
+		// Don't echo the endpoint back, it contains the credentials.
+		errs = append(errs, fmt.Errorf("%s.endpoint cannot contain user info, use headers with Secret references for authentication", prefix))
+	}
+
+	plainText := err == nil && u.Scheme == "http"
+
+	seen := map[string]bool{}
+
+	for i, h := range exp.Headers {
+		field := fmt.Sprintf("%s.headers[%d]", prefix, i)
+
+		if h.Name == "" {
+			errs = append(errs, fmt.Errorf("%s.name cannot be empty", field))
+		} else if lower := strings.ToLower(h.Name); seen[lower] {
+			errs = append(errs, fmt.Errorf("%s.name: duplicate header %q", field, h.Name))
+		} else {
+			seen[lower] = true
+		}
+
+		if grpc && h.Name != "" {
+			warning, err := validateGRPCMetadataKey(field+".name", h.Name)
+			if err != nil {
+				errs = append(errs, err)
+			}
+
+			if warning != "" {
+				warnings = append(warnings, warning)
+			}
+		}
+
+		if err := validateObjectName(field+".valueFrom.name", h.ValueFrom.Name); err != nil {
+			errs = append(errs, err)
+		}
+
+		if err := validateObjectKey(field+".valueFrom.key", h.ValueFrom.Key); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	if plainText && len(exp.Headers) > 0 {
+		warnings = append(warnings, fmt.Sprintf("%s.endpoint uses plain-text http://, the headers are sent unencrypted.", prefix))
+	}
+
+	if exp.TLS == nil {
+		return errs, warnings
+	}
+
+	tls := exp.TLS
+
+	if plainText {
+		errs = append(errs, fmt.Errorf("%s.tls cannot be set for a plain-text http:// endpoint", prefix))
+	}
+
+	if tls.CA != nil {
+		if tls.InsecureSkipVerify {
+			errs = append(errs, fmt.Errorf("%s.tls.ca and %s.tls.insecureSkipVerify cannot both be set", prefix, prefix))
+		}
+
+		if err := validateObjectName(prefix+".tls.ca.name", tls.CA.Name); err != nil {
+			errs = append(errs, err)
+		}
+
+		if err := validateObjectKey(prefix+".tls.ca.key", tls.CA.Key); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	if tls.ClientCertSecret != nil {
+		if err := validateObjectName(prefix+".tls.clientCertSecret.name", tls.ClientCertSecret.Name); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	if tls.ServerName != "" {
+		if msgs := validation.IsDNS1123Subdomain(tls.ServerName); len(msgs) > 0 {
+			errs = append(errs, fmt.Errorf("%s.tls.serverName %q is not a valid host name: %s",
+				prefix, tls.ServerName, strings.Join(msgs, "; ")))
+		}
+	}
+
+	if tls.InsecureSkipVerify {
+		warnings = append(warnings, fmt.Sprintf("%s.tls.insecureSkipVerify disables the gateway certificate verification, use tls.ca for self-signed certificates instead.", prefix))
+	}
+
+	return errs, warnings
 }
 
 func validateKueueSpec(spec *ClusterPolicySpec) []error {

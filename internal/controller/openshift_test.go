@@ -84,7 +84,8 @@ var _ = Describe("OpenShift SCC helpers", func() {
 
 			vols, ok := scc.Object["volumes"].([]interface{})
 			Expect(ok).To(BeTrue())
-			Expect(vols).To(ContainElements("hostPath", "configMap"))
+			// secret: the OTLP client certificate is mounted from a Secret.
+			Expect(vols).To(ContainElements("hostPath", "configMap", "secret"))
 		})
 
 		It("buildDRASCC sets correct fields", func() {

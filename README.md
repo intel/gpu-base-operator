@@ -211,6 +211,7 @@ Applies to both DP and DRA unless noted. Thresholds that are exceeded mark the G
 |`spec.xpu.configMapOverride`|Name of a ConfigMap in the operator namespace containing a custom OpenTelemetry Collector `config.yaml`|—|
 |`spec.xpu.affinity`|Optional `k8s.io/api/core/v1` `Affinity` object applied to the XPU manager daemon set|—|
 |`spec.xpu.restartOnDeviceRecovery`|When to restart a node's XPU Manager pod so it can monitor a GPU its container cannot reach. `OnRecoveredDevice`, `Always` or `Disabled`.|`OnRecoveredDevice`|
+|`spec.xpu.otlp`|Export metrics and logs also to an OTLP gateway. Set exactly one of `http` or `grpc`, each with an `endpoint` (`http://` for plain text, `https://` for TLS), optional `headers` read from Secrets, and optional `tls` (`ca` ConfigMap key for private/self-signed CAs, `clientCertSecret` for mTLS, `serverName`, `insecureSkipVerify`). All referenced objects have to be in the operator namespace.|—|
 
 #### Kueue (`spec.kueue`)
 

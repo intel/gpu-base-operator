@@ -99,6 +99,25 @@ type StateCondition struct {
 type OTelExporters struct {
 	IntelXPUInfo IntelXPUInfoExporter `json:"intel_xpu_info"`
 	Prometheus   PrometheusExporter   `json:"prometheus"`
+	OTLPHTTP     *OTLPExporter        `json:"otlp_http,omitempty"`
+	OTLPGRPC     *OTLPExporter        `json:"otlp_grpc,omitempty"`
+}
+
+// OTLPExporter is the configuration shared by the otlp_http and otlp_grpc exporters.
+type OTLPExporter struct {
+	Endpoint string            `json:"endpoint"`
+	Headers  map[string]string `json:"headers,omitempty"`
+	TLS      *OTLPExporterTLS  `json:"tls,omitempty"`
+}
+
+// OTLPExporterTLS is the client TLS configuration of an OTLP exporter.
+type OTLPExporterTLS struct {
+	Insecure           bool   `json:"insecure,omitempty"`
+	InsecureSkipVerify bool   `json:"insecure_skip_verify,omitempty"`
+	CAFile             string `json:"ca_file,omitempty"`
+	CertFile           string `json:"cert_file,omitempty"`
+	KeyFile            string `json:"key_file,omitempty"`
+	ServerNameOverride string `json:"server_name_override,omitempty"`
 }
 
 // IntelXPUInfoExporter exports health status over a unix domain socket.

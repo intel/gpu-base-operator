@@ -55,6 +55,22 @@ xpu:
   # Both depend on kernel and xe KMD support.
   infoLogs: false
   crashLog: false
+  # Export metrics and logs also to an OTLP gateway. Set exactly one of http or grpc.
+  # Secrets and ConfigMaps referenced here have to be in the operator namespace.
+# otlp:
+#   grpc:
+#     endpoint: https://otel-gateway.example.com:4317
+#     headers:
+#     - name: Authorization
+#       valueFrom:
+#         name: otlp-auth   # Secret key holding the full value, e.g. "Bearer <token>"
+#         key: token
+#     tls:
+#       ca:                 # For a private or self-signed gateway CA
+#         name: otlp-gateway-ca
+#         key: ca.crt
+#       clientCertSecret:   # kubernetes.io/tls Secret for mutual TLS
+#         name: otlp-client-cert
 
 kueue:
   equalResources:
