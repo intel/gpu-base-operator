@@ -3209,6 +3209,281 @@ spec:
                     - xe_monitoring
                     - monitoring
                     type: string
+                  otlp:
+                    description: |-
+                      OTLP configures XPU Manager to export its metrics and logs also to an OpenTelemetry
+                      Protocol (OTLP) gateway, in addition to the Prometheus endpoint.
+                      With ConfigMapOverride set, only the header environment variables and the TLS file mounts
+                      are managed; the override has to configure the exporter itself.
+                    properties:
+                      grpc:
+                        description: GRPC exports using OTLP/gRPC, by convention on
+                          port 4317.
+                        properties:
+                          endpoint:
+                            description: |-
+                              Endpoint of the OTLP gateway, e.g. "https://otel-gateway.example.com:4318".
+                              The scheme selects the transport security: "https://" uses TLS, "http://" sends the
+                              data unencrypted.
+                            maxLength: 2048
+                            pattern: ^https?://[^/\s]+
+                            type: string
+                          headers:
+                            description: |-
+                              Headers are added to every export request, e.g. "Authorization" for a bearer token or
+                              an API key. The values are read from Secrets in the operator namespace and passed to the
+                              XPU Manager container as environment variables, so they never appear in the ClusterPolicy
+                              or the generated collector configuration. Changes to the Secret contents take effect
+                              once the XPU Manager pods are restarted.
+                            items:
+                              description: OTLPHeader is a request header whose value
+                                is read from a Secret.
+                              properties:
+                                name:
+                                  description: Name of the HTTP header or gRPC metadata
+                                    key.
+                                  maxLength: 256
+                                  pattern: ^[A-Za-z0-9!#$%&'*+.^_|~-]+$
+                                  type: string
+                                valueFrom:
+                                  description: |-
+                                    ValueFrom references the Secret key holding the complete header value, e.g.
+                                    "Bearer <token>". The Secret has to be in the operator namespace.
+                                  properties:
+                                    key:
+                                      description: The key of the secret to select
+                                        from.  Must be a valid secret key.
+                                      type: string
+                                    name:
+                                      default: ""
+                                      description: |-
+                                        Name of the referent.
+                                        This field is effectively required, but due to backwards compatibility is
+                                        allowed to be empty. Instances of this type with an empty value here are
+                                        almost certainly wrong.
+                                        More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                      type: string
+                                    optional:
+                                      description: Specify whether the Secret or its
+                                        key must be defined
+                                      type: boolean
+                                  required:
+                                  - key
+                                  type: object
+                                  x-kubernetes-map-type: atomic
+                              required:
+                              - name
+                              - valueFrom
+                              type: object
+                            maxItems: 16
+                            type: array
+                            x-kubernetes-list-map-keys:
+                            - name
+                            x-kubernetes-list-type: map
+                          tls:
+                            description: |-
+                              TLS configures the verification of the gateway's certificate and, for mutual TLS,
+                              the client certificate. Only valid with an "https://" endpoint.
+                            properties:
+                              ca:
+                                description: |-
+                                  CA references a ConfigMap key in the operator namespace holding the PEM encoded CA
+                                  bundle that is used to verify the gateway's certificate, e.g. for a private or
+                                  self-signed CA. When unset, the system CA pool of the XPU Manager image is used.
+                                properties:
+                                  key:
+                                    description: |-
+                                      The key to select from the ConfigMap's Data field.
+                                      Keys in the BinaryData field are not currently propagated to container env vars.
+                                    type: string
+                                  name:
+                                    default: ""
+                                    description: |-
+                                      Name of the referent.
+                                      This field is effectively required, but due to backwards compatibility is
+                                      allowed to be empty. Instances of this type with an empty value here are
+                                      almost certainly wrong.
+                                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                    type: string
+                                  optional:
+                                    description: Specify whether the ConfigMap or
+                                      its key must be defined
+                                    type: boolean
+                                required:
+                                - key
+                                type: object
+                                x-kubernetes-map-type: atomic
+                              clientCertSecret:
+                                description: |-
+                                  ClientCertSecret references a kubernetes.io/tls Secret in the operator namespace whose
+                                  "tls.crt" and "tls.key" are presented to the gateway for mutual TLS.
+                                properties:
+                                  name:
+                                    default: ""
+                                    description: |-
+                                      Name of the referent.
+                                      This field is effectively required, but due to backwards compatibility is
+                                      allowed to be empty. Instances of this type with an empty value here are
+                                      almost certainly wrong.
+                                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                    type: string
+                                type: object
+                                x-kubernetes-map-type: atomic
+                              insecureSkipVerify:
+                                description: |-
+                                  InsecureSkipVerify disables the verification of the gateway's certificate. The traffic
+                                  is still encrypted, but open to man-in-the-middle attacks. Meant for testing only;
+                                  use CA for self-signed certificates instead.
+                                type: boolean
+                              serverName:
+                                description: ServerName overrides the host name that
+                                  the gateway's certificate is verified against.
+                                maxLength: 253
+                                type: string
+                            type: object
+                        required:
+                        - endpoint
+                        type: object
+                        x-kubernetes-validations:
+                        - message: tls cannot be set for a plain-text http:// endpoint
+                          rule: '!self.endpoint.startsWith(''http://'') || !has(self.tls)'
+                      http:
+                        description: |-
+                          HTTP exports using OTLP/HTTP with protobuf encoding, by convention on port 4318.
+                          The endpoint is the base URL; the signal paths (/v1/metrics, /v1/logs) are appended to it.
+                        properties:
+                          endpoint:
+                            description: |-
+                              Endpoint of the OTLP gateway, e.g. "https://otel-gateway.example.com:4318".
+                              The scheme selects the transport security: "https://" uses TLS, "http://" sends the
+                              data unencrypted.
+                            maxLength: 2048
+                            pattern: ^https?://[^/\s]+
+                            type: string
+                          headers:
+                            description: |-
+                              Headers are added to every export request, e.g. "Authorization" for a bearer token or
+                              an API key. The values are read from Secrets in the operator namespace and passed to the
+                              XPU Manager container as environment variables, so they never appear in the ClusterPolicy
+                              or the generated collector configuration. Changes to the Secret contents take effect
+                              once the XPU Manager pods are restarted.
+                            items:
+                              description: OTLPHeader is a request header whose value
+                                is read from a Secret.
+                              properties:
+                                name:
+                                  description: Name of the HTTP header or gRPC metadata
+                                    key.
+                                  maxLength: 256
+                                  pattern: ^[A-Za-z0-9!#$%&'*+.^_|~-]+$
+                                  type: string
+                                valueFrom:
+                                  description: |-
+                                    ValueFrom references the Secret key holding the complete header value, e.g.
+                                    "Bearer <token>". The Secret has to be in the operator namespace.
+                                  properties:
+                                    key:
+                                      description: The key of the secret to select
+                                        from.  Must be a valid secret key.
+                                      type: string
+                                    name:
+                                      default: ""
+                                      description: |-
+                                        Name of the referent.
+                                        This field is effectively required, but due to backwards compatibility is
+                                        allowed to be empty. Instances of this type with an empty value here are
+                                        almost certainly wrong.
+                                        More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                      type: string
+                                    optional:
+                                      description: Specify whether the Secret or its
+                                        key must be defined
+                                      type: boolean
+                                  required:
+                                  - key
+                                  type: object
+                                  x-kubernetes-map-type: atomic
+                              required:
+                              - name
+                              - valueFrom
+                              type: object
+                            maxItems: 16
+                            type: array
+                            x-kubernetes-list-map-keys:
+                            - name
+                            x-kubernetes-list-type: map
+                          tls:
+                            description: |-
+                              TLS configures the verification of the gateway's certificate and, for mutual TLS,
+                              the client certificate. Only valid with an "https://" endpoint.
+                            properties:
+                              ca:
+                                description: |-
+                                  CA references a ConfigMap key in the operator namespace holding the PEM encoded CA
+                                  bundle that is used to verify the gateway's certificate, e.g. for a private or
+                                  self-signed CA. When unset, the system CA pool of the XPU Manager image is used.
+                                properties:
+                                  key:
+                                    description: |-
+                                      The key to select from the ConfigMap's Data field.
+                                      Keys in the BinaryData field are not currently propagated to container env vars.
+                                    type: string
+                                  name:
+                                    default: ""
+                                    description: |-
+                                      Name of the referent.
+                                      This field is effectively required, but due to backwards compatibility is
+                                      allowed to be empty. Instances of this type with an empty value here are
+                                      almost certainly wrong.
+                                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                    type: string
+                                  optional:
+                                    description: Specify whether the ConfigMap or
+                                      its key must be defined
+                                    type: boolean
+                                required:
+                                - key
+                                type: object
+                                x-kubernetes-map-type: atomic
+                              clientCertSecret:
+                                description: |-
+                                  ClientCertSecret references a kubernetes.io/tls Secret in the operator namespace whose
+                                  "tls.crt" and "tls.key" are presented to the gateway for mutual TLS.
+                                properties:
+                                  name:
+                                    default: ""
+                                    description: |-
+                                      Name of the referent.
+                                      This field is effectively required, but due to backwards compatibility is
+                                      allowed to be empty. Instances of this type with an empty value here are
+                                      almost certainly wrong.
+                                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                    type: string
+                                type: object
+                                x-kubernetes-map-type: atomic
+                              insecureSkipVerify:
+                                description: |-
+                                  InsecureSkipVerify disables the verification of the gateway's certificate. The traffic
+                                  is still encrypted, but open to man-in-the-middle attacks. Meant for testing only;
+                                  use CA for self-signed certificates instead.
+                                type: boolean
+                              serverName:
+                                description: ServerName overrides the host name that
+                                  the gateway's certificate is verified against.
+                                maxLength: 253
+                                type: string
+                            type: object
+                        required:
+                        - endpoint
+                        type: object
+                        x-kubernetes-validations:
+                        - message: tls cannot be set for a plain-text http:// endpoint
+                          rule: '!self.endpoint.startsWith(''http://'') || !has(self.tls)'
+                    type: object
+                    x-kubernetes-validations:
+                    - message: exactly one of http or grpc has to be set
+                      rule: '[has(self.http), has(self.grpc)].filter(x, x).size()
+                        == 1'
                   restartOnDeviceRecovery:
                     default: OnRecoveredDevice
                     description: |-

@@ -64,6 +64,15 @@ const (
 	otelConfigHashKey   = "gpu.intel.com/xpum-otel-config-hash"
 
 	xpumResourcePart = "xpu-manager"
+
+	otlpHTTPExporter       = "otlp_http"
+	otlpGRPCExporter       = "otlp_grpc"
+	otlpHeaderEnvPrefix    = "OTLP_HEADER_"
+	otlpCAVolume           = "otlp-ca"
+	otlpCAMountDir         = "/etc/otlp/ca"
+	otlpCAFile             = "ca.crt"
+	otlpClientCertVolume   = "otlp-client-cert"
+	otlpClientCertMountDir = "/etc/otlp/client"
 )
 
 type XpuManagerReconciler struct {
@@ -144,16 +153,28 @@ func processXpumdConfigMapMount(ds *apps.DaemonSet, otelConfigMapName string) {
 
 // setXpumdHostPathMount adds or removes a hostPath volume and its xpumd container mount.
 func setXpumdHostPathMount(ds *apps.DaemonSet, enabled bool, name, path string, pathType core.HostPathType, readOnly bool) {
+	var source *core.VolumeSource
+
+	if enabled {
+		source = &core.VolumeSource{
+			HostPath: &core.HostPathVolumeSource{Path: path, Type: ptr.To(pathType)},
+		}
+	}
+
+	setXpumdVolume(ds, name, source, path, readOnly)
+}
+
+// setXpumdVolume adds a volume and its xpumd container mount, or removes them when source is nil.
+func setXpumdVolume(ds *apps.DaemonSet, name string, source *core.VolumeSource, path string, readOnly bool) {
 	cspec := &ds.Spec.Template.Spec
+	enabled := source != nil
 
 	cspec.Volumes = slices.DeleteFunc(cspec.Volumes, func(v core.Volume) bool { return v.Name == name })
 
 	if enabled {
 		cspec.Volumes = append(cspec.Volumes, core.Volume{
-			Name: name,
-			VolumeSource: core.VolumeSource{
-				HostPath: &core.HostPathVolumeSource{Path: path, Type: ptr.To(pathType)},
-			},
+			Name:         name,
+			VolumeSource: *source,
 		})
 	}
 
@@ -182,6 +203,130 @@ func processXpumdLogMounts(ds *apps.DaemonSet, spec *v1alpha.ClusterPolicy) {
 	setXpumdHostPathMount(ds, xspec.CrashLog, crashlogVolume, crashlogHostDir, core.HostPathDirectoryOrCreate, true)
 	// Writable: enabling the collection creates a tracefs instance.
 	setXpumdHostPathMount(ds, xspec.InfoLogs, tracefsVolume, tracefsHostDir, core.HostPathDirectory, false)
+}
+
+// otlpExporter returns the collector exporter name and the spec of the OTLP transport
+// selected in the ClusterPolicy, or a nil spec when OTLP export is not configured.
+func otlpExporter(xspec *v1alpha.XpuManagerSpec) (string, *v1alpha.OTLPExporterSpec) {
+	switch {
+	case xspec.OTLP == nil:
+		return "", nil
+	case xspec.OTLP.HTTP != nil:
+		return otlpHTTPExporter, xspec.OTLP.HTTP
+	case xspec.OTLP.GRPC != nil:
+		return otlpGRPCExporter, xspec.OTLP.GRPC
+	}
+
+	return "", nil
+}
+
+func otlpHeaderEnvName(idx int) string {
+	return fmt.Sprintf("%s%d", otlpHeaderEnvPrefix, idx)
+}
+
+// processXpumdOTLP passes the OTLP header Secrets to the xpumd container as environment
+// variables and mounts the TLS CA and client certificate referenced in the ClusterPolicy.
+func processXpumdOTLP(ds *apps.DaemonSet, spec *v1alpha.ClusterPolicy) {
+	_, exp := otlpExporter(&spec.Spec.XpuManagerSpec)
+
+	var env []core.EnvVar
+	var caSource, clientCertSource *core.VolumeSource
+
+	if exp != nil {
+		for i, h := range exp.Headers {
+			env = append(env, core.EnvVar{
+				Name:      otlpHeaderEnvName(i),
+				ValueFrom: &core.EnvVarSource{SecretKeyRef: h.ValueFrom.DeepCopy()},
+			})
+		}
+
+		if tls := exp.TLS; tls != nil {
+			if tls.CA != nil {
+				caSource = &core.VolumeSource{
+					ConfigMap: &core.ConfigMapVolumeSource{
+						LocalObjectReference: tls.CA.LocalObjectReference,
+						Items:                []core.KeyToPath{{Key: tls.CA.Key, Path: otlpCAFile}},
+						DefaultMode:          ptr.To[int32](0o444),
+					},
+				}
+			}
+
+			if tls.ClientCertSecret != nil {
+				clientCertSource = &core.VolumeSource{
+					Secret: &core.SecretVolumeSource{
+						SecretName: tls.ClientCertSecret.Name,
+						Items: []core.KeyToPath{
+							{Key: core.TLSCertKey, Path: core.TLSCertKey},
+							{Key: core.TLSPrivateKeyKey, Path: core.TLSPrivateKeyKey},
+						},
+						DefaultMode: ptr.To[int32](0o400),
+					},
+				}
+			}
+		}
+	}
+
+	setXpumdVolume(ds, otlpCAVolume, caSource, otlpCAMountDir, true)
+	setXpumdVolume(ds, otlpClientCertVolume, clientCertSource, otlpClientCertMountDir, true)
+
+	for c := range ds.Spec.Template.Spec.Containers {
+		cont := &ds.Spec.Template.Spec.Containers[c]
+
+		if cont.Name != xpumdContainerName {
+			continue
+		}
+
+		cont.Env = slices.DeleteFunc(cont.Env, func(e core.EnvVar) bool {
+			return strings.HasPrefix(e.Name, otlpHeaderEnvPrefix)
+		})
+		cont.Env = append(cont.Env, env...)
+
+		if len(cont.Env) == 0 {
+			cont.Env = nil
+		}
+	}
+}
+
+// buildOTLPExporterConfig converts the ClusterPolicy OTLP spec into the collector exporter
+// configuration, referring to the files and environment set up by processXpumdOTLP.
+func buildOTLPExporterConfig(exp *v1alpha.OTLPExporterSpec) *deployments.OTLPExporter {
+	cfg := &deployments.OTLPExporter{Endpoint: exp.Endpoint}
+
+	if len(exp.Headers) > 0 {
+		cfg.Headers = make(map[string]string, len(exp.Headers))
+
+		for i, h := range exp.Headers {
+			// Expanded by the collector from the container environment, which keeps
+			// the Secret value out of the ConfigMap.
+			cfg.Headers[h.Name] = fmt.Sprintf("${env:%s}", otlpHeaderEnvName(i))
+		}
+	}
+
+	switch {
+	case strings.HasPrefix(exp.Endpoint, "http://"):
+		// The gRPC exporter attempts TLS regardless of the scheme unless told otherwise.
+		cfg.TLS = &deployments.OTLPExporterTLS{Insecure: true}
+	case exp.TLS != nil:
+		tls := deployments.OTLPExporterTLS{
+			InsecureSkipVerify: exp.TLS.InsecureSkipVerify,
+			ServerNameOverride: exp.TLS.ServerName,
+		}
+
+		if exp.TLS.CA != nil {
+			tls.CAFile = otlpCAMountDir + "/" + otlpCAFile
+		}
+
+		if exp.TLS.ClientCertSecret != nil {
+			tls.CertFile = otlpClientCertMountDir + "/" + core.TLSCertKey
+			tls.KeyFile = otlpClientCertMountDir + "/" + core.TLSPrivateKeyKey
+		}
+
+		if tls != (deployments.OTLPExporterTLS{}) {
+			cfg.TLS = &tls
+		}
+	}
+
+	return cfg
 }
 
 func processContainerResources(ds *apps.DaemonSet, spec *v1alpha.ClusterPolicy, draClaim string) {
@@ -267,6 +412,25 @@ func (r *XpuManagerReconciler) buildOTelConfigData(cp *v1alpha.ClusterPolicy) (s
 	} else {
 		// The receiver is only valid with its host directory mounted, drop it altogether.
 		cfg.Receivers.IntelCrashlog = nil
+	}
+
+	if name, exp := otlpExporter(xspec); exp != nil {
+		otlp := buildOTLPExporterConfig(exp)
+
+		if name == otlpHTTPExporter {
+			cfg.Exporters.OTLPHTTP = otlp
+		} else {
+			cfg.Exporters.OTLPGRPC = otlp
+		}
+
+		metrics := &cfg.Service.Pipelines.Metrics
+		if !slices.Contains(metrics.Exporters, name) {
+			metrics.Exporters = append(metrics.Exporters, name)
+		}
+
+		if logs := cfg.Service.Pipelines.Logs; logs != nil && !slices.Contains(logs.Exporters, name) {
+			logs.Exporters = append(logs.Exporters, name)
+		}
 	}
 
 	if health := cp.Spec.HealthinessSpec; health != nil {
@@ -473,6 +637,7 @@ func (r *XpuManagerReconciler) updateDaemonSetObject(ds *apps.DaemonSet, spec *v
 	processContainerResources(ds, spec, draClaim)
 	processXpumdConfigMapMount(ds, otelConfigMapName)
 	processXpumdLogMounts(ds, spec)
+	processXpumdOTLP(ds, spec)
 	ds.Spec.Template.Spec.NodeSelector = generateNodeSelector(spec, r.Opts)
 	ds.Spec.Template.Spec.Tolerations = generateTolerations(spec)
 	ds.Spec.Template.Spec.Affinity = generateAffinity(spec.Spec.XpuManagerSpec.Affinity)

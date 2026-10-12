@@ -82,6 +82,10 @@ spec:
 {{- if .Values.xpu.crashLog }}
     crashLog: true
 {{- end }}
+{{- with .Values.xpu.otlp }}
+    otlp:
+      {{- toYaml . | nindent 6 }}
+{{- end }}
 
 {{- if .Values.kernelModule }}
   kernelModule:

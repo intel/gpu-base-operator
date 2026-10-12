@@ -94,7 +94,7 @@ func buildXpuManagerSCC(name string) *unstructured.Unstructured {
 		"seLinuxContext":           map[string]interface{}{"type": "RunAsAny"},
 		"seccompProfiles":          []interface{}{"*"},
 		"supplementalGroups":       map[string]interface{}{"type": "RunAsAny"},
-		"volumes":                  []interface{}{"hostPath", "configMap"},
+		"volumes":                  []interface{}{"hostPath", "configMap", "secret"},
 		"users":                    []interface{}{},
 		"groups":                   []interface{}{},
 	})

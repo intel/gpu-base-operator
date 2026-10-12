@@ -188,6 +188,92 @@ type XpuManagerSpec struct {
 	// +kubebuilder:default:=false
 	// +optional
 	CrashLog bool `json:"crashLog,omitempty"`
+
+	// OTLP configures XPU Manager to export its metrics and logs also to an OpenTelemetry
+	// Protocol (OTLP) gateway, in addition to the Prometheus endpoint.
+	// With ConfigMapOverride set, only the header environment variables and the TLS file mounts
+	// are managed; the override has to configure the exporter itself.
+	// +optional
+	OTLP *OTLPSpec `json:"otlp,omitempty"`
+}
+
+// OTLPSpec selects the transport used for exporting to an OTLP gateway. Exactly one of the
+// transports has to be set.
+// +kubebuilder:validation:XValidation:rule="[has(self.http), has(self.grpc)].filter(x, x).size() == 1",message="exactly one of http or grpc has to be set"
+type OTLPSpec struct {
+	// HTTP exports using OTLP/HTTP with protobuf encoding, by convention on port 4318.
+	// The endpoint is the base URL; the signal paths (/v1/metrics, /v1/logs) are appended to it.
+	// +optional
+	HTTP *OTLPExporterSpec `json:"http,omitempty"`
+
+	// GRPC exports using OTLP/gRPC, by convention on port 4317.
+	// +optional
+	GRPC *OTLPExporterSpec `json:"grpc,omitempty"`
+}
+
+// OTLPExporterSpec configures the connection to an OTLP gateway. Credentials are only accepted
+// as references to Secrets, never as inline values.
+// +kubebuilder:validation:XValidation:rule="!self.endpoint.startsWith('http://') || !has(self.tls)",message="tls cannot be set for a plain-text http:// endpoint"
+type OTLPExporterSpec struct {
+	// Endpoint of the OTLP gateway, e.g. "https://otel-gateway.example.com:4318".
+	// The scheme selects the transport security: "https://" uses TLS, "http://" sends the
+	// data unencrypted.
+	// +kubebuilder:validation:Pattern=`^https?://[^/\s]+`
+	// +kubebuilder:validation:MaxLength=2048
+	Endpoint string `json:"endpoint"`
+
+	// Headers are added to every export request, e.g. "Authorization" for a bearer token or
+	// an API key. The values are read from Secrets in the operator namespace and passed to the
+	// XPU Manager container as environment variables, so they never appear in the ClusterPolicy
+	// or the generated collector configuration. Changes to the Secret contents take effect
+	// once the XPU Manager pods are restarted.
+	// +listType=map
+	// +listMapKey=name
+	// +kubebuilder:validation:MaxItems=16
+	// +optional
+	Headers []OTLPHeader `json:"headers,omitempty"`
+
+	// TLS configures the verification of the gateway's certificate and, for mutual TLS,
+	// the client certificate. Only valid with an "https://" endpoint.
+	// +optional
+	TLS *OTLPTLSSpec `json:"tls,omitempty"`
+}
+
+// OTLPHeader is a request header whose value is read from a Secret.
+type OTLPHeader struct {
+	// Name of the HTTP header or gRPC metadata key.
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9!#$%&'*+.^_|~-]+$`
+	// +kubebuilder:validation:MaxLength=256
+	Name string `json:"name"`
+
+	// ValueFrom references the Secret key holding the complete header value, e.g.
+	// "Bearer <token>". The Secret has to be in the operator namespace.
+	ValueFrom v1.SecretKeySelector `json:"valueFrom"`
+}
+
+// OTLPTLSSpec configures TLS towards an OTLP gateway.
+type OTLPTLSSpec struct {
+	// CA references a ConfigMap key in the operator namespace holding the PEM encoded CA
+	// bundle that is used to verify the gateway's certificate, e.g. for a private or
+	// self-signed CA. When unset, the system CA pool of the XPU Manager image is used.
+	// +optional
+	CA *v1.ConfigMapKeySelector `json:"ca,omitempty"`
+
+	// ClientCertSecret references a kubernetes.io/tls Secret in the operator namespace whose
+	// "tls.crt" and "tls.key" are presented to the gateway for mutual TLS.
+	// +optional
+	ClientCertSecret *v1.LocalObjectReference `json:"clientCertSecret,omitempty"`
+
+	// ServerName overrides the host name that the gateway's certificate is verified against.
+	// +kubebuilder:validation:MaxLength=253
+	// +optional
+	ServerName string `json:"serverName,omitempty"`
+
+	// InsecureSkipVerify disables the verification of the gateway's certificate. The traffic
+	// is still encrypted, but open to man-in-the-middle attacks. Meant for testing only;
+	// use CA for self-signed certificates instead.
+	// +optional
+	InsecureSkipVerify bool `json:"insecureSkipVerify,omitempty"`
 }
 
 // RegistryTLSSpec configures TLS behavior for accessing container image registries.

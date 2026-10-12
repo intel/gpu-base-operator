@@ -273,6 +273,234 @@ var _ = Describe("ClusterPolicy Webhook", func() {
 			})
 		})
 
+		Context("xpu.otlp validation", func() {
+			secretKey := func(name, key string) v1.SecretKeySelector {
+				return v1.SecretKeySelector{LocalObjectReference: v1.LocalObjectReference{Name: name}, Key: key}
+			}
+
+			It("accepts an https endpoint with secret headers and TLS references", func() {
+				obj.Spec.XpuManagerSpec.OTLP = &OTLPSpec{
+					HTTP: &OTLPExporterSpec{
+						Endpoint: "https://gateway.example.com:4318",
+						Headers:  []OTLPHeader{{Name: "Authorization", ValueFrom: secretKey("otlp-auth", "token")}},
+						TLS: &OTLPTLSSpec{
+							CA: &v1.ConfigMapKeySelector{
+								LocalObjectReference: v1.LocalObjectReference{Name: "gateway-ca"},
+								Key:                  "ca.crt",
+							},
+							ClientCertSecret: &v1.LocalObjectReference{Name: "otlp-client"},
+							ServerName:       "gateway.example.com",
+						},
+					},
+				}
+				warnings, err := validator.ValidateCreate(ctx, obj)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(warnings).To(BeEmpty())
+			})
+
+			It("accepts a plain-text grpc endpoint", func() {
+				obj.Spec.XpuManagerSpec.OTLP = &OTLPSpec{GRPC: &OTLPExporterSpec{Endpoint: "http://gateway:4317"}}
+				warnings, err := validator.ValidateCreate(ctx, obj)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(warnings).To(BeEmpty())
+			})
+
+			It("rejects both transports set together", func() {
+				obj.Spec.XpuManagerSpec.OTLP = &OTLPSpec{
+					HTTP: &OTLPExporterSpec{Endpoint: "https://gateway:4318"},
+					GRPC: &OTLPExporterSpec{Endpoint: "https://gateway:4317"},
+				}
+				_, err := validator.ValidateCreate(ctx, obj)
+				Expect(err).To(MatchError(ContainSubstring("only one of http or grpc")))
+			})
+
+			It("rejects an otlp section without a transport", func() {
+				obj.Spec.XpuManagerSpec.OTLP = &OTLPSpec{}
+				_, err := validator.ValidateCreate(ctx, obj)
+				Expect(err).To(MatchError(ContainSubstring("one of http or grpc has to be set")))
+			})
+
+			It("rejects endpoints without an http(s) scheme or host", func() {
+				for _, endpoint := range []string{"gateway:4317", "grpc://gateway:4317", "https://", "https://gate way"} {
+					obj.Spec.XpuManagerSpec.OTLP = &OTLPSpec{GRPC: &OTLPExporterSpec{Endpoint: endpoint}}
+					_, err := validator.ValidateCreate(ctx, obj)
+					Expect(err).To(MatchError(ContainSubstring("xpu.otlp.grpc.endpoint")), "endpoint %q", endpoint)
+				}
+			})
+
+			It("rejects endpoints with user info without echoing the credentials", func() {
+				for _, endpoint := range []string{"https://user:password@gateway:4318", "https://user@gateway:4318"} {
+					obj.Spec.XpuManagerSpec.OTLP = &OTLPSpec{HTTP: &OTLPExporterSpec{Endpoint: endpoint}}
+					_, err := validator.ValidateCreate(ctx, obj)
+					Expect(err).To(MatchError(ContainSubstring("xpu.otlp.http.endpoint cannot contain user info")), "endpoint %q", endpoint)
+					Expect(err.Error()).NotTo(ContainSubstring("password"))
+				}
+			})
+
+			It("rejects header names that are not valid gRPC metadata keys", func() {
+				for _, name := range []string{"X-Tenant!", "x-tenant#id", "x~tenant"} {
+					obj.Spec.XpuManagerSpec.OTLP = &OTLPSpec{
+						GRPC: &OTLPExporterSpec{
+							Endpoint: "https://gateway:4317",
+							Headers:  []OTLPHeader{{Name: name, ValueFrom: secretKey("otlp-auth", "token")}},
+						},
+					}
+					_, err := validator.ValidateCreate(ctx, obj)
+					Expect(err).To(MatchError(ContainSubstring("not a valid gRPC metadata key")), "header %q", name)
+				}
+			})
+
+			It("rejects reserved gRPC metadata keys", func() {
+				for name, msg := range map[string]string{
+					"grpc-timeout":  "grpc- prefix is reserved",
+					"GRPC-Encoding": "grpc- prefix is reserved",
+					"x-token-bin":   "-bin suffix is reserved",
+				} {
+					obj.Spec.XpuManagerSpec.OTLP = &OTLPSpec{
+						GRPC: &OTLPExporterSpec{
+							Endpoint: "https://gateway:4317",
+							Headers:  []OTLPHeader{{Name: name, ValueFrom: secretKey("otlp-auth", "token")}},
+						},
+					}
+					_, err := validator.ValidateCreate(ctx, obj)
+					Expect(err).To(MatchError(ContainSubstring(msg)), "header %q", name)
+				}
+			})
+
+			It("warns about gRPC transport headers", func() {
+				obj.Spec.XpuManagerSpec.OTLP = &OTLPSpec{
+					GRPC: &OTLPExporterSpec{
+						Endpoint: "https://gateway:4317",
+						Headers: []OTLPHeader{
+							{Name: "Content-Type", ValueFrom: secretKey("otlp-auth", "ct")},
+							{Name: "te", ValueFrom: secretKey("otlp-auth", "te")},
+						},
+					},
+				}
+				warnings, err := validator.ValidateCreate(ctx, obj)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(warnings).To(ContainElements(
+					ContainSubstring(`headers[0].name "Content-Type" is a transport header`),
+					ContainSubstring(`headers[1].name "te" is a transport header`),
+				))
+			})
+
+			It("does not apply the gRPC header rules to http", func() {
+				obj.Spec.XpuManagerSpec.OTLP = &OTLPSpec{
+					HTTP: &OTLPExporterSpec{
+						Endpoint: "https://gateway:4318",
+						Headers: []OTLPHeader{
+							{Name: "grpc-timeout", ValueFrom: secretKey("otlp-auth", "a")},
+							{Name: "x-token-bin", ValueFrom: secretKey("otlp-auth", "b")},
+							{Name: "Content-Type", ValueFrom: secretKey("otlp-auth", "c")},
+						},
+					},
+				}
+				warnings, err := validator.ValidateCreate(ctx, obj)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(warnings).To(BeEmpty())
+			})
+
+			It("accepts gRPC metadata keys and the broader HTTP header syntax for http", func() {
+				obj.Spec.XpuManagerSpec.OTLP = &OTLPSpec{
+					GRPC: &OTLPExporterSpec{
+						Endpoint: "https://gateway:4317",
+						Headers:  []OTLPHeader{{Name: "X-Tenant_ID.v1", ValueFrom: secretKey("otlp-auth", "token")}},
+					},
+				}
+				_, err := validator.ValidateCreate(ctx, obj)
+				Expect(err).NotTo(HaveOccurred())
+
+				obj.Spec.XpuManagerSpec.OTLP = &OTLPSpec{
+					HTTP: &OTLPExporterSpec{
+						Endpoint: "https://gateway:4318",
+						Headers:  []OTLPHeader{{Name: "X-Tenant!", ValueFrom: secretKey("otlp-auth", "token")}},
+					},
+				}
+				_, err = validator.ValidateCreate(ctx, obj)
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("rejects duplicate headers regardless of case", func() {
+				obj.Spec.XpuManagerSpec.OTLP = &OTLPSpec{
+					HTTP: &OTLPExporterSpec{
+						Endpoint: "https://gateway:4318",
+						Headers: []OTLPHeader{
+							{Name: "Authorization", ValueFrom: secretKey("otlp-auth", "token")},
+							{Name: "authorization", ValueFrom: secretKey("otlp-auth", "other")},
+						},
+					},
+				}
+				_, err := validator.ValidateCreate(ctx, obj)
+				Expect(err).To(MatchError(ContainSubstring("duplicate header")))
+			})
+
+			It("rejects invalid secret references", func() {
+				obj.Spec.XpuManagerSpec.OTLP = &OTLPSpec{
+					HTTP: &OTLPExporterSpec{
+						Endpoint: "https://gateway:4318",
+						Headers:  []OTLPHeader{{Name: "Authorization", ValueFrom: secretKey("Bad_Name", "")}},
+						TLS:      &OTLPTLSSpec{ClientCertSecret: &v1.LocalObjectReference{}},
+					},
+				}
+				_, err := validator.ValidateCreate(ctx, obj)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("headers[0].valueFrom.name"))
+				Expect(err.Error()).To(ContainSubstring("headers[0].valueFrom.key"))
+				Expect(err.Error()).To(ContainSubstring("tls.clientCertSecret.name"))
+			})
+
+			It("rejects TLS settings for a plain-text endpoint", func() {
+				obj.Spec.XpuManagerSpec.OTLP = &OTLPSpec{
+					HTTP: &OTLPExporterSpec{
+						Endpoint: "http://gateway:4318",
+						TLS:      &OTLPTLSSpec{ClientCertSecret: &v1.LocalObjectReference{Name: "otlp-client"}},
+					},
+				}
+				_, err := validator.ValidateCreate(ctx, obj)
+				Expect(err).To(MatchError(ContainSubstring("plain-text")))
+			})
+
+			It("rejects a CA together with insecureSkipVerify", func() {
+				obj.Spec.XpuManagerSpec.OTLP = &OTLPSpec{
+					GRPC: &OTLPExporterSpec{
+						Endpoint: "https://gateway:4317",
+						TLS: &OTLPTLSSpec{
+							CA: &v1.ConfigMapKeySelector{
+								LocalObjectReference: v1.LocalObjectReference{Name: "gateway-ca"},
+								Key:                  "ca.crt",
+							},
+							InsecureSkipVerify: true,
+						},
+					},
+				}
+				_, err := validator.ValidateCreate(ctx, obj)
+				Expect(err).To(MatchError(ContainSubstring("cannot both be set")))
+			})
+
+			It("warns about insecureSkipVerify and headers sent in plain text", func() {
+				obj.Spec.XpuManagerSpec.OTLP = &OTLPSpec{
+					GRPC: &OTLPExporterSpec{
+						Endpoint: "https://gateway:4317",
+						TLS:      &OTLPTLSSpec{InsecureSkipVerify: true},
+					},
+				}
+				warnings, err := validator.ValidateCreate(ctx, obj)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(warnings).To(ContainElement(ContainSubstring("insecureSkipVerify")))
+
+				obj.Spec.XpuManagerSpec.OTLP = &OTLPSpec{
+					HTTP: &OTLPExporterSpec{
+						Endpoint: "http://gateway:4318",
+						Headers:  []OTLPHeader{{Name: "Authorization", ValueFrom: secretKey("otlp-auth", "token")}},
+					},
+				}
+				warnings, err = validator.ValidateCreate(ctx, obj)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(warnings).To(ContainElement(ContainSubstring("sent unencrypted")))
+			})
+		})
+
 		Context("Kueue spec validation", func() {
 			It("accepts a valid Kueue spec", func() {
 				obj.Spec.EnableKueue = true
