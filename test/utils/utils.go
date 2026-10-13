@@ -242,7 +242,7 @@ func IsCertManagerCRDsInstalled() bool {
 }
 
 func CheckInstalledToolsOnHost() error {
-	requiredTools := []string{"kubectl", "jq", "kind"}
+	requiredTools := []string{"kubectl", "jq", "kind", "kustomize"}
 
 	for _, tool := range requiredTools {
 		_, err := exec.LookPath(tool)
