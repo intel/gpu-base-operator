@@ -86,7 +86,7 @@ node1                               node1           gpu.intel.com   node1       
 
 ## Getting Started
 
-The latest release version is [0.2.1](https://github.com/intel/gpu-base-operator/releases/tag/v0.2.1). Instructions for deploying the operator via Helm are described below.
+The latest release version is [0.4.0](https://github.com/intel/gpu-base-operator/releases/tag/v0.4.0). Instructions for deploying the operator via Helm are described below.
 
 ### Helm deployment
 
@@ -96,9 +96,9 @@ Helm deployment is split into two charts: operator and policy. The reason for th
 
 The basic installation is as follows:
 ```
-helm install --create-namespace --namespace "intel-gpu-base-operator" --version 0.3.0 gpu-operator \
+helm install --create-namespace --namespace "intel-gpu-base-operator" --version 0.4.0 gpu-operator \
   oci://ghcr.io/intel/intel-gpu-base-operator-chart --wait
-helm install --namespace "intel-gpu-base-operator" --version 0.3.0 gpu-policy \
+helm install --namespace "intel-gpu-base-operator" --version 0.4.0 gpu-policy \
   oci://ghcr.io/intel/intel-gpu-base-operator-policy-chart --set resourceRegistration=dra
 ```
 
@@ -107,20 +107,20 @@ This installs the operator and a DRA-enabled deployment with Intel XPU Manager. 
 #### Example: DRA without NFD
 
 ```
-helm install --create-namespace --namespace "intel-gpu-base-operator" --version 0.3.0 gpu-operator \
+helm install --create-namespace --namespace "intel-gpu-base-operator" --version 0.4.0 gpu-operator \
   oci://ghcr.io/intel/intel-gpu-base-operator-chart --wait
-helm install --namespace "intel-gpu-base-operator" --version 0.3.0 gpu-policy \
+helm install --namespace "intel-gpu-base-operator" --version 0.4.0 gpu-policy \
   oci://ghcr.io/intel/intel-gpu-base-operator-policy-chart --set resourceRegistration=dra
 ```
 
 #### Example: DRA with NFD and Kueue
 
 ```
-helm install --create-namespace --namespace "intel-gpu-base-operator" --version 0.3.0 gpu-operator \
+helm install --create-namespace --namespace "intel-gpu-base-operator" --version 0.4.0 gpu-operator \
   oci://ghcr.io/intel/intel-gpu-base-operator-chart --wait \
   --set nfd.install=true \
   --set kueue.install=true
-helm install --namespace "intel-gpu-base-operator" --version 0.3.0 gpu-policy \
+helm install --namespace "intel-gpu-base-operator" --version 0.4.0 gpu-policy \
   oci://ghcr.io/intel/intel-gpu-base-operator-policy-chart \
   --set resourceRegistration=dra \
   --set useNFDLabeling=true \
@@ -130,10 +130,10 @@ helm install --namespace "intel-gpu-base-operator" --version 0.3.0 gpu-policy \
 #### Example: Device Plugin with NFD
 
 ```
-helm install --create-namespace --namespace "intel-gpu-base-operator" --version 0.3.0 gpu-operator \
+helm install --create-namespace --namespace "intel-gpu-base-operator" --version 0.4.0 gpu-operator \
   oci://ghcr.io/intel/intel-gpu-base-operator-chart --wait \
   --set nfd.install=true
-helm install --namespace "intel-gpu-base-operator" --version 0.3.0 gpu-policy \
+helm install --namespace "intel-gpu-base-operator" --version 0.4.0 gpu-policy \
   oci://ghcr.io/intel/intel-gpu-base-operator-policy-chart \
   --set resourceRegistration=dp \
   --set useNFDLabeling=true
