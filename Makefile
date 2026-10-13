@@ -325,7 +325,7 @@ $(KIND): $(LOCALBIN)
 .PHONY: helm
 helm: $(HELM) ## Download helm locally if necessary.
 $(HELM): $(LOCALBIN)
-	curl -fsSL -o $(LOCALBIN)/get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+	curl -fsSL -o $(LOCALBIN)/get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-4
 	chmod 700 $(LOCALBIN)/get_helm.sh
 	USE_SUDO=false HELM_INSTALL_DIR=$(LOCALBIN) $(LOCALBIN)/get_helm.sh
 
