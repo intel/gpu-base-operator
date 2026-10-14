@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otlp-gateway
+  namespace: default
+  labels:
+    app: otlp-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otlp-gateway
+  template:
+    metadata:
+      labels:
+        app: otlp-gateway
+    spec:
+      containers:
+      - name: otelcol
+        image: otel/opentelemetry-collector:0.157.0
+        imagePullPolicy: IfNotPresent
+        args: ["--config=/etc/otlp-gateway/config/config.yaml"]
+        ports:
+        - name: otlp-http
+          containerPort: 4318
+        - name: otlp-grpc
+          containerPort: 4317
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 13133
+          periodSeconds: 2
+        volumeMounts:
+        - name: config
+          mountPath: /etc/otlp-gateway/config
+          readOnly: true
+      volumes:
+      - name: config
+        configMap:
+          name: otlp-gateway
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otlp-gateway
+  namespace: default
+spec:
+  selector:
+    app: otlp-gateway
+  ports:
+  - name: otlp-http
+    port: 4318
+    targetPort: otlp-http
+  - name: otlp-grpc
+    port: 4317
+    targetPort: otlp-grpc

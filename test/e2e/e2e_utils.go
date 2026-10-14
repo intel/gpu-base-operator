@@ -35,6 +35,17 @@ import (
 	"github.com/intel/gpu-base-operator/test/utils"
 )
 
+// namespace where the project is deployed in
+const namespace = "intel-gpu-base-operator"
+
+func devicePluginClusterPolicy() api.ClusterPolicy {
+	return kustomizeToClusterpolicy("config/samples/deviceplugin/")
+}
+
+func dynamicResourceAllocationClusterPolicy() api.ClusterPolicy {
+	return kustomizeToClusterpolicy("config/samples/dra/")
+}
+
 func kustomizeToClusterpolicy(dir string) api.ClusterPolicy {
 	cmd := exec.Command("kustomize", "build", dir)
 	original, err := utils.Run(cmd)
@@ -120,6 +131,27 @@ func waitForPodsToBecomeRunning(label string, ns string, g Gomega) {
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(output).To(Equal("Running"), "Incorrect pod status")
 	}
+}
+
+// waitForPodsToBecomeReady checks that all non-terminating pods with the label pass their
+// readiness probes, i.e. are also backing their Services.
+func waitForPodsToBecomeReady(label string, ns string, g Gomega) {
+	cmd := exec.Command("kubectl", "get",
+		"pods", "-l", label,
+		"-o", "go-template={{ range .items }}"+
+			"{{ if not .metadata.deletionTimestamp }}"+
+			"{{ range .status.conditions }}{{ if eq .type \"Ready\" }}"+
+			"{{ .status }}{{ \"\\n\" }}"+
+			"{{ end }}{{ end }}{{ end }}{{ end }}",
+		"-n", ns,
+	)
+
+	output, err := utils.Run(cmd)
+	g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve pods for label "+label)
+
+	statuses := utils.GetNonEmptyLines(output)
+	g.Expect(statuses).NotTo(BeEmpty(), "expected >=1 pods")
+	g.Expect(statuses).To(HaveEach("True"), "pods are not ready")
 }
 
 func waitForDRAResourceSlices(g Gomega) {
@@ -451,6 +483,46 @@ func createTestSSLPod(namespace, endpoint string) (string, error) {
 	}
 
 	return podName, nil
+}
+
+// getHTTPStatusWithCurl POSTs an empty body to url from a curl pod and returns the HTTP
+// status code, or "000" if no response was received. The server certificate is not
+// verified, only the response is of interest.
+func getHTTPStatusWithCurl(namespace, url string) (string, error) {
+	podName := "curl-tester"
+
+	// A just-ready Service endpoint may not be routable yet, so retry connection errors.
+	// HTTP error responses are not retried, as -f is not set.
+	cmd := exec.Command("kubectl", "run", podName, "-n", namespace,
+		"--image=curlimages/curl:8.16.0", "--image-pull-policy=IfNotPresent", "--restart=Never", "--",
+		"-sk", "-o", "/dev/null", "-w", "%{http_code}\\n",
+		"--connect-timeout", "5", "--retry", "15", "--retry-delay", "2", "--retry-connrefused",
+		"-X", "POST", "-H", "Content-Type: application/x-protobuf", url)
+	if _, err := utils.Run(cmd); err != nil {
+		return "", err
+	}
+
+	defer func() {
+		_ = deletePod(namespace, podName)
+	}()
+
+	Eventually(func(g Gomega) {
+		waitForNamedPodToBecomeComplete(podName, namespace, g)
+	}).Should(Succeed())
+
+	cmd = exec.Command("kubectl", "logs", podName, "-n", namespace)
+	output, err := utils.Run(cmd)
+	if err != nil {
+		return "", err
+	}
+
+	// The status of the final attempt is the last line.
+	lines := utils.GetNonEmptyLines(output)
+	if len(lines) == 0 {
+		return "", fmt.Errorf("curl pod %s produced no output", podName)
+	}
+
+	return strings.TrimSpace(lines[len(lines)-1]), nil
 }
 
 func deletePod(namespace, podName string) error {

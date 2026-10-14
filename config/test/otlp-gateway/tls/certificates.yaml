@@ -1,0 +1,56 @@
+# cert-manager issued certificates for the OTLP gateway: a self-signed CA, and a server
+# certificate signed by it. cert-manager stores the CA certificate also as "ca.crt" in the
+# "otlp-gateway-tls" Secret, from where the tests copy it to the operator namespace.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: otlp-gateway-selfsigned
+  namespace: default
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: otlp-gateway-ca
+  namespace: default
+spec:
+  isCA: true
+  commonName: otlp-gateway-e2e-ca
+  secretName: otlp-gateway-ca
+  duration: 24h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: otlp-gateway-selfsigned
+    kind: Issuer
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: otlp-gateway-ca
+  namespace: default
+spec:
+  ca:
+    secretName: otlp-gateway-ca
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: otlp-gateway-tls
+  namespace: default
+spec:
+  secretName: otlp-gateway-tls
+  dnsNames:
+  - otlp-gateway.default.svc
+  duration: 24h
+  usages:
+  - server auth
+  - digital signature
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: otlp-gateway-ca
+    kind: Issuer

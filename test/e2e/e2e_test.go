@@ -33,9 +33,6 @@ import (
 )
 
 const (
-	// namespace where the project is deployed in
-	namespace = "intel-gpu-base-operator"
-
 	// Helm chart install names
 	helmOperatorName = "gpu-operator"
 	helmPolicyName   = "gpu-policy"
@@ -44,14 +41,6 @@ const (
 	helmOperatorChartPath = "charts/gpu-base-operator"
 	helmPolicyChartPath   = "charts/gpu-base-operator-policy"
 )
-
-func devicePluginClusterPolicy() api.ClusterPolicy {
-	return kustomizeToClusterpolicy("config/samples/deviceplugin/")
-}
-
-func dynamicResourceAllocationClusterPolicy() api.ClusterPolicy {
-	return kustomizeToClusterpolicy("config/samples/dra/")
-}
 
 func waitForDRAPodsToBecomeRunning(g Gomega) {
 	waitForPodsToBecomeRunning("app=intel-gpu-resource-driver-kubelet-plugin", namespace, g)
@@ -481,6 +470,195 @@ var _ = Describe("Kubectl apply", Ordered, func() {
 
 			By("validating that xpumanager pod is running as expected")
 			Eventually(waitForXpumPodsToBecomeRunning, 3*time.Minute).Should(Succeed())
+		})
+	})
+
+	Context("ClusterPolicy with XPUM OTLP export", Label("dra", "xpum", "otlp"), func() {
+		BeforeEach(func() {
+			By("deploying the OTLP gateway")
+			cmd := exec.Command("kubectl", "apply", "-k", otlpGatewayDeployment)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to deploy the OTLP gateway")
+
+			Eventually(waitForOTLPGatewayToBecomeReady).Should(Succeed())
+		})
+
+		AfterEach(func() {
+			if CurrentSpecReport().Failed() {
+				By("fetching OTLP gateway logs")
+				output, err := getOTLPGatewayLogs()
+				if err == nil {
+					_, _ = fmt.Fprintf(GinkgoWriter, "OTLP gateway logs:\n %s", output)
+				} else {
+					_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get OTLP gateway logs: %s", err)
+				}
+			}
+
+			cmd := exec.Command("kubectl", "delete", "clusterpolicy", "gpu-policy")
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("removing the OTLP gateway")
+			cmd = exec.Command("kubectl", "delete", "-k", otlpGatewayDeployment, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+
+		It("push XPUM metrics to OTLP gateway", func() {
+			tmpDir, err := os.MkdirTemp("/tmp/", "operator-otlp*")
+			if err != nil {
+				Fail(fmt.Sprintf("couldn't create temporary directory: %+v", err))
+			}
+			defer os.RemoveAll(tmpDir)
+
+			cp := otlpXpumClusterPolicy(false)
+
+			err = applyClusterPolicyToCluster(&cp, filepath.Join(tmpDir, "clusterpolicy.yaml"))
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply ClusterPolicy")
+
+			By("validating that xpumanager pod is running as expected")
+			Eventually(waitForXpumPodsToBecomeRunning, 3*time.Minute).Should(Succeed())
+
+			By("validating that the OTLP gateway receives metrics from xpumd")
+			Eventually(waitForOTLPGatewayToReceiveXpumMetrics).Should(Succeed())
+		})
+
+		It("push XPUM metrics to OTLP gateway over plain-text gRPC", Label("otlp-grpc"), func() {
+			tmpDir, err := os.MkdirTemp("/tmp/", "operator-otlp*")
+			if err != nil {
+				Fail(fmt.Sprintf("couldn't create temporary directory: %+v", err))
+			}
+			defer os.RemoveAll(tmpDir)
+
+			cp := otlpXpumClusterPolicy(false)
+			cp.Spec.XpuManagerSpec.OTLP = &api.OTLPSpec{
+				GRPC: &api.OTLPExporterSpec{Endpoint: otlpGatewayGRPCEndpoint},
+			}
+
+			err = applyClusterPolicyToCluster(&cp, filepath.Join(tmpDir, "clusterpolicy.yaml"))
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply ClusterPolicy")
+
+			By("validating that xpumanager pod is running as expected")
+			Eventually(waitForXpumPodsToBecomeRunning, 3*time.Minute).Should(Succeed())
+
+			By("validating that the OTLP gateway receives metrics from xpumd")
+			Eventually(waitForOTLPGatewayToReceiveXpumMetrics).Should(Succeed())
+		})
+
+		It("push XPUM crashlogs to OTLP gateway", Label("crashlog"), func() {
+			tmpDir, err := os.MkdirTemp("/tmp/", "operator-otlp*")
+			if err != nil {
+				Fail(fmt.Sprintf("couldn't create temporary directory: %+v", err))
+			}
+			defer os.RemoveAll(tmpDir)
+
+			cp := otlpXpumClusterPolicy(true)
+
+			err = applyClusterPolicyToCluster(&cp, filepath.Join(tmpDir, "clusterpolicy.yaml"))
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply ClusterPolicy")
+
+			By("validating that xpumanager pod is running as expected")
+			Eventually(waitForXpumPodsToBecomeRunning, 3*time.Minute).Should(Succeed())
+
+			// Receiving metrics also tells that the collector, including the crashlog
+			// receiver, has started. The receiver ignores files created before that.
+			By("validating that the OTLP gateway receives metrics from xpumd")
+			Eventually(waitForOTLPGatewayToReceiveXpumMetrics).Should(Succeed())
+
+			By("deploying the crashlog writer pod")
+			writerPod, err := createCrashlogWriterPod(otlpGatewayNamespace, getXpumPodNodeName(), crashlogDir)
+			Expect(err).NotTo(HaveOccurred(), "Failed to deploy the crashlog writer pod")
+
+			defer func() {
+				_ = deletePod(otlpGatewayNamespace, writerPod)
+			}()
+
+			Eventually(func(g Gomega) {
+				waitForNamedPodToBecomeRunning(writerPod, otlpGatewayNamespace, g)
+			}).Should(Succeed())
+
+			fileName := fmt.Sprintf("e2e-crashlog-%d.crashlog", time.Now().Unix())
+			content := "dummy GPU crash dump from the operator e2e test"
+
+			By("writing dummy crashlog file " + fileName)
+			err = writeCrashlogFile(writerPod, fileName, content)
+			Expect(err).NotTo(HaveOccurred(), "Failed to write the crashlog file")
+
+			defer removeCrashlogFile(writerPod, fileName)
+
+			By("validating that the OTLP gateway receives the crashlog from xpumd")
+			Eventually(waitForOTLPGatewayToReceiveCrashlog(fileName, content)).Should(Succeed())
+		})
+	})
+
+	Context("ClusterPolicy with XPUM OTLP export over HTTPS", Label("dra", "xpum", "otlp", "otlp-tls"), func() {
+		var tmpDir string
+
+		BeforeEach(func() {
+			var err error
+
+			tmpDir, err = os.MkdirTemp("/tmp/", "operator-otlp-tls*")
+			Expect(err).NotTo(HaveOccurred(), "couldn't create temporary directory")
+
+			By("deploying the OTLP gateway with TLS and bearer token authentication")
+			deployOTLPTLSGateway(tmpDir)
+
+			Eventually(waitForOTLPGatewayToBecomeReady).Should(Succeed())
+		})
+
+		AfterEach(func() {
+			if CurrentSpecReport().Failed() {
+				By("fetching OTLP gateway logs")
+				output, err := getOTLPGatewayLogs()
+				if err == nil {
+					_, _ = fmt.Fprintf(GinkgoWriter, "OTLP gateway logs:\n %s", output)
+				} else {
+					_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get OTLP gateway logs: %s", err)
+				}
+			}
+
+			cmd := exec.Command("kubectl", "delete", "clusterpolicy", "gpu-policy", "--ignore-not-found")
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(waitForXPUMPodsToGoAway).Should(Succeed())
+
+			By("removing the OTLP gateway and its secrets")
+			removeOTLPTLSGateway(tmpDir)
+
+			_ = os.RemoveAll(tmpDir)
+		})
+
+		It("push XPUM metrics to OTLP gateway over HTTPS with a bearer token", func() {
+			By("validating that the OTLP gateway rejects requests without the bearer token")
+			status, err := getHTTPStatusWithCurl(otlpGatewayNamespace, otlpTLSGatewayEndpoint+"/v1/metrics")
+			Expect(err).NotTo(HaveOccurred(), "Failed to run the curl pod")
+			Expect(status).To(Equal("401"), "OTLP gateway accepted a request without the bearer token")
+
+			cp := otlpTLSXpumClusterPolicy(false)
+
+			err = applyClusterPolicyToCluster(&cp, filepath.Join(tmpDir, "clusterpolicy.yaml"))
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply ClusterPolicy")
+
+			By("validating that xpumanager pod is running as expected")
+			Eventually(waitForXpumPodsToBecomeRunning, 3*time.Minute).Should(Succeed())
+
+			By("validating that the OTLP gateway receives metrics from xpumd")
+			Eventually(waitForOTLPGatewayToReceiveXpumMetrics).Should(Succeed())
+		})
+
+		// The gateway's bearer token enforcement is already checked over HTTPS. Here metrics
+		// only arrive if xpumd sends the token as gRPC metadata and trusts the CA.
+		It("push XPUM metrics to OTLP gateway over gRPC with TLS and a bearer token", Label("otlp-grpc"), func() {
+			cp := otlpTLSXpumClusterPolicy(true)
+
+			err := applyClusterPolicyToCluster(&cp, filepath.Join(tmpDir, "clusterpolicy.yaml"))
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply ClusterPolicy")
+
+			By("validating that xpumanager pod is running as expected")
+			Eventually(waitForXpumPodsToBecomeRunning, 3*time.Minute).Should(Succeed())
+
+			By("validating that the OTLP gateway receives metrics from xpumd")
+			Eventually(waitForOTLPGatewayToReceiveXpumMetrics).Should(Succeed())
 		})
 	})
 })

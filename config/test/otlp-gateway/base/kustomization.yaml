@@ -1,0 +1,12 @@
+# Minimal OTLP gateway for the e2e tests: receives OTLP/HTTP and OTLP/gRPC and prints
+# everything it receives to its log with the debug exporter, which the tests then inspect.
+# Deploy it through one of the overlays: "cleartext" or "tls".
+resources:
+- otlp-gateway.yaml
+generatorOptions:
+  disableNameSuffixHash: true
+configMapGenerator:
+- name: otlp-gateway
+  namespace: default
+  files:
+  - config.yaml
