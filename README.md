@@ -211,7 +211,130 @@ Applies to both DP and DRA unless noted. Thresholds that are exceeded mark the G
 |`spec.xpu.configMapOverride`|Name of a ConfigMap in the operator namespace containing a custom OpenTelemetry Collector `config.yaml`|—|
 |`spec.xpu.affinity`|Optional `k8s.io/api/core/v1` `Affinity` object applied to the XPU manager daemon set|—|
 |`spec.xpu.restartOnDeviceRecovery`|When to restart a node's XPU Manager pod so it can monitor a GPU its container cannot reach. `OnRecoveredDevice`, `Always` or `Disabled`.|`OnRecoveredDevice`|
-|`spec.xpu.otlp`|Export metrics and logs also to an OTLP gateway. Set exactly one of `http` or `grpc`, each with an `endpoint` (`http://` for plain text, `https://` for TLS), optional `headers` read from Secrets, and optional `tls` (`ca` ConfigMap key for private/self-signed CAs, `clientCertSecret` for mTLS, `serverName`, `insecureSkipVerify`). All referenced objects have to be in the operator namespace.|—|
+|`spec.xpu.otlp`|Export metrics and logs also to an OTLP gateway. See [OTLP export](#otlp-export-specxpuotlp)|—|
+
+#### OTLP export (`spec.xpu.otlp`)
+
+XPU-Manager can push its metrics and logs to an [OpenTelemetry Protocol](https://opentelemetry.io/docs/specs/otlp/) (OTLP) gateway, in addition to serving the Prometheus endpoint. Requires `spec.resourceMonitoring: true`.
+
+**NOTE**: For overall OTel configurations in the cluster, see the opentelemetry documentation for recommended [configuration](https://opentelemetry.io/docs/security/config-best-practices/).
+
+Set exactly one transport, `http` or `grpc`. The scheme of the `endpoint` selects whether the connection is encrypted:
+
+|Option|Transport|Endpoint example|Encryption|
+|---|---|---|---|
+|HTTP/HTTPS|`otlp.http` (OTLP/HTTP, protobuf)|`http://otel-gateway.monitoring:4318`|TLS with `https://`, plain text without |
+|gRPC|`otlp.grpc` (OTLP/gRPC)|`http://otel-gateway.monitoring:4317` |TLS with `https://`, plain text without |
+
+For HTTP, the endpoint is the base URL; the signal paths (`/v1/metrics`, `/v1/logs`) are appended to it.
+
+Both transports accept the same fields:
+
+|Field|Description|
+|---|---|
+|`endpoint`|URL of the OTLP gateway, `http://` or `https://`|
+|`headers[]`|Up to 16 headers (gRPC metadata for `grpc`) added to every export request, e.g. `Authorization`. Each has a `name` and a `valueFrom` Secret key holding the complete value. Values are passed to the container as environment variables, so they never appear in the ClusterPolicy or the collector ConfigMap. Changes to the Secret take effect once the XPU-Manager pods restart|
+|`tls.ca`|ConfigMap key with a PEM CA bundle to verify the gateway, e.g. for a private or self-signed CA. Defaults to the system CA pool of the XPU-Manager image|
+|`tls.clientCertSecret`|`kubernetes.io/tls` Secret whose `tls.crt` and `tls.key` are presented for mutual TLS|
+|`tls.serverName`|Overrides the host name the gateway certificate is verified against|
+|`tls.insecureSkipVerify`|Skip gateway certificate verification. For testing only; cannot be combined with `tls.ca`|
+
+All referenced Secrets and ConfigMaps have to be in the operator namespace. Credentials can only be given as Secret references, never inline in the ClusterPolicy. If a referenced Secret, ConfigMap or key does not exist, the XPU-Manager pods do not start until it is created.
+
+##### TLS
+
+The endpoint scheme decides whether TLS is used at all:
+
+* `http://` — no TLS. The operator explicitly disables TLS in the exporter, as the gRPC exporter would otherwise attempt TLS regardless of the scheme. Setting `tls` for an `http://` endpoint is rejected. Use only towards a trusted, in-cluster collector.
+* `https://` — TLS. The `tls` block is optional; without it, the gateway certificate is verified against the system CA pool of the XPU-Manager image, and the host name against the host in `endpoint`.
+
+The `tls` fields adjust the verification and add a client certificate:
+
+* **Server verification (`tls.ca`)**: The ConfigMap key is mounted read-only to the XPU-Manager container as `/etc/otlp/ca/ca.crt` and replaces the system CA pool. Use it for a private or self-signed CA. The key can hold several PEM certificates, e.g. the old and the new CA during a rotation. A ConfigMap is used because a CA certificate is not secret.
+* **Host name (`tls.serverName`)**: Verifies the gateway certificate against this name instead of the endpoint host, e.g. when the endpoint is an IP address or a Service name that is not in the certificate's SANs.
+* **Mutual TLS (`tls.clientCertSecret`)**: The `tls.crt` and `tls.key` of the `kubernetes.io/tls` Secret are mounted read-only (mode `0400`) to `/etc/otlp/client/`, and presented to the gateway when it requests a client certificate. `tls.crt` may contain intermediate certificates after the leaf. A Secret managed by cert-manager `Certificate` works as-is.
+* **`tls.insecureSkipVerify`**: The traffic is still encrypted, but the gateway is not authenticated, so it is open to man-in-the-middle attacks and any headers can be captured by an impostor. The webhook warns about it, and it cannot be combined with `tls.ca`. For testing only.
+
+##### Authentication
+
+The gateway can authenticate XPU-Manager with request headers, a client certificate, or both:
+
+* **Headers**: For bearer tokens (`Authorization: Bearer <token>`), basic auth (`Authorization: Basic <base64>`), or API keys (e.g. `X-API-Key`). The Secret key has to hold the complete header value, including any `Bearer ` or `Basic ` prefix. The operator maps each header to an `OTLP_HEADER_<index>` environment variable in the XPU-Manager container (`<index>` being the position in `headers`), and the generated collector configuration only refers to it as `${env:OTLP_HEADER_<index>}`. The value is therefore not visible in the ClusterPolicy, the collector ConfigMap or the DaemonSet. Header names are case-insensitive and have to be unique. With `grpc`, headers are sent as gRPC metadata. The webhook warns if headers are configured for an `http://` endpoint, as they would be sent in plain text.
+* **Mutual TLS**: With `tls.clientCertSecret`, the gateway authenticates XPU-Manager by its client certificate during the TLS handshake. Requires an `https://` endpoint.
+
+All XPU-Manager pods on all nodes share the same credentials.
+
+##### Rotating credentials
+
+Changes to the `otlp` spec in the ClusterPolicy roll out the XPU-Manager DaemonSet automatically. Changes to the contents of the referenced Secrets and ConfigMaps do not: environment variables are only read at container start, and the collector loads the CA and client certificate files at startup. After rotating a token, a CA or a client certificate, restart the pods:
+```
+kubectl rollout restart daemonset -n intel-gpu-base-operator <cr-name>-xpu-manager
+```
+For cert-manager issued client certificates, schedule the restart within the renewal window, i.e. before the old certificate expires.
+
+##### With `spec.xpu.configMapOverride`
+
+When `spec.xpu.configMapOverride` is set, the operator does not generate the collector configuration, but it still sets up the header environment variables and the TLS file mounts from `otlp`. The override has to configure the `otlp_http` or `otlp_grpc` exporter itself and refer to them:
+
+|Item|Reference in the override|
+|---|---|
+|Header `headers[<index>]`|`${env:OTLP_HEADER_<index>}`|
+|`tls.ca`|`ca_file: /etc/otlp/ca/ca.crt`|
+|`tls.clientCertSecret`|`cert_file: /etc/otlp/client/tls.crt`, `key_file: /etc/otlp/client/tls.key`|
+
+##### Examples
+
+Plain-text HTTP, e.g. to an in-cluster collector:
+```
+spec:
+  resourceMonitoring: true
+  xpu:
+    otlp:
+      http:
+        endpoint: http://otel-collector.monitoring.svc:4318
+```
+
+HTTPS with a bearer token and a private CA:
+```
+kubectl create secret generic -n intel-gpu-base-operator otlp-auth --from-literal=authorization="Bearer <token>"
+kubectl create configmap -n intel-gpu-base-operator otlp-ca --from-file=ca.crt=./ca.crt
+```
+```
+spec:
+  resourceMonitoring: true
+  xpu:
+    otlp:
+      http:
+        endpoint: https://otel-gateway.example.com:4318
+        headers:
+        - name: Authorization
+          valueFrom:
+            name: otlp-auth
+            key: authorization
+        tls:
+          ca:
+            name: otlp-ca
+            key: ca.crt
+```
+
+gRPC with mutual TLS:
+```
+kubectl create secret tls -n intel-gpu-base-operator otlp-client --cert=client.crt --key=client.key
+```
+```
+spec:
+  resourceMonitoring: true
+  xpu:
+    otlp:
+      grpc:
+        endpoint: https://otel-gateway.example.com:4317
+        tls:
+          ca:
+            name: otlp-ca
+            key: ca.crt
+          clientCertSecret:
+            name: otlp-client
+```
 
 #### Kueue (`spec.kueue`)
 
