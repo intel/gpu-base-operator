@@ -1,0 +1,22 @@
+# OTLP gateway that requires TLS and a bearer token. The server certificate in the
+# "otlp-gateway-tls" Secret is issued by cert-manager (certificates.yaml). The
+# "otlp-gateway-auth" Secret (key "token") is not part of this directory: the tests generate
+# a random token and add the Secret from a kustomize overlay, so that no credentials are
+# stored in the repository.
+resources:
+- ../base
+- certificates.yaml
+generatorOptions:
+  disableNameSuffixHash: true
+configMapGenerator:
+- name: otlp-gateway
+  namespace: default
+  behavior: replace
+  files:
+  - config.yaml
+images:
+# The bearertokenauth extension is only in the contrib distribution.
+- name: otel/opentelemetry-collector
+  newName: otel/opentelemetry-collector-contrib
+patches:
+- path: deployment-patch.yaml

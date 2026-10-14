@@ -1,0 +1,25 @@
+# Mounts the server certificate and the bearer token for the TLS config.yaml.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otlp-gateway
+  namespace: default
+spec:
+  template:
+    spec:
+      containers:
+      - name: otelcol
+        volumeMounts:
+        - name: tls
+          mountPath: /etc/otlp-gateway/tls
+          readOnly: true
+        - name: auth
+          mountPath: /etc/otlp-gateway/auth
+          readOnly: true
+      volumes:
+      - name: tls
+        secret:
+          secretName: otlp-gateway-tls
+      - name: auth
+        secret:
+          secretName: otlp-gateway-auth

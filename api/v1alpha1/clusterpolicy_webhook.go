@@ -316,6 +316,7 @@ func validateOTLPExporterSpec(prefix string, exp *OTLPExporterSpec, grpc bool) (
 		warnings = append(warnings, fmt.Sprintf("%s.endpoint uses plain-text http://, the headers are sent unencrypted.", prefix))
 	}
 
+	// If TLS is not configured, return early as there is nothing more to validate.
 	if exp.TLS == nil {
 		return errs, warnings
 	}

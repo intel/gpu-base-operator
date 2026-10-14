@@ -1,0 +1,3 @@
+# OTLP gateway without TLS or authentication.
+resources:
+- ../base
