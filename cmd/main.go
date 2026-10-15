@@ -54,7 +54,10 @@ import (
 	nfdv1 "sigs.k8s.io/node-feature-discovery/api/nfd/v1alpha1"
 
 	intelcomv1alpha1 "github.com/intel/gpu-base-operator/api/v1alpha1"
-	"github.com/intel/gpu-base-operator/internal/controller"
+	"github.com/intel/gpu-base-operator/internal/controller/clusterpolicy"
+	"github.com/intel/gpu-base-operator/internal/controller/common"
+	"github.com/intel/gpu-base-operator/internal/controller/gpufirmwareupdate"
+	"github.com/intel/gpu-base-operator/internal/controller/gpurecoveryplan"
 	buildVersion "github.com/intel/gpu-base-operator/internal/version"
 	kmmv1beta1 "github.com/kubernetes-sigs/kernel-module-management/api/v1beta1"
 	// +kubebuilder:scaffold:imports
@@ -337,7 +340,7 @@ func main() {
 		moduleLoaderSAName = "module-loader"
 	}
 
-	copts := controller.ControllerOpts{
+	copts := common.ControllerOpts{
 		Namespace:                      ns,
 		SecretName:                     secret,
 		RequeueDelay:                   time.Second * 5,
@@ -349,33 +352,33 @@ func main() {
 
 	// Registered here rather than in a controller's SetupWithManager: the index is shared by
 	// every controller that drains a node, and controller-runtime allows only one registration.
-	if err := controller.SetupDrainIndices(context.Background(), mgr); err != nil {
+	if err := common.SetupDrainIndices(context.Background(), mgr); err != nil {
 		setupLog.Error(err, "unable to set up drain cache indexes")
 		os.Exit(1)
 	}
 
-	if err := (&controller.ClusterPolicyReconciler{
+	if err := (&clusterpolicy.ClusterPolicyReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr, copts); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ClusterPolicy")
 		os.Exit(1)
 	}
-	if err := (&controller.GPUFirmwareUpdateReconciler{
+	if err := (&gpufirmwareupdate.GPUFirmwareUpdateReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr, copts); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GPUFirmwareUpdate")
 		os.Exit(1)
 	}
-	if err := (&controller.GPURecoveryPlanReconciler{
+	if err := (&gpurecoveryplan.GPURecoveryPlanReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr, copts); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GPURecoveryPlan")
 		os.Exit(1)
 	}
-	if err := (&controller.XpumDeviceRefreshReconciler{
+	if err := (&clusterpolicy.XpumDeviceRefreshReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr, copts); err != nil {
