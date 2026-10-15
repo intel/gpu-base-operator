@@ -1,0 +1,1017 @@
+/*
+Copyright 2026 Intel Corporation. All Rights Reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package gpurecoveryplan
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"regexp"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	batch "k8s.io/api/batch/v1"
+	core "k8s.io/api/core/v1"
+	resv1 "k8s.io/api/resource/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/klog/v2"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	intelv1a1 "github.com/intel/gpu-base-operator/api/v1alpha1"
+	"github.com/intel/gpu-base-operator/internal/controller/common"
+)
+
+// deviceKey identifies a GPU by the Kubernetes node it lives on and its PCI BDF address.
+type deviceKey struct{ node, bdf string }
+
+// deviceNeed is what a device's taints currently call for: the recovery type to run, plus the
+// human-readable cause.
+type deviceNeed struct {
+	rt     intelv1a1.RecoveryType
+	reason string
+}
+
+// deviceAttributeString returns the string value of the named attribute from a device's
+// attribute map. Returns an empty string if the attribute is absent or not a string type.
+func deviceAttributeString(attrs map[resv1.QualifiedName]resv1.DeviceAttribute, name string) string {
+	if attrs == nil {
+		return ""
+	}
+
+	attr, ok := attrs[resv1.QualifiedName(name)]
+	if !ok || attr.StringValue == nil {
+		return ""
+	}
+
+	return *attr.StringValue
+}
+
+// taintToDeviceNeed maps a device taint key to the recovery it calls for and the reason
+// recorded on the resulting event. Returns false if the taint key is not a recovery-related one.
+func taintToDeviceNeed(taintKey string, defaultReset intelv1a1.RecoveryType) (deviceNeed, bool) {
+	switch common.RecoveryForDeviceTaint(taintKey) {
+	case common.DeviceRecoveryReset:
+		return deviceNeed{rt: resetTypeOrDefault(defaultReset), reason: reasonWedged}, true
+	case common.DeviceRecoveryReflash:
+		return deviceNeed{rt: intelv1a1.RecoveryTypeReflash, reason: reasonSurvivability}, true
+	default:
+		return deviceNeed{}, false
+	}
+}
+
+// resetTypeOrDefault resolves spec.defaultResetType, falling back to SBR when it is unset.
+//
+// The field is required by the CRD, so an empty value means an object that never went through
+// the API server. Falling back matters because an empty type produces a malformed event ID. Which
+// reset actually works is a platform property the operator cannot discover, so the value picked
+// here is arbitrary — SBR only because it is the least invasive of the three, and the event still
+// needs an admin approval before anything runs.
+func resetTypeOrDefault(rt intelv1a1.RecoveryType) intelv1a1.RecoveryType {
+	if rt == "" {
+		klog.Warningf("GPURecoveryPlan has no spec.defaultResetType; falling back to %s",
+			intelv1a1.RecoveryTypeSBR)
+
+		return intelv1a1.RecoveryTypeSBR
+	}
+
+	return rt
+}
+
+// higherPriorityNeed returns the more severe of two recovery needs.
+func higherPriorityNeed(a, b deviceNeed) deviceNeed {
+	if recoveryTypePriority(b.rt) > recoveryTypePriority(a.rt) {
+		return b
+	}
+
+	return a
+}
+
+// recoveryTypePriority ranks recovery types for higherPriorityNeed and escalateEvent. Only reflash
+// outranks a reset; the three resets rank equally.
+func recoveryTypePriority(rt intelv1a1.RecoveryType) int {
+	switch rt {
+	case intelv1a1.RecoveryTypeReflash:
+		return 2
+	case intelv1a1.RecoveryTypeSBR, intelv1a1.RecoveryTypeSlot, intelv1a1.RecoveryTypeAMC:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// generateEventID returns a deterministic, human-readable event ID in the form
+// "evt-<node>-<recoverytype>-<bdf-slug>".
+//
+// The BDF "0000:02:00.0" is sanitized to "0000-02-00-0": colons and dots are replaced with
+// hyphens.
+func generateEventID(nodeName, bdf string, rt intelv1a1.RecoveryType) string {
+	id := fmt.Sprintf("evt-%s-%s-%s", nodeSegment(nodeName), rt, sanitizeSegment(bdf))
+
+	// Two independent checks, because neither rule implies the other:
+	//
+	//   - Character set: metadata.name must be a DNS-1123 subdomain, which is stricter than a
+	//     label value (uppercase and "_" pass IsValidLabelValue), so checking the name rule
+	//     covers both.
+	//   - Length: IsDNS1123Subdomain permits 253 characters, but the ID is also used as a label
+	//     value on the recovery Job, capped at 63. The BDF is a free-form ResourceSlice attribute
+	//     with no length bound of its own.
+	//
+	// idBudget is what is left once recoveryJobName has added its prefix and attempt suffix, so
+	// an ID that fits here fits there too.
+	const idBudget = maxRecoveryNameLen - len("recovery-") - len("-99")
+
+	if errs := validation.IsDNS1123Subdomain(id); len(errs) > 0 || len(id) > idBudget {
+		// Reaching here means a sanitizer let something through. Fall back to a fully-hashed
+		// identity rather than attempting a repair: an unreadable but valid ID recovers the
+		// GPU, a readable invalid one wedges it in a retry loop, since every attempt to name
+		// the Job after it is rejected by the API server.
+		//
+		// rt is a closed enum of lowercase literals so it cannot be the invalid part and stays
+		// outside the hash, as does the "evt-" prefix, preserving escalateEvent's contract that
+		// a type change yields a new ID.
+		fallback := fmt.Sprintf("evt-%s-%s", rt, hashSegment(nodeName+"/"+bdf))
+
+		reason := strings.Join(errs, "; ")
+		if reason == "" {
+			reason = fmt.Sprintf("%d bytes exceeds the %d-byte budget", len(id), idBudget)
+		}
+
+		klog.Warningf("generated event ID %q for node %s BDF %s is unusable (%s); using %q instead",
+			id, nodeName, bdf, reason, fallback)
+
+		return fallback
+	}
+
+	return id
+}
+
+// recoveryJobName returns the Job name for the given event ID and attempt index.
+func recoveryJobName(eventID string, attempt int) string {
+	name := fmt.Sprintf("recovery-%s-%d", eventID, attempt)
+	if len(name) <= maxRecoveryNameLen && len(validation.IsDNS1123Subdomain(name)) == 0 {
+		return name
+	}
+
+	shortened := fmt.Sprintf("recovery-%s-%d", hashSegment(eventID), attempt)
+
+	klog.Warningf("recovery Job name %q (%d bytes) exceeds the %d-byte limit or is not a valid resource name; using %q instead",
+		name, len(name), maxRecoveryNameLen, shortened)
+
+	return shortened
+}
+
+// nodeSegment renders a node name for use inside an event ID, bounded to nodeSegmentMax.
+//
+// Names within budget pass through sanitized but otherwise intact, so the common
+// "evt-node03-sbr-02-00-0" is unchanged. Longer ones — an EKS-style
+// "ip-10-0-134-22.us-west-2.compute.internal" is 41 characters — keep a readable prefix and gain a
+// hash suffix. The full node name stays available in status.events[].nodeName and on the Job.
+func nodeSegment(nodeName string) string {
+	safe := sanitizeSegment(nodeName)
+	if len(safe) <= nodeSegmentMax {
+		return safe
+	}
+
+	// Hash the original name, not the truncated form: two nodes sharing a long prefix
+	// ("worker-aaaa...-01" and "worker-aaaa...-02") must not collapse onto one ID.
+	return strings.Trim(safe[:nodeSegmentMax-idHashLen-1], "-") + "-" + hashSegment(nodeName)
+}
+
+// sanitizeSegment folds an arbitrary string into something usable inside a Kubernetes
+// resource name: lowercased, with every character outside [a-z0-9-] replaced by "-" and the
+// result trimmed to start and end alphanumeric.
+func sanitizeSegment(s string) string {
+	var b strings.Builder
+
+	b.Grow(len(s))
+
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+
+	return strings.Trim(b.String(), "-")
+}
+
+// hashSegment returns the first idHashLen hex characters of the SHA-256 of s.
+func hashSegment(s string) string {
+	sum := sha256.Sum256([]byte(s))
+
+	return hex.EncodeToString(sum[:])[:idHashLen]
+}
+
+// deviceBDFPattern is the shape the kernel prints a PCI address in ("%04x:%02x:%02x.%d", function
+// 0-7), accepting either hex case because lspci and some drivers spell the bus uppercase.
+//
+// Both recovery command lines interpolate the BDF into a string a privileged root container hands
+// to /bin/sh, and it arrives from a free-form ResourceSlice attribute rather than from a validated
+// API field, so it is checked on the way in — see validDeviceBDF's callers.
+var deviceBDFPattern = regexp.MustCompile(`^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$`)
+
+// validDeviceBDF reports whether bdf is a PCI address the recovery Jobs can be handed.
+//
+// Deliberately an allow-list of the one shape that is ever correct, not a deny-list of shell
+// metacharacters, for the same reason firmwareFileNamePattern is: the value ends up in a command
+// line inside a privileged root container, where anything unanticipated is worse than a device the
+// operator declines to recover and says so about.
+func validDeviceBDF(bdf string) bool {
+	return deviceBDFPattern.MatchString(bdf)
+}
+
+// buildResetCommand returns the shell command line that carries out the given reset against the
+// given BDF. Returns "" for a type xpu-smi has no reset for, reflash above all: it writes firmware
+// rather than resetting the device, so it is a different Job entirely.
+//
+// One string rather than an argv, as buildFDOFlashCommand is and for the same reason — see there.
+func buildResetCommand(bdf string, rt intelv1a1.RecoveryType) string {
+	switch rt {
+	case intelv1a1.RecoveryTypeSBR:
+		return fmt.Sprintf("xpu-smi config -d %s --reset", bdf)
+	case intelv1a1.RecoveryTypeSlot:
+		return fmt.Sprintf("xpu-smi config -d %s --coldreset --force-reset-gpus", bdf)
+	case intelv1a1.RecoveryTypeAMC:
+		return fmt.Sprintf("xpu-smi amc --gpureset -d %s -y", bdf)
+	default:
+		return ""
+	}
+}
+
+// buildFDOFlashCommand returns the shell command line that reflashes one GPU from a firmware file the
+// fw-copy initContainer has staged in the shared volume.
+//
+// One string, not an argv: the container it lands on runs /bin/sh -c, which takes the command from
+// its first operand only and turns the rest into positional parameters. As an argv this flashed
+// nothing — the shell ran a bare "xpu-smi" and everything after it became $0, $1 and so on.
+//
+// Both interpolated values are shape-checked before they can reach here: the webhook allow-lists
+// spec.firmware.file down to [a-zA-Z0-9._-] (firmwareFileNamePattern) and detection drops any device
+// whose PCI address is not a BDF (validDeviceBDF).
+func buildFDOFlashCommand(bdf, file string) string {
+	return fmt.Sprintf("xpu-smi updatefw -d %s -t FDO -f %s/%s -y --force", bdf, reflashStagingDir, file)
+}
+
+// firmwareImagePath returns path to the firmware file inside the firmware image.
+func firmwareImagePath(file string) string {
+	return fmt.Sprintf("%s/%s", firmwareImageDir, file)
+}
+
+// containerByName returns the named container from a container list, or nil.
+func containerByName(containers []core.Container, name string) *core.Container {
+	for i := range containers {
+		if containers[i].Name == name {
+			return &containers[i]
+		}
+	}
+
+	return nil
+}
+
+// recoveryJobTimeout returns the activeDeadlineSeconds for the event's recovery Job.
+func recoveryJobTimeout(plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent) int64 {
+	if evt.RecoveryType.IsReflash() {
+		if plan.Spec.Timeouts.ReflashSeconds > 0 {
+			return int64(plan.Spec.Timeouts.ReflashSeconds)
+		}
+
+		return defaultReflashJobTimeout
+	}
+
+	if plan.Spec.Timeouts.ResetSeconds > 0 {
+		return int64(plan.Spec.Timeouts.ResetSeconds)
+	}
+
+	return defaultResetJobTimeout
+}
+
+// applyXpuSmiImage points the container that runs xpu-smi at the image and pull policy the plan asks
+// for, leaving the template's own values in place where the plan states none.
+func applyXpuSmiImage(c *core.Container, plan *intelv1a1.GPURecoveryPlan) {
+	c.Image = plan.Spec.XpuSmi.Image
+	c.ImagePullPolicy = core.PullPolicy(plan.Spec.XpuSmi.PullPolicy)
+}
+
+// nodeSelectorMatches reports whether the named node carries all labels in sel. An empty
+// selector matches anything, mirroring how the rest of the approval selector treats unset
+// fields.
+func nodeSelectorMatches(sel map[string]string, nodeName string, cache *nodeLabelCache) bool {
+	if len(sel) == 0 {
+		return true
+	}
+
+	nodeLabels, ok := cache.get(nodeName)
+	if !ok {
+		return false
+	}
+
+	return labels.SelectorFromSet(sel).Matches(labels.Set(nodeLabels))
+}
+
+// nodeLabelCache memoises Node label lookups for the duration of a single findMatchingApproval
+// call, where many events across a handful of nodes may each be tested against several label
+// selectors. A failed lookup is recorded too, so it is not retried within the same call.
+type nodeLabelCache struct {
+	r      *GPURecoveryPlanReconciler
+	ctx    context.Context
+	labels map[string]map[string]string
+	failed map[string]struct{}
+}
+
+func newNodeLabelCache(ctx context.Context, r *GPURecoveryPlanReconciler) *nodeLabelCache {
+	return &nodeLabelCache{
+		r:      r,
+		ctx:    ctx,
+		labels: make(map[string]map[string]string),
+		failed: make(map[string]struct{}),
+	}
+}
+
+// get returns the labels of the named Node. The second return value is false when the Node could
+// not be read, in which case the caller must not treat the selector as matched: a standing
+// approval scoped to a set of nodes must not authorise a reset on a node whose membership of that
+// set could not be confirmed.
+func (c *nodeLabelCache) get(nodeName string) (map[string]string, bool) {
+	if l, ok := c.labels[nodeName]; ok {
+		return l, true
+	}
+
+	if _, failed := c.failed[nodeName]; failed {
+		return nil, false
+	}
+
+	node := &core.Node{}
+	if err := c.r.Get(c.ctx, types.NamespacedName{Name: nodeName}, node); err != nil {
+		klog.Errorf("failed to get node %s for approval label matching: %v", nodeName, err)
+		c.failed[nodeName] = struct{}{}
+
+		return nil, false
+	}
+
+	c.labels[nodeName] = node.Labels
+
+	return node.Labels, true
+}
+
+// jobIsTerminal reports whether a Job has finished, successfully or not.
+func jobIsTerminal(job *batch.Job) bool {
+	return jobTerminalCondition(job) != nil
+}
+
+// jobTerminalCondition returns the Complete or Failed condition a Job has settled on, or nil while
+// it is still running.
+func jobTerminalCondition(job *batch.Job) *batch.JobCondition {
+	for i := range job.Status.Conditions {
+		cond := &job.Status.Conditions[i]
+
+		if cond.Status != core.ConditionTrue {
+			continue
+		}
+
+		if cond.Type == batch.JobComplete || cond.Type == batch.JobFailed {
+			return cond
+		}
+	}
+
+	return nil
+}
+
+// jobStartedAt is when a Job's clock began.
+func jobStartedAt(job *batch.Job) *metav1.Time {
+	if job.Status.StartTime != nil {
+		return job.Status.StartTime
+	}
+
+	if job.CreationTimestamp.IsZero() {
+		return nil
+	}
+
+	return &job.CreationTimestamp
+}
+
+// jobDeadlineSeconds returns the deadline the recovery Job is actually running under, or if
+// the Job is not given, the plan's deadline.
+func jobDeadlineSeconds(plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent, job *batch.Job) int64 {
+	if job != nil && job.Spec.ActiveDeadlineSeconds != nil && *job.Spec.ActiveDeadlineSeconds > 0 {
+		return *job.Spec.ActiveDeadlineSeconds
+	}
+
+	return recoveryJobTimeout(plan, evt)
+}
+
+// jobVerdictOverdue reports whether a recovery Job has had longer than deadlineSeconds, plus a
+// grace period, to reach a verdict.
+func jobVerdictOverdue(deadlineSeconds int64, since *metav1.Time) bool {
+	if since == nil {
+		return false
+	}
+
+	deadline := time.Duration(deadlineSeconds)*time.Second + recoveryJobVerdictGrace
+
+	return time.Since(since.Time) > deadline
+}
+
+// failEventJob records a failed recovery attempt: the Job moves to pastJobs and the event lands in
+// failed with detail as the reason.
+func failEventJob(plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent, format string, args ...any) {
+	detail := fmt.Sprintf(format, args...)
+	failedJob := evt.JobName
+
+	evt.PastJobs = append(evt.PastJobs, failedJob)
+	evt.JobName = ""
+
+	// pastJobs holds one entry per Job this event has run, so its length after the append is the
+	// number of this attempt.
+	attempt := len(evt.PastJobs)
+
+	// The attempt number leads the sentence because a Job controller message can be long enough
+	// that stateMessage's cap would cut a trailing one off (jobFailureDetail quotes the whole
+	// message, pod name included), and on a re-approved event it says which attempt this was.
+	setEventState(evt, intelv1a1.RecoveryEventStateFailed,
+		"attempt %d failed: %s", attempt, detail)
+
+	klog.Warningf("GPURecoveryPlan %s: event %s: attempt %d failed: %s",
+		plan.Name, evt.ID, attempt, detail)
+	appendMessage(plan, fmt.Sprintf("Event %s: attempt %d failed: %s — pods retained until taint clears",
+		evt.ID, attempt, detail))
+}
+
+// jobFailureDetail renders a failed Job's condition as the reason it failed. The Reason is the
+// machine-readable verdict (BackoffLimitExceeded, DeadlineExceeded), the Message is the Job
+// controller's sentence about it; either can be empty depending on how the Job failed, so this
+// reports whichever are there rather than composing an empty parenthetical.
+func jobFailureDetail(cond batch.JobCondition) string {
+	switch {
+	case cond.Reason != "" && cond.Message != "":
+		return fmt.Sprintf("%s (%s)", cond.Reason, cond.Message)
+	case cond.Reason != "":
+		return cond.Reason
+	case cond.Message != "":
+		return cond.Message
+	default:
+		return "no reason reported by the Job controller"
+	}
+}
+
+// setEventState records the state an event is moving to together with the sentence that explains it,
+// and stamps LastUpdated. Every state write goes through it, so status.events[].stateMessage always
+// describes the state next to it.
+// nolint:unparam
+func setEventState(evt *intelv1a1.RecoveryEvent, state intelv1a1.RecoveryEventState, format string, args ...any) metav1.Time {
+	msg := ""
+	if format != "" {
+		msg = capString(fmt.Sprintf(format, args...), maxStateMessageLen)
+	}
+
+	if evt.State == state && evt.StateMessage == msg && evt.LastUpdated != nil {
+		return *evt.LastUpdated
+	}
+
+	now := metav1.NewTime(time.Now())
+	evt.State = state
+	evt.StateMessage = msg
+	evt.LastUpdated = &now
+
+	return now
+}
+
+// capString truncates a single string for storage in status, marking it when anything was cut so a
+// reader can tell a complete message from a clipped one. Counted in bytes rather than runes, since
+// the limit exists to bound the size of the stored object.
+func capString(s string, limit int) string {
+	const marker = "..."
+
+	if len(s) <= limit {
+		return s
+	}
+
+	// Back off to a rune boundary so the result stays valid UTF-8; the API server would otherwise
+	// reject the status write outright.
+	cut := limit - len(marker)
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+
+	return s[:cut] + marker
+}
+
+// capStrings truncates a list for storage in status, appending a marker when entries were dropped
+// so the count is never silently understated. Returns nil for an empty input so the field is
+// omitted.
+func capStrings(items []string, limit int) []string {
+	if len(items) == 0 {
+		return nil
+	}
+
+	if len(items) <= limit {
+		return items
+	}
+
+	capped := make([]string, 0, limit+1)
+	capped = append(capped, items[:limit]...)
+	capped = append(capped, fmt.Sprintf("... and %d more", len(items)-limit))
+
+	return capped
+}
+
+// recoveryTaint returns the node taint this plan uses while draining. The plan name goes in the
+// value, so two plans draining the same node do not clobber each other's taint.
+func recoveryTaint(planName string) core.Taint {
+	return core.Taint{
+		Key:    recoveryTaintKey,
+		Value:  planName,
+		Effect: core.TaintEffectNoSchedule,
+	}
+}
+
+// needsDrain reports whether an event's recovery has to empty the node before it runs.
+func needsDrain(plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent) bool {
+	if !plan.Spec.Drain.Enabled() {
+		return false
+	}
+
+	return !evt.RecoveryType.IsReflash()
+}
+
+// nodeBusyWith reports whether another event in this plan is already recovering a GPU on the same
+// node, returning the ID of the event that holds it.
+func nodeBusyWith(plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent) (string, bool) {
+	for i := range plan.Status.Events {
+		other := &plan.Status.Events[i]
+
+		if other.ID == evt.ID || other.NodeName != evt.NodeName {
+			continue
+		}
+
+		if other.State == intelv1a1.RecoveryEventStateDraining ||
+			other.State == intelv1a1.RecoveryEventStateInProgress {
+			return other.ID, true
+		}
+	}
+
+	return "", false
+}
+
+// blockEvent holds an approved event back because another recovery owns its node.
+func blockEvent(plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent, blockerID string) {
+	if evt.State == intelv1a1.RecoveryEventStateBlocked {
+		klog.V(2).Infof("GPURecoveryPlan %s: event %s still blocked by %s on node %s",
+			plan.Name, evt.ID, blockerID, evt.NodeName)
+
+		return
+	}
+
+	setEventState(evt, intelv1a1.RecoveryEventStateBlocked,
+		"recovery %s is already running on node %s; approval retained", blockerID, evt.NodeName)
+
+	appendMessage(plan, fmt.Sprintf(
+		"Event %s: held back — recovery %s is already running on node %s; approval retained",
+		evt.ID, blockerID, evt.NodeName))
+	klog.Infof("GPURecoveryPlan %s: event %s blocked by %s on node %s (approval retained)",
+		plan.Name, evt.ID, blockerID, evt.NodeName)
+}
+
+// beginDrain moves an approved event into draining and starts the deadline clock. Called instead
+// of createRecoveryJob for an event whose recovery needs the node emptied first.
+func beginDrain(plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent) {
+	// No message: the state names what is happening, podsBlockingDrain says what it is waiting on,
+	// and drainStartedAt says since when.
+	now := setEventState(evt, intelv1a1.RecoveryEventStateDraining, "")
+	evt.DrainStartedAt = &now
+
+	appendMessage(plan, fmt.Sprintf("Event %s: draining node %s before %s reset",
+		evt.ID, evt.NodeName, evt.RecoveryType.Type))
+	klog.Infof("GPURecoveryPlan %s: event %s draining node %s before %s reset",
+		plan.Name, evt.ID, evt.NodeName, evt.RecoveryType.Type)
+}
+
+// drainDeadlineExceeded reports whether the event has been draining for longer than
+// spec.drain.timeoutSeconds allows.
+func drainDeadlineExceeded(plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent) bool {
+	if evt.DrainStartedAt == nil {
+		now := metav1.NewTime(time.Now())
+		evt.DrainStartedAt = &now
+
+		return false
+	}
+
+	timeout := time.Duration(plan.Spec.Drain.TimeoutSeconds) * time.Second
+	// Shouldn't ever happen, value checked at admission.
+	if timeout <= 0 {
+		timeout = defaultDrainTimeout
+	}
+
+	return time.Since(evt.DrainStartedAt.Time) > timeout
+}
+
+// drainBlockerDetail describes what a drain is still waiting for, for the sentence failDrain
+// records on the event.
+func drainBlockerDetail(blocking, claims []string) string {
+	detail := fmt.Sprintf("%d pod(s) still present", len(blocking))
+	if len(claims) > 0 {
+		detail += fmt.Sprintf(", %d ResourceClaim(s) still reserving the GPU", len(claims))
+	}
+
+	return detail
+}
+
+// failDrain gives up on an event that has sat in draining past its deadline, and records the cause
+// the caller observed on the pass that ran out of time.
+func failDrain(plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent, cause string) {
+	evt.DrainStartedAt = nil
+
+	// The state alone does not say which kind of failure this is: no reset was attempted, so the
+	// GPU is in the same condition as before and what has to change is the workload or the cluster,
+	// not the plan.
+	setEventState(evt, intelv1a1.RecoveryEventStateFailed,
+		"drain of node %s timed out after %ds (%s); reset not attempted",
+		evt.NodeName, plan.Spec.Drain.TimeoutSeconds, cause)
+
+	msg := fmt.Sprintf("Event %s: %s", evt.ID, evt.StateMessage)
+
+	appendMessage(plan, msg)
+	klog.Warningf("GPURecoveryPlan %s: %s (pods: %s; claims: %s)",
+		plan.Name, msg,
+		strings.Join(evt.PodsBlockingDrain, ", "), strings.Join(evt.ClaimsBlockingReset, ", "))
+}
+
+// poolDevice identifies a DRA device the way an allocation result does: by the pool it belongs to
+// plus its name within that pool. The device name alone is only unique per pool.
+type poolDevice struct{ pool, device string }
+
+// claimHoldsDevice reports whether an allocated claim holds one of the given devices for exclusive
+// use.
+func claimHoldsDevice(claim *resv1.ResourceClaim, devices map[poolDevice]struct{}) bool {
+	for _, res := range claim.Status.Allocation.Devices.Results {
+		if res.Driver != common.GPUDeviceClass {
+			continue
+		}
+
+		if _, match := devices[poolDevice{pool: res.Pool, device: res.Device}]; !match {
+			continue
+		}
+
+		// Per result, not per claim: a claim with both an admin request and a normal one still
+		// holds the device through the normal one.
+		if res.AdminAccess != nil && *res.AdminAccess {
+			klog.V(2).Infof("claim %s/%s has admin access to device %s, which is not an exclusive hold",
+				claim.Namespace, claim.Name, res.Device)
+
+			continue
+		}
+
+		return true
+	}
+
+	return false
+}
+
+// findEventForDevice returns the index into status.events of the existing event for the
+// given node+BDF, or -1 if there is none.
+func findEventForDevice(plan *intelv1a1.GPURecoveryPlan, nodeName, bdf string) int {
+	for i := range plan.Status.Events {
+		if plan.Status.Events[i].NodeName == nodeName && plan.Status.Events[i].GPUBDF == bdf {
+			return i
+		}
+	}
+
+	return -1
+}
+
+// addRecoveryEvent appends a new RecoveryEvent in waiting-approval state to the plan status.
+func addRecoveryEvent(plan *intelv1a1.GPURecoveryPlan, nodeName, bdf string, need deviceNeed) string {
+	id := generateEventID(nodeName, bdf, need.rt)
+
+	evt := intelv1a1.RecoveryEvent{
+		ID:           id,
+		NodeName:     nodeName,
+		GPUBDF:       bdf,
+		Reason:       need.reason,
+		RecoveryType: intelv1a1.RecoveryTypeSpec{Type: need.rt},
+	}
+
+	// No message: reason, nodeName, gpuBDF and recoveryType already say everything about a new
+	// event, and restating them would only train an admin to ignore the field.
+	setEventState(&evt, intelv1a1.RecoveryEventStateWaitingApproval, "")
+
+	plan.Status.Events = append(plan.Status.Events, evt)
+
+	return id
+}
+
+// hasActiveJobs reports whether any event still has a Job in flight.
+func hasActiveJobs(plan *intelv1a1.GPURecoveryPlan) bool {
+	for _, evt := range plan.Status.Events {
+		if evt.State == intelv1a1.RecoveryEventStateInProgress ||
+			evt.State == intelv1a1.RecoveryEventStateDraining ||
+			evt.State == intelv1a1.RecoveryEventStateBlocked {
+			return true
+		}
+	}
+
+	return false
+}
+
+// updatePlanState derives the overall plan state from the current events and sets status.state,
+// the value shown in the "State" print column of `kubectl get gpurecoveryplan`.
+func updatePlanState(plan *intelv1a1.GPURecoveryPlan) {
+	anyActive := false
+	anyStuck := false
+
+	for _, evt := range plan.Status.Events {
+		switch evt.State {
+		case intelv1a1.RecoveryEventStateWaitingApproval,
+			intelv1a1.RecoveryEventStateBlocked,
+			intelv1a1.RecoveryEventStateDraining,
+			intelv1a1.RecoveryEventStateInProgress:
+			// blocked is active, not stuck: it clears on its own once the node frees up.
+			//
+			// waiting-approval needs a second look. An event whose images did not verify against the
+			// current spec is parked there (see ensureImagesUsable) and stays until the plan is
+			// edited, so it is indistinguishable from one merely awaiting a decision — but the admin
+			// has already decided and something in the plan is wrong, which is an error.
+			if evt.State == intelv1a1.RecoveryEventStateWaitingApproval &&
+				evt.ImageVerifyGeneration != 0 && evt.ImageVerifyGeneration == plan.Generation {
+				anyStuck = true
+			} else {
+				anyActive = true
+			}
+
+		case intelv1a1.RecoveryEventStateMissingFirmware:
+			// Blocked on operator configuration, not on hardware or an admin decision:
+			// the reflash cannot even be attempted until spec.firmware is filled in.
+			anyStuck = true
+
+		case intelv1a1.RecoveryEventStateFailed:
+			anyStuck = true
+		}
+	}
+
+	switch {
+	case anyStuck:
+		plan.Status.State = intelv1a1.PlanStateError
+	case anyActive:
+		plan.Status.State = intelv1a1.PlanStateActive
+	default:
+		plan.Status.State = intelv1a1.PlanStateIdle
+	}
+}
+
+// pruneConsumedApprovals removes consumed one-shot approvals that are not referred by status.events
+func pruneConsumedApprovals(plan *intelv1a1.GPURecoveryPlan) {
+	referenced := make(map[string]struct{}, len(plan.Status.Events))
+
+	for _, evt := range plan.Status.Events {
+		if evt.ApprovalID != "" {
+			referenced[evt.ApprovalID] = struct{}{}
+		}
+	}
+
+	kept := plan.Spec.Approvals[:0]
+
+	for _, a := range plan.Spec.Approvals {
+		if a.Consumed && !a.Persistent {
+			if _, active := referenced[a.ID]; !active {
+				klog.Infof("GPURecoveryPlan %s: pruning consumed approval %s (no active events reference it)",
+					plan.Name, a.ID)
+
+				continue
+			}
+		}
+
+		kept = append(kept, a)
+	}
+
+	plan.Spec.Approvals = kept
+}
+
+// appendMessage appends a message to status.messages, evicting the oldest entry if the
+// cap (maxStatusMessages) has been reached. Avoid repeating the same message over and over.
+func appendMessage(plan *intelv1a1.GPURecoveryPlan, msg string) {
+	if len(plan.Status.Messages) > 0 && plan.Status.Messages[len(plan.Status.Messages)-1] == msg {
+		// Avoid repeating the same message over and over.
+		return
+	}
+
+	plan.Status.Messages = append(plan.Status.Messages, msg)
+
+	for len(plan.Status.Messages) > maxStatusMessages {
+		plan.Status.Messages = plan.Status.Messages[1:]
+	}
+}
+
+// addNewEvents creates a RecoveryEvent for every tainted device that does not have one
+// yet, up to maxStatusEvents entries in status.events.
+func addNewEvents(plan *intelv1a1.GPURecoveryPlan, active map[deviceKey]deviceNeed) {
+	skipped := 0
+
+	for dk, need := range active {
+		// A device that already has an event does not get a second one, but its taints may
+		// since have escalated to a more severe recovery type.
+		if i := findEventForDevice(plan, dk.node, dk.bdf); i >= 0 {
+			escalateEvent(plan, &plan.Status.Events[i], need)
+
+			continue
+		}
+
+		if len(plan.Status.Events) >= maxStatusEvents {
+			skipped++
+
+			continue
+		}
+
+		eventId := addRecoveryEvent(plan, dk.node, dk.bdf, need)
+
+		klog.Infof("GPURecoveryPlan %s: added recovery event %s for device %s on node %s (reason: %s)",
+			plan.Name, eventId, dk.bdf, dk.node, need.reason)
+	}
+
+	if skipped > 0 {
+		msg := fmt.Sprintf("status.events is at its %d-entry limit: %d newly detected device(s) not recorded",
+			maxStatusEvents, skipped)
+
+		appendMessage(plan, msg)
+		klog.Warningf("GPURecoveryPlan %s: %s", plan.Name, msg)
+	}
+}
+
+// escalateEvent up-levels an existing event in place when the device's taints now call for a more
+// severe recovery than the event was created for.
+func escalateEvent(plan *intelv1a1.GPURecoveryPlan, evt *intelv1a1.RecoveryEvent, need deviceNeed) {
+	if recoveryTypePriority(need.rt) <= recoveryTypePriority(evt.RecoveryType.Type) {
+		return
+	}
+
+	if evt.State == intelv1a1.RecoveryEventStateInProgress {
+		klog.V(2).Infof("GPURecoveryPlan %s: device %s/%s now needs %s but event %s has a Job in flight; deferring escalation",
+			plan.Name, evt.NodeName, evt.GPUBDF, need.rt, evt.ID)
+
+		return
+	}
+
+	oldID := evt.ID
+	oldType := evt.RecoveryType.Type
+
+	// The ID embeds the recovery type, so it has to be regenerated.
+	evt.ID = generateEventID(evt.NodeName, evt.GPUBDF, need.rt)
+	evt.RecoveryType = intelv1a1.RecoveryTypeSpec{Type: need.rt}
+
+	// The cause changed too — the device is in survivability mode now, not merely wedged.
+	evt.Reason = need.reason
+
+	// Reset event back to initial state. PastJobs is left alone so the earlier attempts stay
+	// visible for diagnostics.
+	evt.ApprovalID = ""
+	evt.ApprovalMatchedAt = nil
+
+	// The escalated operation may not pull the same images — a reset needs xpu-smi, a reflash needs
+	// the firmware image too. Carrying the recorded generation over would treat a firmware image that
+	// has never been checked as already answered by another image's failure. Cleared before the state
+	// is set, so the escalation message below survives.
+	clearImageVerifyHold(evt)
+
+	setEventState(evt, intelv1a1.RecoveryEventStateWaitingApproval,
+		"escalated from %s to %s (%s); the approval for the previous type no longer applies",
+		oldType, need.rt, need.reason)
+
+	klog.Infof("GPURecoveryPlan %s: escalated event %s -> %s for %s/%s (%s -> %s); awaiting approval",
+		plan.Name, oldID, evt.ID, evt.NodeName, evt.GPUBDF, oldType, need.rt)
+	appendMessage(plan, fmt.Sprintf("Event %s escalated to %s on %s/%s (was %s, now %s); previous approval no longer applies",
+		oldID, evt.ID, evt.NodeName, evt.GPUBDF, oldType, need.rt))
+}
+
+// runningRecoveryJobs returns the names of this plan's Jobs that have not reached a terminal
+// condition. Jobs are found by the plan label rather than by walking status.events, so a Job whose
+// event entry was already pruned still holds up deletion.
+func runningRecoveryJobs(cli client.Reader, ctx context.Context, ns string, plan *intelv1a1.GPURecoveryPlan) ([]string, error) {
+	jobList := &batch.JobList{}
+
+	if err := cli.List(ctx, jobList,
+		client.InNamespace(ns),
+		client.MatchingLabels{recoveryJobLabelPlan: plan.Name},
+	); err != nil {
+		return nil, err
+	}
+
+	running := make([]string, 0, len(jobList.Items))
+
+	for i := range jobList.Items {
+		job := &jobList.Items[i]
+
+		// A Job already being deleted is not something to wait for.
+		if !job.DeletionTimestamp.IsZero() {
+			continue
+		}
+
+		if !jobIsTerminal(job) {
+			running = append(running, job.Name)
+		}
+	}
+
+	return running, nil
+}
+
+// approvalChanges is what one reconcile pass did to spec.approvals: the one-shot approvals it spent
+// and the spent ones it pruned. Marking an approval consumed and dropping it again are the only
+// spec writes the operator ever makes, so the whole write-back can be expressed as those two sets
+// applied to whatever the API server currently holds.
+type approvalChanges struct {
+	consumed map[string]bool
+	removed  map[string]bool
+}
+
+// diffApprovals derives the changes a pass made from the copy of the plan it started with.
+func diffApprovals(orig, plan *intelv1a1.GPURecoveryPlan) approvalChanges {
+	ch := approvalChanges{consumed: map[string]bool{}, removed: map[string]bool{}}
+
+	was := make(map[string]bool, len(orig.Spec.Approvals))
+	for _, a := range orig.Spec.Approvals {
+		was[a.ID] = a.Consumed
+	}
+
+	present := make(map[string]bool, len(plan.Spec.Approvals))
+
+	for _, a := range plan.Spec.Approvals {
+		present[a.ID] = true
+
+		// Only a flag this pass flipped. An approval that arrived already consumed is left out, so
+		// that an ID an admin has reused for a fresh approval is not spent before it is matched.
+		if a.Consumed && !was[a.ID] {
+			ch.consumed[a.ID] = true
+		}
+	}
+
+	for _, a := range orig.Spec.Approvals {
+		if !present[a.ID] {
+			ch.removed[a.ID] = true
+		}
+	}
+
+	return ch
+}
+
+// empty reports whether the pass left spec.approvals alone.
+func (ch approvalChanges) empty() bool {
+	return len(ch.consumed) == 0 && len(ch.removed) == 0
+}
+
+// apply writes the changes into plan.Spec.Approvals, leaving every other approval — including one
+// added since the pass began — as it stands. Returns whether anything actually changed, so a write
+// that has nothing left to do can be skipped.
+func (ch approvalChanges) apply(plan *intelv1a1.GPURecoveryPlan) bool {
+	kept := make([]intelv1a1.RecoveryApproval, 0, len(plan.Spec.Approvals))
+	changed := false
+
+	for _, a := range plan.Spec.Approvals {
+		if ch.removed[a.ID] {
+			changed = true
+
+			continue
+		}
+
+		if ch.consumed[a.ID] && !a.Consumed {
+			a.Consumed = true
+			changed = true
+		}
+
+		kept = append(kept, a)
+	}
+
+	plan.Spec.Approvals = kept
+
+	return changed
+}
+
+// setApprovalConsumed marks the approval with the given ID as consumed
+func setApprovalConsumed(plan *intelv1a1.GPURecoveryPlan, id string) {
+	for i := range plan.Spec.Approvals {
+		if plan.Spec.Approvals[i].ID == id {
+			plan.Spec.Approvals[i].Consumed = true
+
+			klog.Infof("GPURecoveryPlan %s: approval %s marked as consumed", plan.Name, id)
+
+			return
+		}
+	}
+}
