@@ -19,6 +19,8 @@ package gpufirmwareupdate
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"slices"
 	"strings"
@@ -67,6 +69,13 @@ const (
 	FirmwareTypeOPROMDATA   = "OPROM_DATA"
 
 	completedTag = "##COMPLETED##"
+
+	// maxUpdateJobNameLen caps the update Job name at 63 rather than the 253 metadata.name
+	// allows: the Job controller copies the name into spec.template.labels as
+	// batch.kubernetes.io/job-name, and label values are limited to 63 bytes.
+	maxUpdateJobNameLen = 63
+	// jobNameHashLen is the number of SHA-256 hex characters appended to a shortened Job name.
+	jobNameHashLen = 8
 
 	gpuFwUpdateFinalizer = "gpufirmwareupdate.intel.com/finalizer"
 
@@ -497,6 +506,24 @@ func (r *GPUFirmwareUpdateReconciler) cleanupOpenShiftResources(ctx context.Cont
 	common.DeleteOpenShiftSCCResources(ctx, r.Client, sccName, roleName, bindingName, saName, r.Opts.Namespace)
 }
 
+// updateJobName returns the name of the update Job for a node. Names that would exceed
+// maxUpdateJobNameLen keep a readable prefix and gain a hash of the full name, so the result
+// stays deterministic and unique per (GPUFirmwareUpdate, node) pair.
+func updateJobName(fuName, nodeName string) string {
+	name := fmt.Sprintf("%s-fwupdate-%s", fuName, nodeName)
+	if len(name) <= maxUpdateJobNameLen {
+		return name
+	}
+
+	sum := sha256.Sum256([]byte(name))
+
+	// Both inputs are DNS-1123 subdomains, so the cut prefix only needs its trailing
+	// separators removed to remain a valid name.
+	prefix := strings.TrimRight(name[:maxUpdateJobNameLen-jobNameHashLen-1], "-.")
+
+	return prefix + "-" + hex.EncodeToString(sum[:])[:jobNameHashLen]
+}
+
 func (r *GPUFirmwareUpdateReconciler) createUpdateJobObjForNode(nodeName string, fu *intelcomv1alpha1.GPUFirmwareUpdate) *batch.Job {
 	job := deployments.XpuManagerFWUpdateJob()
 	job.Namespace = r.Opts.Namespace
@@ -505,9 +532,7 @@ func (r *GPUFirmwareUpdateReconciler) createUpdateJobObjForNode(nodeName string,
 		"node":              nodeName,
 	}
 
-	jobName := fmt.Sprintf("%s-fwupdate-%s", fu.Name, nodeName)
-
-	job.Name = jobName
+	job.Name = updateJobName(fu.Name, nodeName)
 
 	job.Spec.Template.Spec.Containers[0].Image = fu.Spec.UpdaterImage
 

@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -1015,6 +1016,31 @@ var _ = Describe("GPU Firmware Update Job", func() {
 			Expect(updater.SecurityContext.SeccompProfile.Type).To(Equal(core.SeccompProfileTypeRuntimeDefault))
 			Expect(updater.SecurityContext.Capabilities).NotTo(BeNil())
 			Expect(updater.SecurityContext.Capabilities.Drop).To(ContainElement(core.Capability("ALL")))
+		})
+	})
+
+	Context("Job name", func() {
+		It("keeps short names unchanged", func() {
+			Expect(updateJobName("fu", "node-1")).To(Equal("fu-fwupdate-node-1"))
+		})
+
+		It("shortens long names to a valid, deterministic, unique label value", func() {
+			const fuName = "fwupdate-direct"
+			nodeA := "intel-gpu-base-operator-test-e2e-control-plane"
+			nodeB := "intel-gpu-base-operator-test-e2e-control-plane2"
+
+			nameA := updateJobName(fuName, nodeA)
+			Expect(len(nameA)).To(BeNumerically("<=", maxUpdateJobNameLen))
+			Expect(validation.IsDNS1123Subdomain(nameA)).To(BeEmpty())
+			Expect(validation.IsValidLabelValue(nameA)).To(BeEmpty())
+			Expect(nameA).To(HavePrefix(fuName + "-fwupdate-"))
+			Expect(updateJobName(fuName, nodeA)).To(Equal(nameA))
+			Expect(updateJobName(fuName, nodeB)).NotTo(Equal(nameA))
+
+			r := &GPUFirmwareUpdateReconciler{}
+			fu := baseCr()
+			fu.Name = fuName
+			Expect(r.createUpdateJobObjForNode(nodeA, fu).Name).To(Equal(nameA))
 		})
 	})
 })
