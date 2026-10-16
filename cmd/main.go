@@ -298,6 +298,9 @@ func main() {
 				// not the operator namespace — watch cluster-wide so anyAllocatedResourceClaims
 				// can detect in-use GPU claims before tearing down DRA.
 				&resv1.ResourceClaim{}: {Namespaces: map[string]cache.Config{cache.AllNamespaces: {}}},
+				// ResourceClaimTemplates referenced by workload pods are read when
+				// selecting GPU pods to drain for firmware updates.
+				&resv1.ResourceClaimTemplate{}: {Namespaces: map[string]cache.Config{cache.AllNamespaces: {}}},
 			},
 		},
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
