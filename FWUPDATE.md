@@ -46,6 +46,14 @@ make fwupdater-build
 
 It will produce a container image called `docker.io/intel/gpu-fwupdater:devel`
 
+To exercise the update flow without flashing anything, use the mock updater image instead. Its `xpu-smi` is [`test/fake-xpu-smi`](test/fake-xpu-smi/README.md): it checks its arguments and the staged firmware file, waits a few seconds and reports success, without touching the GPU. The e2e suite uses it (see `test/e2e/fwupdate_test.go`).
+
+```
+make fwupdater-mock-build
+```
+
+It will produce a container image called `ghcr.io/intel/gpu-fwupdater-mock:devel`
+
 To use these container images within the GPU FW update, they need to be placed in a registry where they can be accessed. The image path need to be also
 set in the `GPUFirmwareUpdate` resource that initiates the update:
 
