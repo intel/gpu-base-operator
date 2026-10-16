@@ -3,5 +3,8 @@
 
 FROM debian:stable-slim
 
-COPY fwfiles/* /fwupdate/
+# FWFILES_DIR lets the e2e suite build a content image from dummy files instead of real firmware.
+ARG FWFILES_DIR=fwfiles
+
+COPY ${FWFILES_DIR}/* /fwupdate/
 COPY scripts/update.sh /fwupdate/update.sh

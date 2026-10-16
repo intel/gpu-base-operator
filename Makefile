@@ -56,6 +56,7 @@ IMG ?= ghcr.io/intel/intel-gpu-base-operator:$(TAG)
 FWFILES_IMG ?= ghcr.io/intel/gpu-firmware-update-files:$(TAG)
 FWUPDATER_IMG ?= ghcr.io/intel/gpu-fwupdater:$(TAG)
 FWUPDATER_MOCK_IMG ?= ghcr.io/intel/gpu-fwupdater-mock:$(TAG)
+FWFILES_E2E_IMG ?= ghcr.io/intel/gpu-firmware-update-files-e2e:$(TAG)
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -156,6 +157,11 @@ test-e2e-extended: setup-test-e2e manifests generate fmt vet
 	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v --ginkgo.label-filter "clusterpolicy" -timeout 15m
 	$(MAKE) cleanup-test-e2e
 
+.PHONY: test-e2e-fwupdate
+test-e2e-fwupdate: docker-build-e2e setup-test-e2e manifests generate fmt vet
+	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v --ginkgo.label-filter "fwupdate" -timeout 5m
+	$(MAKE) cleanup-test-e2e
+
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
@@ -232,6 +238,13 @@ fwupdater-build:
 .PHONY: fwupdater-mock-build
 fwupdater-mock-build:
 	$(CONTAINER_TOOL) build --pull -t ${FWUPDATER_MOCK_IMG} -f build/fwupdater-mock/Dockerfile .
+
+.PHONY: fwfiles-e2e-build
+fwfiles-e2e-build: ## Build the firmware content image the e2e suite flashes, from dummy files.
+	$(CONTAINER_TOOL) build --pull --build-arg FWFILES_DIR=test/e2e/testdata/fwfiles -t ${FWFILES_E2E_IMG} -f build/fwfiles/Dockerfile .
+
+.PHONY: docker-build-e2e
+docker-build-e2e: fwupdater-mock-build fwfiles-e2e-build ## Build every image the e2e suite loads.
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:

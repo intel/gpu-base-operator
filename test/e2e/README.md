@@ -37,24 +37,30 @@ Test run automatically pre-pulls the images used in the run to prevent timeouts 
 
 ## How to run
 
-Build the latest operator:
+Build the latest operator and the firmware update test images:
 
 ```
-make docker-build
+make operator-build docker-build-e2e
 ```
 > Test run automatically imports the operator image to Kind from docker.
 
+### Firmware update specs
 
-And run the tests for nodes with newer `xe` KMD (i915 tests are excluded):
+The `fwupdate` specs run `GPUFirmwareUpdate`s against the node with the mock updater image
+(`make fwupdater-mock-build`, see `test/fake-xpu-smi/README.md`), so no firmware is flashed. The
+firmware files are dummies from `test/e2e/testdata/fwfiles`, built into a content image by
+`make fwfiles-e2e-build`. The suite pushes that image to a registry it runs inside the cluster
+(NodePort 30500 on the node), because the operator verifies the content image against a registry
+before it starts.
 
-```
-make test-e2e
-```
+The GPU to update is taken from the DRA ResourceSlice. `scripts/update.sh` only updates GPUs that
+have an MEI interface, so on a node with none (integrated GPUs, for example) the specs that need the
+mock to run are skipped. By default the first GPU in the ResourceSlice is used; on a node with
+several GPUs, pick one by PCI device ID with `E2E_FWUPDATE_PCI_ID` (e.g. `E2E_FWUPDATE_PCI_ID=0xe20b`
+for a B580). The suite fails if no GPU on the node has that ID. Run only these specs with
+`--ginkgo.label-filter fwupdate`.
 
-For nodes with older `i915` KMD (xe tests are excluded):
-
-```
-make test-e2e-i915
-```
-
-The separation of `xe` and `i915` is due to how the Intel GPU plugin registers two different monitoring resources. The XPU Manager has to have a Daemonset targeted for either resource.
+`E2E_FWUPDATE_PCI_ID` also enables a device plugin variant ("Firmware update with device plugin"),
+which deploys the device plugin instead of DRA and drains a pod holding the `gpu.intel.com/xe` or
+`gpu.intel.com/i915` extended resource. With the variable unset it is skipped, since without a
+ResourceSlice there is nothing to pick the GPU from.
