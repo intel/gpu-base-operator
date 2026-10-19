@@ -57,6 +57,7 @@ FWFILES_IMG ?= ghcr.io/intel/gpu-firmware-update-files:$(TAG)
 FWUPDATER_IMG ?= ghcr.io/intel/gpu-fwupdater:$(TAG)
 FWUPDATER_MOCK_IMG ?= ghcr.io/intel/gpu-fwupdater-mock:$(TAG)
 FWFILES_E2E_IMG ?= ghcr.io/intel/gpu-firmware-update-files-e2e:$(TAG)
+GPU_HANG_IMG ?= ghcr.io/intel/gpu-hang-e2e:$(TAG)
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -243,8 +244,12 @@ fwupdater-mock-build:
 fwfiles-e2e-build: ## Build the firmware content image the e2e suite flashes, from dummy files.
 	$(CONTAINER_TOOL) build --pull --build-arg FWFILES_DIR=test/e2e/testdata/fwfiles -t ${FWFILES_E2E_IMG} -f build/fwfiles/Dockerfile .
 
+.PHONY: gpu-hang-build
+gpu-hang-build: ## Build the image the recovery e2e tests use to wedge an xe GPU.
+	$(CONTAINER_TOOL) build --pull -t ${GPU_HANG_IMG} -f build/gpu-hang/Dockerfile .
+
 .PHONY: docker-build-e2e
-docker-build-e2e: fwupdater-mock-build fwfiles-e2e-build ## Build every image the e2e suite loads.
+docker-build-e2e: fwupdater-mock-build fwfiles-e2e-build gpu-hang-build ## Build every image the e2e suite loads.
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
