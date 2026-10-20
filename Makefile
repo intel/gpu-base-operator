@@ -148,12 +148,12 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
  ## Run the e2e tests. Expected an isolated environment using Kind.
 .PHONY: test-e2e
 test-e2e: setup-test-e2e manifests generate fmt vet
-	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v --ginkgo.label-filter "!long" -timeout 12m
+	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v --ginkgo.label-filter "clusterpolicy && !long" -timeout 12m
 	$(MAKE) cleanup-test-e2e
 
 .PHONY: test-e2e-extended
 test-e2e-extended: setup-test-e2e manifests generate fmt vet
-	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v -timeout 15m
+	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v --ginkgo.label-filter "clusterpolicy" -timeout 15m
 	$(MAKE) cleanup-test-e2e
 
 .PHONY: cleanup-test-e2e
