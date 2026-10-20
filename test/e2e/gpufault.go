@@ -93,6 +93,11 @@ func (f gpuFault) configfsSurvivabilityMode() string {
 func (f gpuFault) checkTarget() {
 	Expect(f.driver()).To(Equal("xe"), "%s on node %s must be bound to xe", f.bdf, f.node)
 
+	f.checkNotBootVGA()
+}
+
+// checkNotBootVGA refuses the boot VGA device, unless allowBootVGA is set.
+func (f gpuFault) checkNotBootVGA() {
 	if f.allowBootVGA {
 		return
 	}

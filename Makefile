@@ -168,6 +168,11 @@ test-e2e-recovery: docker-build-e2e setup-test-e2e manifests generate fmt vet
 	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v --ginkgo.label-filter "recovery" -timeout 12m
 	$(MAKE) cleanup-test-e2e
 
+.PHONY: test-e2e-binding
+test-e2e-binding: docker-build-e2e setup-test-e2e manifests generate fmt vet
+	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v --ginkgo.label-filter "binding" -timeout 15m
+	$(MAKE) cleanup-test-e2e
+
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)

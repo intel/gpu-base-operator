@@ -3,7 +3,20 @@
 # DRADeviceTaints lets the DRA driver publish device taints in its ResourceSlices. Without it the API
 # server drops them, and the GPU recovery specs never see a GPU that needs recovery. It is alpha, so
 # off by default, until Kubernetes 1.37.
+#
+# The node container's /dev is a copy of the host's taken when it starts, so device nodes the host
+# creates later never show up in it. Binding a GPU to vfio creates /dev/vfio/<group>, and rebinding
+# it to xe may recreate its /dev/dri nodes, so both are the host's own, mounted in. Without that,
+# containerd on the node fails the GPU pod's CDI injection: "failed to stat CDI host device".
+# Docker creates a missing /dev/vfio on the host, which is harmless until vfio is loaded.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 featureGates:
   DRADeviceTaints: true
+nodes:
+- role: control-plane
+  extraMounts:
+  - hostPath: /dev/vfio
+    containerPath: /dev/vfio
+  - hostPath: /dev/dri
+    containerPath: /dev/dri

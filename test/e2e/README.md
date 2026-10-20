@@ -104,3 +104,32 @@ The specs also need:
 Every spec ends by bringing the GPU back if it is still broken, and waits for the DRA driver to list
 it healthy before the next spec starts. On a failure it first dumps the plans, the operator, DRA
 driver and xpumd logs, the ResourceSlices and `dmesg`.
+
+### GPU binding specs
+
+The binding specs (`test/e2e/binding_test.go`) move a GPU between its DRM driver (`xe` or `i915`)
+and vfio, which takes it away from the host while it is there:
+
+- **Device plugin** (`--ginkgo.label-filter 'deviceplugin && binding'`): the suite binds the GPU to `vfio-pci` itself,
+  checks the device plugin stops advertising it, binds it back and checks it is advertised again and
+  can be allocated.
+- **DRA** (`--ginkgo.label-filter dra && binding`): with `manageBinding: false` the device classes select
+  by driver and a `gpu-vfio.intel.com` claim stays unallocated; with `manageBinding: true` a claim
+  for that class makes the DRA driver bind the GPU to `xe-vfio-pci` or `vfio-pci`. The `long` specs
+  run an xe, a vfio and another xe workload on the same GPU, and start a KubeVirt VM with it.
+
+The target GPU must be named, never picked: set `E2E_VFIO_BDF` to its PCI address. Without it only
+the DRA device class spec runs. The suite refuses the boot VGA device unless
+`E2E_RECOVERY_ALLOW_BOOT_VGA=true` is set. A spec skips if the GPU has no IOMMU group (boot with
+`intel_iommu=on`) or no vfio driver is loaded on the host (`modprobe vfio-pci`; the driver never
+loads it). As with the recovery specs, the suite remounts the Kind node's `/sys` read-write, before
+the DRA driver starts, and every spec ends with the GPU back on its original driver.
+
+The Kind node needs the host's `/dev/vfio` and `/dev/dri` mounted in, because a node container
+only gets a copy of `/dev` from when it started, which never has the vfio device the bind creates.
+`test/e2e/kind-config.yaml` does that; on a cluster created without it, the specs that bind skip.
+
+The KubeVirt spec (`--ginkgo.label-filter kubevirt`) needs `/dev/kvm` on the node and network access
+to GitHub and quay.io. It installs KubeVirt `v1.8.3` with the `GPUsWithDRA` feature gate
+(`E2E_KUBEVIRT_VERSION` overrides the version), starts a CirrOS VMI with the GPU, checks QEMU got it
+through vfio, and uninstalls KubeVirt.
