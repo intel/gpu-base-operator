@@ -12,6 +12,6 @@ spec:
     checkIntervalSeconds: 12
 
   dra:
-    image: ghcr.io/intel/intel-gpu-resource-driver:v0.12.0@sha256:5be06e1cf810c6091cec17ed78a775be64323f2084038c8840f283f643ce4207
+    image: ghcr.io/intel/intel-gpu-resource-driver:v0.12.1@sha256:1479956240397c7207c3d38c0d296bd591cd66f26d432452f9a2d75336843776
     logLevel: 2
     podHealthCheck: true

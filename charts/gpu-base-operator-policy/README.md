@@ -42,7 +42,7 @@ See [Customizing the Chart Before Installing](https://helm.sh/docs/intro/using_h
 | dp.byPathMode | single | DP by-path mounting mode |
 | dp.allowIDs | [] | Allowed PCI Device IDs |
 | dp.denyIDs | [] | Denied PCI Device IDs |
-| dra.image | ghcr.io/intel/intel-gpu-resource-driver:v0.12.0 | DRA driver image. |
+| dra.image | ghcr.io/intel/intel-gpu-resource-driver:v0.12.1 | DRA driver image. |
 | dra.logLevel | 2 | DRA log level. |
 | dra.podHealthCheck | true | Health check for DRA Pod. |
 | dra.manageBinding | false | Allow DRA plugin to manage device binding between xe/i915 and vfio drivers. Needed for dynamic switching between normal and KubeVirt workloads. |

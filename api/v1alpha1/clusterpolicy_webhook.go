@@ -35,7 +35,7 @@ import (
 // These match the pinned images shipped in the Helm chart values.
 const (
 	DefaultDPImage  = "docker.io/intel/intel-gpu-plugin:0.37.0@sha256:7001200071db10587fc31184eedda4f5cf291efba737adf85a8c80539f7fa5e1"
-	DefaultDRAImage = "ghcr.io/intel/intel-gpu-resource-driver:v0.12.0@sha256:5be06e1cf810c6091cec17ed78a775be64323f2084038c8840f283f643ce4207"
+	DefaultDRAImage = "ghcr.io/intel/intel-gpu-resource-driver:v0.12.1@sha256:1479956240397c7207c3d38c0d296bd591cd66f26d432452f9a2d75336843776"
 	DefaultXPUImage = "ghcr.io/intel/xpumanager/xpumd:v2.3.0@sha256:539009b75c64159ca2202f52b94ae736ab3883c3497d30d65bd3d179357e1859"
 )
 
