@@ -144,7 +144,7 @@ func removeNfdAllTogether() {
 
 var controllerPodName string
 
-var _ = Describe("Kubectl apply", Ordered, func() {
+var _ = Describe("Kubectl apply", Label("kubectl", "clusterpolicy"), Ordered, func() {
 	BeforeAll(func() {
 		By("deploying the operator as a whole")
 		cmd := exec.Command("kubectl", "apply", "-k", "config/default/")
@@ -733,7 +733,7 @@ func runTestNMAPPodAndVerifyPorts(allowedPorts map[string]bool) {
 	}
 }
 
-var _ = Describe("Helm", Ordered, Label("helm"), func() {
+var _ = Describe("Helm", Ordered, Label("helm", "clusterpolicy"), func() {
 	Context("install", func() {
 		operatorInstallArgsBase := []string{"install", "--create-namespace", "-n", namespace, helmOperatorName, helmOperatorChartPath, "--wait"}
 
