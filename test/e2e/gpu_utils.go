@@ -71,8 +71,13 @@ func deployOperatorWithRegistry() {
 	Expect(err).NotTo(HaveOccurred())
 	Expect(utils.LoadImageToKindClusterWithName(registryImage)).To(Succeed())
 
+	deployOperator()
+}
+
+// deployOperator deploys the operator and waits for it to become available.
+func deployOperator() {
 	By("deploying the operator")
-	_, err = utils.Run(exec.Command("kubectl", "apply", "-k", "config/default/"))
+	_, err := utils.Run(exec.Command("kubectl", "apply", "-k", "config/default/"))
 	Expect(err).NotTo(HaveOccurred(), "Failed to create operator deployment")
 
 	_, err = utils.Run(exec.Command("kubectl", "wait", "deployment.apps/intel-gpu-base-operator-controller-manager",
