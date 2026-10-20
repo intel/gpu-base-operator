@@ -59,7 +59,8 @@ const (
 	// fwTypeAMC is the one type the real tool flashes without a -d.
 	fwTypeAMC = "AMC"
 
-	// failMarker in a firmware file's contents makes a non-FDO updatefw fail.
+	// failMarker in a firmware file's contents makes updatefw fail. An FDO reflash checks it
+	// before the rebind, so a failed reflash leaves the device bound.
 	failMarker = "FAKE_XPU_SMI_FAIL"
 
 	// updateDelayEnv overrides how long a non-FDO updatefw sleeps, as a Go duration ("3s").
@@ -182,7 +183,8 @@ func cmdAMC(sysfsRoot string, args []string) int {
 //
 //   - FDO is the recovery reflash. It sleeps reflashDelay, then rebinds the device, clearing the
 //     survivability_mode configfs knob while it is unbound — the rebind is what revives the card in
-//     a recovery test.
+//     a recovery test. A file containing failMarker fails it before the rebind, leaving the device
+//     bound and untouched.
 //   - Every other type is a GPUFirmwareUpdate flash. It touches no device at all: it checks the
 //     file the fw-copy initContainer staged, sleeps the update delay and reports success. A file
 //     whose contents include failMarker makes it exit non-zero instead, which is how an e2e test
@@ -236,7 +238,7 @@ func cmdUpdateFW(sysfsRoot string, args []string) int {
 	}
 
 	if typ == fwTypeFDO {
-		return reflash(*globalSysfsRoot, bdf)
+		return reflash(*globalSysfsRoot, bdf, path, content)
 	}
 
 	target := bdf
@@ -263,9 +265,19 @@ func cmdUpdateFW(sysfsRoot string, args []string) int {
 
 // reflash simulates the recovery reflash: wait while the firmware "flashes", then rebind the
 // device, clearing survivability mode while it is unbound.
-func reflash(sysfsRoot, bdf string) int {
+//
+// A file containing failMarker fails the flash before the rebind. Failing any later would leave a
+// failed recovery that had nonetheless revived the card, which is not something to test against.
+func reflash(sysfsRoot, bdf, path string, content []byte) int {
 	fmt.Printf("fake-xpu-smi: simulating firmware update (sleeping %s) ...\n", reflashDelay)
 	time.Sleep(reflashDelay)
+
+	if bytes.Contains(content, []byte(failMarker)) {
+		fmt.Fprintf(os.Stderr, "fake-xpu-smi: FDO firmware update on %s failed: %s found in %s (simulated)\n",
+			bdf, failMarker, path)
+		return 1
+	}
+
 	fmt.Println("fake-xpu-smi: firmware update complete (simulated)")
 
 	return rebindWith(sysfsRoot, bdf, 0, func() error {

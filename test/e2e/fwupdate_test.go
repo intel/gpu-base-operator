@@ -21,7 +21,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,12 +28,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/go-containerregistry/pkg/name"
-	"github.com/google/go-containerregistry/pkg/v1/remote"
-	"github.com/google/go-containerregistry/pkg/v1/tarball"
-	batch "k8s.io/api/batch/v1"
 	core "k8s.io/api/core/v1"
-	resv1 "k8s.io/api/resource/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 
@@ -47,16 +41,8 @@ import (
 )
 
 const (
-	// Images built by 'make docker-build-e2e'.
-	fwUpdaterMockImage = "ghcr.io/intel/gpu-fwupdater-mock:devel"
-	fwContentE2EImage  = "ghcr.io/intel/gpu-firmware-update-files-e2e:devel"
-
-	fwRegistryImage     = "registry:2"
-	fwRegistryNamespace = "fwupdate-e2e-registry"
-	// fwRegistryNodePort is where the registry is reached from the host (to push), from the node's
-	// containerd (to pull) and from the operator (to verify), all through the node's IP. That IP is
-	// RFC1918, which go-containerregistry talks plain HTTP to, so the registry needs no TLS.
-	fwRegistryNodePort = 30500
+	// Built by 'make docker-build-e2e'.
+	fwContentE2EImage = "ghcr.io/intel/gpu-firmware-update-files-e2e:devel"
 
 	fwNodeLabel  = "fwupdate-e2e"
 	fwTaint      = "gpufirmware-update-e2e"
@@ -76,12 +62,6 @@ const (
 	// may be one without MEI, skipping every spec that needs the updater to run.
 	fwPCIIDEnv = "E2E_FWUPDATE_PCI_ID"
 )
-
-// fwDevice is one GPU as its DRA ResourceSlice describes it.
-type fwDevice struct {
-	pciID string
-	bdf   string
-}
 
 // fwTarget is the node the firmware update specs run against and what they flash it with.
 type fwTarget struct {
@@ -133,69 +113,29 @@ func (t *fwTarget) skipWithoutMEI(logs string) {
 	}
 }
 
-// deployOperatorForFwUpdate loads the firmware update images on Kind and deploys the operator.
-func deployOperatorForFwUpdate() {
-	By("loading the firmware update images on Kind")
-	Expect(utils.LoadImageToKindClusterWithName(fwUpdaterMockImage)).To(Succeed(),
-		"Failed to load the mock updater image; build it with 'make docker-build-e2e'")
-
-	_, err := utils.Run(exec.Command("docker", "pull", fwRegistryImage))
-	Expect(err).NotTo(HaveOccurred())
-	Expect(utils.LoadImageToKindClusterWithName(fwRegistryImage)).To(Succeed())
-
-	By("deploying the operator")
-	_, err = utils.Run(exec.Command("kubectl", "apply", "-k", "config/default/"))
-	Expect(err).NotTo(HaveOccurred(), "Failed to create operator deployment")
-
-	_, err = utils.Run(exec.Command("kubectl", "wait", "deployment.apps/intel-gpu-base-operator-controller-manager",
-		"--for", "condition=Available", "--namespace", namespace, "--timeout", "1m"))
-	Expect(err).NotTo(HaveOccurred(), "Controller deployment did not become available in time")
-}
-
 // prepareFwTarget makes the content image available to the operator and the node, and labels the
 // node so the specs' CRs select it.
 func prepareFwTarget(nodeName, pciDeviceID string) *fwTarget {
 	t := &fwTarget{nodeName: nodeName, pciDeviceID: pciDeviceID}
 
-	By("starting an in-cluster registry for the firmware content image")
-	Expect(applyManifest(fwRegistryManifest())).To(Succeed())
-
-	_, err := utils.Run(exec.Command("kubectl", "rollout", "status", "deployment/registry",
-		"-n", fwRegistryNamespace, "--timeout", "2m"))
-	Expect(err).NotTo(HaveOccurred())
+	startRegistry()
 
 	By("pushing the firmware content image to the registry")
-	repo := fmt.Sprintf("%s:%d/e2e/fwfiles", nodeInternalIP(nodeName), fwRegistryNodePort)
-
-	Eventually(func() error {
-		t.contentImage, err = pushImageToRegistry(fwContentE2EImage, repo+":e2e")
-		return err
-	}).WithTimeout(time.Minute).Should(Succeed(), "Failed to push the content image; build it with 'make docker-build-e2e'")
-
-	// The fw-copy initContainer is IfNotPresent, so with the image already in containerd under
-	// exactly this reference the kubelet never pulls it — and containerd needs no config to
-	// treat the registry as plain HTTP.
-	_, err = utils.Run(exec.Command("docker", "exec", nodeName,
-		"ctr", "-n", "k8s.io", "images", "pull", "--plain-http", t.contentImage))
-	Expect(err).NotTo(HaveOccurred())
+	t.contentImage = pushToNodeRegistry(nodeName, fwContentE2EImage, "e2e/fwfiles")
 
 	t.checksums = testdataChecksums()
 
 	By("labelling the node for the firmware update")
-	_, err = utils.Run(exec.Command("kubectl", "label", "node", nodeName, fwNodeLabel+"=true", "--overwrite"))
+	_, err := utils.Run(exec.Command("kubectl", "label", "node", nodeName, fwNodeLabel+"=true", "--overwrite"))
 	Expect(err).NotTo(HaveOccurred())
 
 	return t
 }
 
-// cleanupFwTarget undoes prepareFwTarget. It waits for the registry namespace to go, so that the
-// next container's prepareFwTarget does not apply into a terminating namespace.
+// cleanupFwTarget undoes prepareFwTarget.
 func cleanupFwTarget(nodeName string) {
 	_, _ = utils.Run(exec.Command("kubectl", "label", "node", nodeName, fwNodeLabel+"-"))
-	_, _ = utils.Run(exec.Command("kubectl", "delete", "namespace", fwRegistryNamespace, "--wait=false"))
-
-	Eventually(func(g Gomega) { waitUntilNamespaceGone(g, fwRegistryNamespace) }).
-		WithTimeout(2 * time.Minute).Should(Succeed())
+	stopRegistry()
 }
 
 // cleanupAfterFwSpec removes what a spec may leave behind, dumping debug info first if it failed.
@@ -214,11 +154,11 @@ func cleanupAfterFwSpec(nodeName string) {
 var _ = Describe("Firmware update", Ordered, Label("fwupdate"), func() {
 	var (
 		t       *fwTarget
-		devices []fwDevice
+		devices []gpuDevice
 	)
 
 	BeforeAll(func() {
-		deployOperatorForFwUpdate()
+		deployOperatorWithRegistry()
 
 		By("deploying GPU DRA")
 		tmpDir, err := os.MkdirTemp("/tmp/", "operator-fwupdate*")
@@ -429,7 +369,7 @@ var _ = Describe("Firmware update with device plugin", Ordered, Label("fwupdate"
 
 		pciDeviceID = normalizePCIID(pciDeviceID)
 
-		deployOperatorForFwUpdate()
+		deployOperatorWithRegistry()
 
 		By("deploying the GPU device plugin")
 		tmpDir, err := os.MkdirTemp("/tmp/", "operator-fwupdate-dp*")
@@ -578,45 +518,9 @@ done; true`, pciID)
 	return utils.GetNonEmptyLines(output)
 }
 
-// gpuDevicesFromResourceSlices returns the node of the first Intel GPU ResourceSlice and the GPUs it
-// lists, as the DRA driver reports them.
-func gpuDevicesFromResourceSlices(g Gomega) (string, []fwDevice) {
-	output, err := utils.Run(exec.Command("kubectl", "get", "resourceslices", "-o", "json"))
-	g.Expect(err).NotTo(HaveOccurred())
-
-	sliceList := resv1.ResourceSliceList{}
-	g.Expect(json.Unmarshal([]byte(output), &sliceList)).To(Succeed())
-
-	for _, slice := range sliceList.Items {
-		if slice.Spec.Driver != common.GPUDeviceClass || slice.Spec.NodeName == nil {
-			continue
-		}
-
-		devices := []fwDevice{}
-
-		for _, dev := range slice.Spec.Devices {
-			pciID := deviceAttrString(dev.Attributes, common.DeviceAttrDeviceID)
-			bdf := deviceAttrString(dev.Attributes, common.DeviceAttrBDF)
-
-			if pciID != "" && bdf != "" {
-				devices = append(devices, fwDevice{pciID: normalizePCIID(pciID), bdf: bdf})
-			}
-		}
-
-		if len(devices) > 0 {
-			return *slice.Spec.NodeName, devices
-		}
-	}
-
-	g.Expect(false).To(BeTrue(), "no %s ResourceSlice with %s and %s attributes",
-		common.GPUDeviceClass, common.DeviceAttrDeviceID, common.DeviceAttrBDF)
-
-	return "", nil
-}
-
 // selectFwPCIID returns the PCI ID requested through fwPCIIDEnv, failing if no GPU has it, or the
 // first GPU's when the variable is unset.
-func selectFwPCIID(devices []fwDevice) string {
+func selectFwPCIID(devices []gpuDevice) string {
 	want, ok := os.LookupEnv(fwPCIIDEnv)
 	if !ok || want == "" {
 		return devices[0].pciID
@@ -624,87 +528,10 @@ func selectFwPCIID(devices []fwDevice) string {
 
 	want = normalizePCIID(want)
 
-	Expect(slices.ContainsFunc(devices, func(d fwDevice) bool { return d.pciID == want })).To(BeTrue(),
+	Expect(slices.ContainsFunc(devices, func(d gpuDevice) bool { return d.pciID == want })).To(BeTrue(),
 		"%s=%s matches no GPU on the node: %+v", fwPCIIDEnv, want, devices)
 
 	return want
-}
-
-func deviceAttrString(attrs map[resv1.QualifiedName]resv1.DeviceAttribute, attr string) string {
-	if a, ok := attrs[resv1.QualifiedName(attr)]; ok && a.StringValue != nil {
-		return *a.StringValue
-	}
-
-	return ""
-}
-
-// normalizePCIID turns the driver's PCI ID into the '0xabcd' form spec.pciDeviceID requires.
-func normalizePCIID(id string) string {
-	id = strings.ToLower(id)
-	if !strings.HasPrefix(id, "0x") {
-		id = "0x" + id
-	}
-
-	return id
-}
-
-func nodeInternalIP(node string) string {
-	output, err := utils.Run(exec.Command("kubectl", "get", "node", node,
-		"-o", `jsonpath={.status.addresses[?(@.type=="InternalIP")].address}`))
-	Expect(err).NotTo(HaveOccurred())
-
-	ip := strings.TrimSpace(output)
-	Expect(ip).NotTo(BeEmpty(), "node %s has no InternalIP", node)
-
-	return ip
-}
-
-// pushImageToRegistry pushes a local docker image to target (a tagged reference) and returns its
-// digest-pinned reference.
-func pushImageToRegistry(localImage, target string) (string, error) {
-	tmp, err := os.CreateTemp("", "fwcontent-*.tar")
-	if err != nil {
-		return "", err
-	}
-
-	defer os.Remove(tmp.Name())
-
-	_ = tmp.Close()
-
-	if _, err := utils.Run(exec.Command("docker", "save", "-o", tmp.Name(), localImage)); err != nil {
-		return "", err
-	}
-
-	img, err := tarball.ImageFromPath(tmp.Name(), nil)
-	if err != nil {
-		return "", err
-	}
-
-	ref, err := name.ParseReference(target)
-	if err != nil {
-		return "", err
-	}
-
-	// The registry is always on the Kind network. A host HTTP proxy cannot reach it and would answer
-	// the push with an error page, so it is bypassed regardless of NO_PROXY.
-	transport, ok := http.DefaultTransport.(*http.Transport)
-	if !ok {
-		return "", fmt.Errorf("unexpected default transport type %T", http.DefaultTransport)
-	}
-
-	transport = transport.Clone()
-	transport.Proxy = nil
-
-	if err := remote.Write(ref, img, remote.WithTransport(transport)); err != nil {
-		return "", err
-	}
-
-	digest, err := img.Digest()
-	if err != nil {
-		return "", err
-	}
-
-	return ref.Context().Digest(digest.String()).String(), nil
 }
 
 // testdataChecksums returns the "sha256:..." checksum of every file in the content image's testdata.
@@ -726,14 +553,6 @@ func testdataChecksums() map[string]string {
 	}
 
 	return sums
-}
-
-func applyManifest(manifest string) error {
-	cmd := exec.Command("kubectl", "apply", "-f", "-")
-	cmd.Stdin = strings.NewReader(manifest)
-	_, err := utils.Run(cmd)
-
-	return err
 }
 
 func applyFwUpdate(fu *api.GPUFirmwareUpdate) error {
@@ -808,36 +627,6 @@ func fwUpdateJobLogs(fu *api.GPUFirmwareUpdate) string {
 	return logs
 }
 
-func jobFailed(jobName string) bool {
-	output, err := utils.Run(exec.Command("kubectl", "get", "job", jobName, "-n", namespace, "-o", "json"))
-	Expect(err).NotTo(HaveOccurred())
-
-	job := batch.Job{}
-	Expect(json.Unmarshal([]byte(output), &job)).To(Succeed())
-
-	for _, cond := range job.Status.Conditions {
-		if cond.Type == batch.JobFailed && cond.Status == core.ConditionTrue {
-			return true
-		}
-	}
-
-	return false
-}
-
-func nodeHasTaint(node, key string) bool {
-	output, err := utils.Run(exec.Command("kubectl", "get", "node", node, "-o", "jsonpath={.spec.taints[*].key}"))
-	Expect(err).NotTo(HaveOccurred())
-
-	return slices.Contains(strings.Fields(output), key)
-}
-
-func podExists(podName, ns string) bool {
-	output, err := utils.Run(exec.Command("kubectl", "get", "pod", podName, "-n", ns, "--ignore-not-found", "-o", "name"))
-	Expect(err).NotTo(HaveOccurred())
-
-	return strings.TrimSpace(output) != ""
-}
-
 // deleteAllFwUpdates deletes every GPUFirmwareUpdate. A CR stopped mid-update keeps its finalizer
 // until the update ends, so the finalizer is stripped rather than waited for; the caller removes
 // the taint the operator would have.
@@ -858,11 +647,6 @@ func deleteAllFwUpdates() {
 	_, _ = utils.Run(exec.Command("kubectl", "delete", "jobs", "-n", namespace, "-l", "gpufirmwareupdate", "--ignore-not-found"))
 }
 
-func mustRun(args ...string) string {
-	output, _ := utils.Run(exec.Command(args[0], args[1:]...))
-	return output
-}
-
 func dumpFwUpdateDebugInfo() {
 	for _, args := range [][]string{
 		{"kubectl", "get", "gpufirmwareupdates", "-o", "yaml"},
@@ -873,49 +657,6 @@ func dumpFwUpdateDebugInfo() {
 	} {
 		_, _ = fmt.Fprintf(GinkgoWriter, "--- %s\n%s\n", strings.Join(args, " "), mustRun(args...))
 	}
-}
-
-func fwRegistryManifest() string {
-	return fmt.Sprintf(`apiVersion: v1
-kind: Namespace
-metadata:
-  name: %[1]s
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: registry
-  namespace: %[1]s
-spec:
-  selector:
-    matchLabels:
-      app: registry
-  template:
-    metadata:
-      labels:
-        app: registry
-    spec:
-      containers:
-      - name: registry
-        image: %[2]s
-        imagePullPolicy: IfNotPresent
-        ports:
-        - containerPort: 5000
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: registry
-  namespace: %[1]s
-spec:
-  type: NodePort
-  selector:
-    app: registry
-  ports:
-  - port: 5000
-    targetPort: 5000
-    nodePort: %[3]d
-`, fwRegistryNamespace, fwRegistryImage, fwRegistryNodePort)
 }
 
 // slowGPUPodManifest is a GPU pod that holds a drain for a minute: sleep is the container's PID 1,

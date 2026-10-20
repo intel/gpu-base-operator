@@ -144,7 +144,7 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
 		*) \
 			echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
-			$(KIND) create cluster --name $(KIND_CLUSTER) --image kindest/node:$(KIND_K8S_VERSION) ;; \
+			$(KIND) create cluster --name $(KIND_CLUSTER) --image kindest/node:$(KIND_K8S_VERSION) --config test/e2e/kind-config.yaml ;; \
 	esac
 
  ## Run the e2e tests. Expected an isolated environment using Kind.
@@ -161,6 +161,11 @@ test-e2e-extended: setup-test-e2e manifests generate fmt vet
 .PHONY: test-e2e-fwupdate
 test-e2e-fwupdate: docker-build-e2e setup-test-e2e manifests generate fmt vet
 	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v --ginkgo.label-filter "fwupdate" -timeout 5m
+	$(MAKE) cleanup-test-e2e
+
+.PHONY: test-e2e-recovery
+test-e2e-recovery: docker-build-e2e setup-test-e2e manifests generate fmt vet
+	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v --ginkgo.label-filter "recovery" -timeout 12m
 	$(MAKE) cleanup-test-e2e
 
 .PHONY: cleanup-test-e2e
