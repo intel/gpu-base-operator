@@ -105,3 +105,4 @@ misconfigurations:
       - fwfiles/Dockerfile
       - fwupdater/Dockerfile
       - fwupdater-mock/Dockerfile
+      - gpu-hang/Dockerfile

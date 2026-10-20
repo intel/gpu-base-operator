@@ -1,0 +1,9 @@
+# Kind cluster for the e2e tests ('make setup-test-e2e').
+#
+# DRADeviceTaints lets the DRA driver publish device taints in its ResourceSlices. Without it the API
+# server drops them, and the GPU recovery specs never see a GPU that needs recovery. It is alpha, so
+# off by default, until Kubernetes 1.37.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+featureGates:
+  DRADeviceTaints: true

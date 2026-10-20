@@ -56,6 +56,10 @@ The reset paths (`config --reset`, `config --coldreset`, `amc --gpuReset`) do on
 that. `amc --gpureset` and `config --force-reset-gpus`, the spellings the recovery
 Job uses, are accepted too.
 
+A reflash fails the same way: if the FDO file contains `FAKE_XPU_SMI_FAIL`,
+`updatefw -t FDO` exits 1 after its sleep and **before** the unbind. The device is
+left bound and still in survivability mode, as a real failed flash would leave it.
+
 ### Reflash: clearing survivability mode
 
 `updatefw -t FDO` additionally clears xe's survivability mode, between the unbind and the
