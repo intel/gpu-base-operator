@@ -24,6 +24,18 @@ spec:
 
   logLevel: {{ .Values.logLevel }}
 
+{{- with .Values.cdi }}
+  {{- if or .staticHostPath .dynamicHostPath }}
+  cdi:
+    {{- with .staticHostPath }}
+    staticHostPath: {{ . | quote }}
+    {{- end }}
+    {{- with .dynamicHostPath }}
+    dynamicHostPath: {{ . | quote }}
+    {{- end }}
+  {{- end }}
+{{- end }}
+
   health:
     checkIntervalSeconds: {{ .Values.health.checkIntervalSeconds }}
     coreTemperatureThreshold: {{ .Values.health.coreTemperatureThreshold }}

@@ -48,6 +48,7 @@ type DevicePluginReconciler struct {
 const (
 	dpValue         = "intel-gpu-plugin"
 	xpumdVolumeName = "runxpumd"
+	dpCDIVolume     = "cdipath"
 
 	dpResourcePart = "gpu-dp"
 )
@@ -174,6 +175,8 @@ func (r *DevicePluginReconciler) updateDaemonSetObject(ds *apps.DaemonSet, spec 
 	ds.Spec.Template.Spec.Affinity = generateAffinity(spec.Spec.DevicePluginSpec.Affinity)
 
 	cspec := &ds.Spec.Template.Spec
+
+	setHostPath(cspec.Volumes, dpCDIVolume, spec.Spec.CDI.WithDefaults().DynamicHostPath)
 
 	secrets := []core.LocalObjectReference{}
 	if r.Opts.SecretName != "" {

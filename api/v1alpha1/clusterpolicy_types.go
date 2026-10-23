@@ -22,6 +22,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// CDI host path defaults. Keep in sync with the +kubebuilder:default markers in CDISpec.
+const (
+	CDIDefaultStaticHostPath  = "/etc/cdi"
+	CDIDefaultDynamicHostPath = "/var/run/cdi"
+)
+
 // ClusterPolicySpec defines the desired state of ClusterPolicy.
 type ClusterPolicySpec struct {
 	// Which type of resource registration is to be used: Device plugin (dp) or Dynamic Resource Allocation (dra).
@@ -75,6 +81,11 @@ type ClusterPolicySpec struct {
 	// When nil, the in-tree kernel driver is used.
 	// +optional
 	KernelModule *KernelModuleSpec `json:"kernelModule,omitempty"`
+
+	// CDI configures the host directories for CDI specifications used by DP and DRA.
+	// +kubebuilder:default:={}
+	// +optional
+	CDI CDISpec `json:"cdi,omitempty"`
 }
 
 // DynamicResourceAllocationSpec defines the desired state of DynamicResourceAllocation.
@@ -95,6 +106,34 @@ type DynamicResourceAllocationSpec struct {
 	// Set optional affinities for DRA pods
 	// +optional
 	Affinity *v1.Affinity `json:"affinity,omitempty"`
+}
+
+// CDISpec configures the host directories for CDI specifications. They have to match
+// the CDI spec directories configured in the node container runtime.
+type CDISpec struct {
+	// Host directory for static CDI specifications, mounted at /etc/cdi. Used by DRA only.
+	// +kubebuilder:default:="/etc/cdi"
+	// +kubebuilder:validation:Pattern=`^/`
+	// +optional
+	StaticHostPath string `json:"staticHostPath,omitempty"`
+
+	// Host directory for dynamic CDI specifications, mounted at /var/run/cdi.
+	// +kubebuilder:default:="/var/run/cdi"
+	// +kubebuilder:validation:Pattern=`^/`
+	// +optional
+	DynamicHostPath string `json:"dynamicHostPath,omitempty"`
+}
+
+// WithDefaults returns a copy of the spec with empty paths set to their defaults.
+func (c CDISpec) WithDefaults() CDISpec {
+	if c.StaticHostPath == "" {
+		c.StaticHostPath = CDIDefaultStaticHostPath
+	}
+	if c.DynamicHostPath == "" {
+		c.DynamicHostPath = CDIDefaultDynamicHostPath
+	}
+
+	return c
 }
 
 // HealthinessSpec defines the thresholds for health monitoring.

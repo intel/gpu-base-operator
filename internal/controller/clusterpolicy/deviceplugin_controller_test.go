@@ -567,6 +567,35 @@ var _ = Describe("Device Plugin", func() {
 	})
 
 	Context("DaemonSet object update", func() {
+		DescribeTable("configures the dynamic CDI host path without changing the container mount",
+			func(hostPath, expected string) {
+				controller := &DevicePluginReconciler{}
+				ds := deployments.DevicePluginDaemonset()
+				// Start from a previously customized object, as CreateOrPatch would.
+				controller.updateDaemonSetObject(ds, &v1alpha.ClusterPolicy{
+					Spec: v1alpha.ClusterPolicySpec{CDI: v1alpha.CDISpec{DynamicHostPath: "/previous"}},
+				})
+
+				cp := &v1alpha.ClusterPolicy{
+					Spec: v1alpha.ClusterPolicySpec{CDI: v1alpha.CDISpec{DynamicHostPath: hostPath}},
+				}
+				controller.updateDaemonSetObject(ds, cp)
+
+				directoryOrCreate := v1.HostPathDirectoryOrCreate
+				Expect(ds.Spec.Template.Spec.Volumes).To(ContainElement(v1.Volume{
+					Name: dpCDIVolume,
+					VolumeSource: v1.VolumeSource{
+						HostPath: &v1.HostPathVolumeSource{Path: expected, Type: &directoryOrCreate},
+					},
+				}))
+				Expect(ds.Spec.Template.Spec.Containers[0].VolumeMounts).To(ContainElement(v1.VolumeMount{
+					Name: dpCDIVolume, MountPath: "/var/run/cdi",
+				}))
+			},
+			Entry("custom", "/var/cdi/dynamic", "/var/cdi/dynamic"),
+			Entry("empty falls back to default", "", v1alpha.CDIDefaultDynamicHostPath),
+		)
+
 		It("sets and clears device plugin affinity", func() {
 			cp := &v1alpha.ClusterPolicy{
 				Spec: v1alpha.ClusterPolicySpec{

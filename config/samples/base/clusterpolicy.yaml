@@ -19,3 +19,7 @@ spec:
     logLevel: 2
     # Device Plugin monitoring resource.
     monitoringResource: monitoring
+
+  cdi:
+    staticHostPath: /etc/cdi
+    dynamicHostPath: /var/run/cdi

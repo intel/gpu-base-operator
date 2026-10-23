@@ -171,6 +171,8 @@ CR fields control how the operator configures the cluster. See the [full struct]
 |`spec.prometheusIntegration`|Create a ServiceMonitor so Prometheus scrapes XPU-Manager GPU metrics; requires Prometheus Operator|`false`|
 |`spec.enableKueue`|Create Kueue ResourceFlavor / ClusterQueue / LocalQueue resources for GPU workload queuing|`false`|
 |`spec.logLevel`|Default log level for all deployed components (0–4)|`2`|
+|`spec.cdi.staticHostPath`|Host directory for static CDI specifications, mounted at `/etc/cdi` in the DRA container. Not used by the device plugin|`/etc/cdi`|
+|`spec.cdi.dynamicHostPath`|Host directory for dynamic CDI specifications, mounted at `/var/run/cdi` in the DRA and device plugin containers|`/var/run/cdi`|
 
 #### Device Plugin (`spec.dp`)
 

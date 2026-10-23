@@ -55,6 +55,24 @@ spec:
           spec:
             description: ClusterPolicySpec defines the desired state of ClusterPolicy.
             properties:
+              cdi:
+                default: {}
+                description: CDI configures the host directories for CDI specifications
+                  used by DP and DRA.
+                properties:
+                  dynamicHostPath:
+                    default: /var/run/cdi
+                    description: Host directory for dynamic CDI specifications, mounted
+                      at /var/run/cdi.
+                    pattern: ^/
+                    type: string
+                  staticHostPath:
+                    default: /etc/cdi
+                    description: Host directory for static CDI specifications, mounted
+                      at /etc/cdi. Used by DRA only.
+                    pattern: ^/
+                    type: string
+                type: object
               dp:
                 description: DevicePluginSpec defines the desired state of DevicePlugin.
                 properties:
