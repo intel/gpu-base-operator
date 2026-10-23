@@ -21,8 +21,10 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -101,6 +103,7 @@ func validateClusterPolicySpec(spec *ClusterPolicySpec) (admission.Warnings, err
 	errs = append(errs, validateConfigMapOverride(spec)...)
 	errs = append(errs, validateKueueSpec(spec)...)
 	errs = append(errs, validateKernelModuleSpec(spec)...)
+	errs = append(errs, validateCDIPaths(spec)...)
 
 	otlpErrs, otlpWarnings := validateOTLPSpec(spec.XpuManagerSpec.OTLP)
 	errs = append(errs, otlpErrs...)
@@ -111,6 +114,41 @@ func validateClusterPolicySpec(spec *ClusterPolicySpec) (admission.Warnings, err
 	}
 
 	return warnings, errors.Join(errs...)
+}
+
+func validateCDIPaths(spec *ClusterPolicySpec) []error {
+	fields := []struct {
+		name  string
+		value string
+	}{
+		{"cdi.staticHostPath", spec.CDI.StaticHostPath},
+		{"cdi.dynamicHostPath", spec.CDI.DynamicHostPath},
+	}
+
+	var errs []error
+
+	for _, field := range fields {
+		if field.value == "" {
+			continue
+		}
+
+		if !path.IsAbs(field.value) {
+			errs = append(errs, fmt.Errorf("%s must be an absolute path", field.name))
+		}
+
+		for _, component := range strings.Split(field.value, "/") {
+			if component == ".." {
+				errs = append(errs, fmt.Errorf("%s must not contain '..' path components", field.name))
+				break
+			}
+		}
+
+		if strings.ContainsFunc(field.value, unicode.IsControl) {
+			errs = append(errs, fmt.Errorf("%s must not contain control characters", field.name))
+		}
+	}
+
+	return errs
 }
 
 func validateDPSpec(dp *DevicePluginSpec) []error {

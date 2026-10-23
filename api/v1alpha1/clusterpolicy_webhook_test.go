@@ -23,7 +23,9 @@ import (
 	"github.com/distribution/reference"
 
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
@@ -41,6 +43,90 @@ func validCP() *ClusterPolicy {
 		},
 	}
 }
+
+var _ = Describe("ClusterPolicy CDI host paths", func() {
+	DescribeTable("validates path syntax on create and update",
+		func(value string, valid bool) {
+			fields := []struct {
+				name string
+				set  func(*ClusterPolicy, string)
+			}{
+				{"cdi.staticHostPath", func(cp *ClusterPolicy, value string) { cp.Spec.CDI.StaticHostPath = value }},
+				{"cdi.dynamicHostPath", func(cp *ClusterPolicy, value string) { cp.Spec.CDI.DynamicHostPath = value }},
+			}
+			validator := &ClusterPolicyCustomValidator{}
+			for _, field := range fields {
+				obj := validCP()
+				field.set(obj, value)
+				_, createErr := validator.ValidateCreate(ctx, obj)
+				_, updateErr := validator.ValidateUpdate(ctx, validCP(), obj)
+				for _, err := range []error{createErr, updateErr} {
+					if valid {
+						Expect(err).NotTo(HaveOccurred(), field.name)
+					} else {
+						Expect(err).To(HaveOccurred(), field.name)
+						Expect(err.Error()).To(ContainSubstring(field.name))
+					}
+				}
+			}
+		},
+		Entry("omitted", "", true),
+		Entry("default static", CDIDefaultStaticHostPath, true),
+		Entry("default dynamic", CDIDefaultDynamicHostPath, true),
+		Entry("custom directory", "/var/cdi/dynamic", true),
+		Entry("spaces in directory names", "/var/cdi specs/dynamic", true),
+		Entry("dots in directory names", "/var/cdi..specs/dynamic", true),
+		Entry("relative", "var/cdi", false),
+		Entry("parent directory", "/var/../cdi", false),
+		Entry("trailing parent directory", "/var/cdi/..", false),
+		Entry("NUL", "/var/cdi\x00", false),
+		Entry("newline", "/var/cdi\n", false),
+		Entry("tab", "/var/\tcdi", false),
+	)
+
+	It("rejects parent directory components through admission", func() {
+		obj := validCP()
+		obj.GenerateName = "invalid-cdi-paths-"
+		obj.Spec.CDI.StaticHostPath = "/etc/../cdi"
+		obj.Spec.CDI.DynamicHostPath = "/var/run/../cdi"
+		err := k8sClient.Create(ctx, obj)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("cdi.staticHostPath"))
+		Expect(err.Error()).To(ContainSubstring("cdi.dynamicHostPath"))
+	})
+
+	It("defaults omitted paths and preserves custom paths on update", func() {
+		obj := validCP()
+		obj.GenerateName = "cdi-paths-"
+		Expect(k8sClient.Create(ctx, obj)).To(Succeed())
+		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, obj)).To(Succeed()) })
+
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(obj), obj)).To(Succeed())
+		Expect(obj.Spec.CDI.StaticHostPath).To(Equal(CDIDefaultStaticHostPath))
+		Expect(obj.Spec.CDI.DynamicHostPath).To(Equal(CDIDefaultDynamicHostPath))
+
+		obj.Spec.CDI.StaticHostPath = "/var/cdi/static"
+		obj.Spec.CDI.DynamicHostPath = "/var/cdi/dynamic"
+		Expect(k8sClient.Update(ctx, obj)).To(Succeed())
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(obj), obj)).To(Succeed())
+		Expect(obj.Spec.CDI.StaticHostPath).To(Equal("/var/cdi/static"))
+		Expect(obj.Spec.CDI.DynamicHostPath).To(Equal("/var/cdi/dynamic"))
+	})
+
+	DescribeTable("rejects relative host paths in the CRD schema",
+		func(staticPath, dynamicPath string) {
+			obj := validCP()
+			obj.GenerateName = "invalid-cdi-paths-"
+			obj.Spec.CDI.StaticHostPath = staticPath
+			obj.Spec.CDI.DynamicHostPath = dynamicPath
+			err := k8sClient.Create(ctx, obj)
+			Expect(err).To(HaveOccurred())
+			Expect(apierrors.IsInvalid(err)).To(BeTrue())
+		},
+		Entry("static", "var/cdi/static", "/var/cdi/dynamic"),
+		Entry("dynamic", "/var/cdi/static", "var/cdi/dynamic"),
+	)
+})
 
 var _ = Describe("ClusterPolicy Defaulter Webhook", func() {
 	var (

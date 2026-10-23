@@ -366,6 +366,44 @@ var _ = Describe("ClusterPolicy Controller for DRA", func() {
 	})
 
 	Context("DaemonSet object update", func() {
+		DescribeTable("configures CDI host paths without changing container mount paths",
+			func(cdi v1alpha.CDISpec, expectedStatic, expectedDynamic string) {
+				controller := &DRAReconciler{}
+				ds := deployments.DynamicResourceAllocationDaemonset()
+				// Start from a previously customized object, as CreateOrPatch would.
+				controller.updateDaemonSetObject(ds, &v1alpha.ClusterPolicy{
+					Spec: v1alpha.ClusterPolicySpec{CDI: v1alpha.CDISpec{
+						StaticHostPath: "/previous/static", DynamicHostPath: "/previous/dynamic",
+					}},
+				})
+
+				controller.updateDaemonSetObject(ds, &v1alpha.ClusterPolicy{Spec: v1alpha.ClusterPolicySpec{CDI: cdi}})
+
+				volumes := ds.Spec.Template.Spec.Volumes
+				Expect(volumes).To(ContainElement(v1.Volume{
+					Name:         draStaticCDIVolume,
+					VolumeSource: v1.VolumeSource{HostPath: &v1.HostPathVolumeSource{Path: expectedStatic}},
+				}))
+				Expect(volumes).To(ContainElement(v1.Volume{
+					Name:         draDynamicCDIVolume,
+					VolumeSource: v1.VolumeSource{HostPath: &v1.HostPathVolumeSource{Path: expectedDynamic}},
+				}))
+
+				mounts := ds.Spec.Template.Spec.Containers[0].VolumeMounts
+				Expect(mounts).To(ContainElement(v1.VolumeMount{Name: draStaticCDIVolume, MountPath: "/etc/cdi"}))
+				Expect(mounts).To(ContainElement(v1.VolumeMount{Name: draDynamicCDIVolume, MountPath: "/var/run/cdi"}))
+			},
+			Entry("custom",
+				v1alpha.CDISpec{StaticHostPath: "/var/cdi/static", DynamicHostPath: "/var/cdi/dynamic"},
+				"/var/cdi/static", "/var/cdi/dynamic"),
+			Entry("empty static falls back to default",
+				v1alpha.CDISpec{DynamicHostPath: "/var/cdi/dynamic"},
+				v1alpha.CDIDefaultStaticHostPath, "/var/cdi/dynamic"),
+			Entry("empty dynamic falls back to default",
+				v1alpha.CDISpec{StaticHostPath: "/var/cdi/static"},
+				"/var/cdi/static", v1alpha.CDIDefaultDynamicHostPath),
+		)
+
 		It("sets and clears DRA affinity", func() {
 			cp := &v1alpha.ClusterPolicy{
 				Spec: v1alpha.ClusterPolicySpec{

@@ -34,6 +34,8 @@ See [Customizing the Chart Before Installing](https://helm.sh/docs/intro/using_h
 | enableKueue | false | Set up Kueue queues for node resources. |
 | prometheusIntegration | false | Integrate metrics into Prometheus. |
 | logLevel | 1 | Global log level. |
+| cdi.staticHostPath | /etc/cdi | Host directory for static CDI specifications (DRA only). |
+| cdi.dynamicHostPath | /var/run/cdi | Host directory for dynamic CDI specifications. |
 | health.coreTemperatureThreshold | 88 | Core temperature threshold for health checks (°C). |
 | health.memoryTemperatureThreshold | 99 | Memory temperature threshold for health checks (°C). |
 | health.checkIntervalSeconds | 12 | Interval for health checks (seconds). |

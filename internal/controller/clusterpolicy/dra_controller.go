@@ -53,6 +53,9 @@ const (
 	healthCheckPort    = 51516
 	vfioGpuDeviceClass = "gpu-vfio.intel.com"
 
+	draStaticCDIVolume  = "cdi"
+	draDynamicCDIVolume = "varruncdi"
+
 	draResourcePart = "gpu-dra"
 )
 
@@ -346,6 +349,10 @@ func (r *DRAReconciler) updateDaemonSetObject(ds *apps.DaemonSet, spec *v1alpha.
 	ds.Spec.Template.Spec.Affinity = generateAffinity(spec.Spec.DynamicResourceAllocationSpec.Affinity)
 
 	cspec := &ds.Spec.Template.Spec
+
+	cdi := spec.Spec.CDI.WithDefaults()
+	setHostPath(cspec.Volumes, draStaticCDIVolume, cdi.StaticHostPath)
+	setHostPath(cspec.Volumes, draDynamicCDIVolume, cdi.DynamicHostPath)
 
 	// Enable health check for the DRA Pod
 	if spec.Spec.DynamicResourceAllocationSpec.PodHealthCheck {

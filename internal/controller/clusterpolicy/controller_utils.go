@@ -84,6 +84,15 @@ func generateAffinity(affinity *core.Affinity) *core.Affinity {
 	return affinity
 }
 
+// setHostPath points the named hostPath volume to path, leaving the rest of the volume intact.
+func setHostPath(volumes []core.Volume, name, path string) {
+	for i := range volumes {
+		if volumes[i].Name == name && volumes[i].HostPath != nil {
+			volumes[i].HostPath.Path = path
+		}
+	}
+}
+
 func isClusterPolicyBeingDeleted(cp *v1alpha.ClusterPolicy) bool {
 	// CP is nil, which means the CR was deleted, so we should remove everything.
 	if cp == nil {

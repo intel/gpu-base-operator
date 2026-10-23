@@ -7,6 +7,14 @@ enableKueue: false
 
 logLevel: 1
 
+# Host directories for CDI specifications. Must match the CDI spec dirs of the node
+# container runtime. Empty values use the operator defaults.
+cdi:
+  # Mounted at /etc/cdi in the DRA driver. Not used by the device plugin.
+  staticHostPath: /etc/cdi
+  # Mounted at /var/run/cdi in the DRA driver and device plugin.
+  dynamicHostPath: /var/run/cdi
+
 health:
   coreTemperatureThreshold: 88
   memoryTemperatureThreshold: 99
