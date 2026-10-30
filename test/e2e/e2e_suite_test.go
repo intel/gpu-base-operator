@@ -17,7 +17,6 @@ limitations under the License.
 package e2e
 
 import (
-	"fmt"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -47,7 +46,7 @@ var (
 // CertManager.
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
-	_, _ = fmt.Fprintf(GinkgoWriter, "Starting intel-gpu-base-operator integration test suite\n")
+	logf("Starting intel-gpu-base-operator integration test suite")
 	RunSpecs(t, "e2e suite")
 }
 
@@ -76,10 +75,10 @@ var _ = BeforeSuite(func() {
 		By("checking if cert manager is installed already")
 		isCertManagerAlreadyInstalled = utils.IsCertManagerCRDsInstalled()
 		if !isCertManagerAlreadyInstalled {
-			_, _ = fmt.Fprintf(GinkgoWriter, "Installing CertManager...\n")
+			logf("Installing CertManager...")
 			Expect(utils.InstallCertManager()).To(Succeed(), "Failed to install CertManager")
 		} else {
-			_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: CertManager is already installed. Skipping installation...\n")
+			logf("WARNING: CertManager is already installed. Skipping installation...")
 		}
 	}
 })
@@ -87,7 +86,7 @@ var _ = BeforeSuite(func() {
 var _ = AfterSuite(func() {
 	// Teardown CertManager after the suite if not skipped and if it was not already installed
 	// if !skipCertManagerInstall && !isCertManagerAlreadyInstalled {
-	// 	_, _ = fmt.Fprintf(GinkgoWriter, "Uninstalling CertManager...\n")
+	// 	logf("Uninstalling CertManager...")
 	// 	utils.UninstallCertManager()
 	// }
 })

@@ -207,7 +207,7 @@ func (f gpuFault) runGPUHang(mode string, faulted func() bool, extraArgs ...stri
 	}).WithTimeout(4 * time.Minute).Should(Succeed())
 
 	logs, _ := utils.Run(exec.Command("kubectl", "logs", pod, "-n", gpuHangNamespace))
-	_, _ = fmt.Fprintf(GinkgoWriter, "gpu-hang --mode=%s on %s:\n%s\n", mode, f.bdf, logs)
+	logf("gpu-hang --mode=%s on %s:\n%s", mode, f.bdf, logs)
 
 	if faultedBy {
 		state := "still running"
@@ -215,7 +215,7 @@ func (f gpuFault) runGPUHang(mode string, faulted func() bool, extraArgs ...stri
 			state = fmt.Sprintf("exited %d", terminated.ExitCode)
 		}
 
-		_, _ = fmt.Fprintf(GinkgoWriter, "%s is faulted (--mode=%s); gpu-hang %s, not waiting for it\n", f.bdf, mode, state)
+		logf("%s is faulted (--mode=%s); gpu-hang %s, not waiting for it", f.bdf, mode, state)
 		_, _ = utils.Run(exec.Command("kubectl", "delete", "pod", pod, "-n", gpuHangNamespace, "--ignore-not-found", "--wait=false"))
 
 		return
@@ -275,7 +275,7 @@ echo "driver: $(basename "$(readlink "$DEV/driver")")"
 true`, f.bdf, rebind)
 
 	out, err := f.nodeSh(script)
-	_, _ = fmt.Fprintf(GinkgoWriter, "restoring GPU %s (err: %v):\n%s\n", f.bdf, err, out)
+	logf("restoring GPU %s (err: %v):\n%s", f.bdf, err, out)
 }
 
 func lastLine(s string) string {

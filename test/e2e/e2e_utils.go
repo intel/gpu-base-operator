@@ -38,6 +38,11 @@ import (
 // namespace where the project is deployed in
 const namespace = "intel-gpu-base-operator"
 
+// logf writes a line to the GinkgoWriter, shown for failed specs or with -v.
+func logf(format string, args ...any) {
+	GinkgoWriter.Printf(format+"\n", args...)
+}
+
 func devicePluginClusterPolicy() api.ClusterPolicy {
 	return kustomizeToClusterpolicy("config/samples/deviceplugin/")
 }
@@ -281,7 +286,7 @@ func removeNFDLabels() {
 
 	nodeOutput, err := utils.Run(cmd)
 	if err != nil {
-		_, _ = fmt.Fprintf(GinkgoWriter, "warning: failed to list nodes for NFD label cleanup: %v\n", err)
+		logf("warning: failed to list nodes for NFD label cleanup: %v", err)
 		return
 	}
 
@@ -290,7 +295,7 @@ func removeNFDLabels() {
 
 		jsonOutput, err := utils.Run(cmd)
 		if err != nil {
-			_, _ = fmt.Fprintf(GinkgoWriter, "warning: failed to get node %q for NFD label cleanup: %v\n", node, err)
+			logf("warning: failed to get node %q for NFD label cleanup: %v", node, err)
 			continue
 		}
 
@@ -301,7 +306,7 @@ func removeNFDLabels() {
 		}
 
 		if err = json.Unmarshal([]byte(jsonOutput), &nodeObj); err != nil {
-			_, _ = fmt.Fprintf(GinkgoWriter, "warning: failed to parse node %q JSON: %v\n", node, err)
+			logf("warning: failed to parse node %q JSON: %v", node, err)
 			continue
 		}
 
@@ -324,7 +329,7 @@ func removeNFDLabels() {
 		cmd = exec.Command("kubectl", args...)
 
 		if _, err = utils.Run(cmd); err != nil {
-			_, _ = fmt.Fprintf(GinkgoWriter, "warning: failed to remove NFD labels from node %q: %v\n", node, err)
+			logf("warning: failed to remove NFD labels from node %q: %v", node, err)
 		}
 	}
 }
