@@ -176,18 +176,18 @@ var _ = Describe("Kubectl apply", Label("kubectl", "clusterpolicy"), Ordered, fu
 			cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
 			controllerLogs, err := utils.Run(cmd)
 			if err == nil {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs:\n %s", controllerLogs)
+				logf("Controller logs:\n %s", controllerLogs)
 			} else {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Controller logs: %s", err)
+				logf("Failed to get Controller logs: %s", err)
 			}
 
 			By("fetching Kubernetes events")
 			cmd = exec.Command("kubectl", "get", "events", "-n", namespace, "--sort-by=.lastTimestamp")
 			eventsOutput, err := utils.Run(cmd)
 			if err == nil {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Kubernetes events:\n%s", eventsOutput)
+				logf("Kubernetes events:\n%s", eventsOutput)
 			} else {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Kubernetes events: %s", err)
+				logf("Failed to get Kubernetes events: %s", err)
 			}
 
 			By("fetching controller manager pod description")
@@ -488,9 +488,9 @@ var _ = Describe("Kubectl apply", Label("kubectl", "clusterpolicy"), Ordered, fu
 				By("fetching OTLP gateway logs")
 				output, err := getOTLPGatewayLogs()
 				if err == nil {
-					_, _ = fmt.Fprintf(GinkgoWriter, "OTLP gateway logs:\n %s", output)
+					logf("OTLP gateway logs:\n %s", output)
 				} else {
-					_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get OTLP gateway logs: %s", err)
+					logf("Failed to get OTLP gateway logs: %s", err)
 				}
 			}
 
@@ -610,9 +610,9 @@ var _ = Describe("Kubectl apply", Label("kubectl", "clusterpolicy"), Ordered, fu
 				By("fetching OTLP gateway logs")
 				output, err := getOTLPGatewayLogs()
 				if err == nil {
-					_, _ = fmt.Fprintf(GinkgoWriter, "OTLP gateway logs:\n %s", output)
+					logf("OTLP gateway logs:\n %s", output)
 				} else {
-					_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get OTLP gateway logs: %s", err)
+					logf("Failed to get OTLP gateway logs: %s", err)
 				}
 			}
 

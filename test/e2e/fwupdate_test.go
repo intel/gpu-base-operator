@@ -180,7 +180,7 @@ var _ = Describe("Firmware update", Ordered, Label("fwupdate"), func() {
 		}).Should(Succeed())
 
 		pciDeviceID := selectFwPCIID(devices)
-		_, _ = fmt.Fprintf(GinkgoWriter, "Node %s, GPUs %+v, updating PCI ID %s\n", nodeName, devices, pciDeviceID)
+		logf("Node %s, GPUs %+v, updating PCI ID %s", nodeName, devices, pciDeviceID)
 
 		t = prepareFwTarget(nodeName, pciDeviceID)
 	})
@@ -393,7 +393,7 @@ var _ = Describe("Firmware update with device plugin", Ordered, Label("fwupdate"
 		bdfs = nodeBDFsForPCIID(nodeName, pciDeviceID)
 		Expect(bdfs).NotTo(BeEmpty(), "%s=%s matches no Intel PCI device on node %s", fwPCIIDEnv, pciDeviceID, nodeName)
 
-		_, _ = fmt.Fprintf(GinkgoWriter, "Node %s, GPUs %v, updating PCI ID %s\n", nodeName, bdfs, pciDeviceID)
+		logf("Node %s, GPUs %v, updating PCI ID %s", nodeName, bdfs, pciDeviceID)
 
 		t = prepareFwTarget(nodeName, pciDeviceID)
 	})
@@ -601,7 +601,7 @@ func waitForFwUpdateToFinish(crName string) (*api.GPUFirmwareUpdate, []string) {
 		g.Expect(fu.Status.State).To(BeElementOf("completed", "error"))
 	}).Should(Succeed())
 
-	_, _ = fmt.Fprintf(GinkgoWriter, "GPUFirmwareUpdate %s states: %v\n", crName, states)
+	logf("GPUFirmwareUpdate %s states: %v", crName, states)
 
 	return fu, states
 }
@@ -655,7 +655,7 @@ func dumpFwUpdateDebugInfo() {
 		{"kubectl", "logs", "-n", namespace, "-l", "control-plane=controller-manager", "--tail=200"},
 		{"kubectl", "get", "events", "-n", namespace, "--sort-by=.lastTimestamp"},
 	} {
-		_, _ = fmt.Fprintf(GinkgoWriter, "--- %s\n%s\n", strings.Join(args, " "), mustRun(args...))
+		logf("--- %s\n%s", strings.Join(args, " "), mustRun(args...))
 	}
 }
 

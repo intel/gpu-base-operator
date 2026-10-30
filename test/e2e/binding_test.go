@@ -123,7 +123,7 @@ func newBindingTarget(node, bdf string) *bindingTarget {
 		t.skipReason = "no vfio driver is loaded on the host; load one with 'modprobe vfio-pci'"
 	}
 
-	_, _ = fmt.Fprintf(GinkgoWriter, "Binding target: node %s, GPU %s on %s, IOMMU group %q, vfio drivers %v\n",
+	logf("Binding target: node %s, GPU %s on %s, IOMMU group %q, vfio drivers %v",
 		node, bdf, t.origDriver, t.iommuGroup, t.vfioDrivers)
 
 	return t
@@ -176,7 +176,7 @@ func (t *bindingTarget) restore() {
 	}
 
 	out, err := t.nodeSh(t.rebindScript(t.origDriver))
-	_, _ = fmt.Fprintf(GinkgoWriter, "restoring GPU %s to %s (err: %v):\n%s\n", t.bdf, t.origDriver, err, out)
+	logf("restoring GPU %s to %s (err: %v):\n%s", t.bdf, t.origDriver, err, out)
 }
 
 // waitForSliceDriver waits for the DRA driver to list the GPU as bound to one of drivers.
@@ -285,7 +285,7 @@ var _ = Describe("Device plugin with GPU rebinding", Ordered, Label("deviceplugi
 		var before int64
 
 		Eventually(func(g Gomega) { before = nodeAllocatable(g, t.node, resource) }).Should(Succeed())
-		_, _ = fmt.Fprintf(GinkgoWriter, "node %s advertises %d %s\n", t.node, before, resource)
+		logf("node %s advertises %d %s", t.node, before, resource)
 
 		t.bindTo(vfioPCIDriver)
 
@@ -393,7 +393,7 @@ var _ = Describe("DRA device binding", Ordered, Label("dra", "binding"), func() 
 		expectDeviceClassSelectors(false)
 
 		if gpusOnVfio() {
-			_, _ = fmt.Fprintf(GinkgoWriter, "a GPU is already on vfio; not checking that a vfio claim stays unallocated\n")
+			logf("a GPU is already on vfio; not checking that a vfio claim stays unallocated")
 		} else {
 			By("validating that a vfio claim is not allocated while every GPU is on its DRM driver")
 			Expect(applyManifest(bindingPodManifest(bindingPod, bindingClaim, vfioDeviceClass, ""))).To(Succeed())
@@ -458,7 +458,7 @@ var _ = Describe("DRA device binding", Ordered, Label("dra", "binding"), func() 
 
 		// The DRA driver leaves the GPU on vfio, so it is the DRM claim's prepare, not the suite, that
 		// moves it back. Were that ever to change, the last workload would not exercise the rebind.
-		_, _ = fmt.Fprintf(GinkgoWriter, "%s is on %q once its vfio claim is gone\n", t.bdf, t.driver())
+		logf("%s is on %q once its vfio claim is gone", t.bdf, t.driver())
 
 		runDRMWorkload()
 	})
@@ -736,7 +736,7 @@ func dumpBindingDebugInfo(t *bindingTarget, pluginLabel string) {
 	}
 
 	for _, args := range cmds {
-		_, _ = fmt.Fprintf(GinkgoWriter, "--- %s\n%s\n", strings.Join(args, " "), mustRun(args...))
+		logf("--- %s\n%s", strings.Join(args, " "), mustRun(args...))
 	}
 }
 

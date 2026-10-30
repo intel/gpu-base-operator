@@ -138,7 +138,7 @@ func (t *recoveryTarget) enterSurvivability(f gpuFault) {
 		keys, _ := lenientDeviceTaintKeys(f)
 		return slices.Contains(keys, common.DeviceTaintKeyReflash)
 	}) {
-		_, _ = fmt.Fprintf(GinkgoWriter, "DRA driver tainted %s on its own\n", f.bdf)
+		logf("DRA driver tainted %s on its own", f.bdf)
 		return
 	}
 
@@ -149,7 +149,7 @@ func (t *recoveryTarget) enterSurvivability(f gpuFault) {
 	Eventually(waitForDRAPodsToBecomeRunning).Should(Succeed())
 
 	waitForDeviceTaint(f, common.DeviceTaintKeyReflash, 3*time.Minute)
-	_, _ = fmt.Fprintf(GinkgoWriter, "DRA driver tainted %s after a restart\n", f.bdf)
+	logf("DRA driver tainted %s after a restart", f.bdf)
 }
 
 var _ = Describe("GPU recovery", Ordered, Label("recovery"), func() {
@@ -219,7 +219,7 @@ var _ = Describe("GPU recovery", Ordered, Label("recovery"), func() {
 		target.fwImage = pushToNodeRegistry(node, fwContentE2EImage, "e2e/fwfiles")
 		target.badImage = fmt.Sprintf("%s:%d/e2e/does-not-exist:e2e", nodeInternalIP(node), registryNodePort)
 
-		_, _ = fmt.Fprintf(GinkgoWriter, "Recovery target: node %s, GPU %s (%s), sibling %+v\n",
+		logf("Recovery target: node %s, GPU %s (%s), sibling %+v",
 			node, bdf, target.pciID, target.sibling)
 
 		for _, f := range target.faults() {
@@ -761,7 +761,7 @@ func followEvents(planName, node string, bdfs ...string) map[string]*eventTrace 
 	}).WithTimeout(10 * time.Minute).Should(Succeed())
 
 	for bdf, tr := range traces {
-		_, _ = fmt.Fprintf(GinkgoWriter, "Recovery event %s for %s: states %v, Jobs %v\n", tr.id, bdf, tr.states, tr.jobNames)
+		logf("Recovery event %s for %s: states %v, Jobs %v", tr.id, bdf, tr.states, tr.jobNames)
 	}
 
 	return traces
@@ -842,7 +842,7 @@ func waitForDeviceTaint(f gpuFault, key string, timeout time.Duration) {
 
 	// Whether the taint evicts the pods using the GPU (NoExecute) or only keeps new ones off it
 	// (NoSchedule) decides what a drain still has to do.
-	_, _ = fmt.Fprintf(GinkgoWriter, "%s taints: %s\n", f.bdf, mustRun("kubectl", "get", "resourceslices", "-o",
+	logf("%s taints: %s", f.bdf, mustRun("kubectl", "get", "resourceslices", "-o",
 		fmt.Sprintf(`jsonpath={.items[*].spec.devices[?(@.attributes.pciAddress.string=="%s")].taints}`, f.bdf)))
 }
 
@@ -968,7 +968,7 @@ func dumpRecoveryDebugInfo(t *recoveryTarget) {
 		{"kubectl", "get", "events", "-A", "--sort-by=.lastTimestamp"},
 		{"docker", "exec", t.node(), "sh", "-c", "dmesg | tail -50"},
 	} {
-		_, _ = fmt.Fprintf(GinkgoWriter, "--- %s\n%s\n", strings.Join(args, " "), mustRun(args...))
+		logf("--- %s\n%s", strings.Join(args, " "), mustRun(args...))
 	}
 }
 
