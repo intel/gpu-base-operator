@@ -92,7 +92,21 @@ jobs:
             operator-image-vulnerabilities.json
             go.mod-vulnerabilities.json
           retention-days: 14
-
+  bundle:
+    name: Test bundle
+    runs-on: ${{ inputs.runner }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+        with:
+          clean: true
+      - name: Test bundle creation
+        run: |
+          make bundle
+      - name: Test bundle build
+        run: |
+          make bundle-build
   tests:
     name: Run tests
     runs-on: ${{ inputs.runner }}
