@@ -394,7 +394,14 @@ func main() {
 		setupLog.Error(err, "unable to create webhook", "webhook", "GPUFirmwareUpdate")
 		os.Exit(1)
 	}
-	if err := intelcomv1alpha1.SetupClusterPolicyWebhookWithManager(mgr); err != nil {
+	cpDefaulter, err := intelcomv1alpha1.NewClusterPolicyCustomDefaulterFromEnv(os.Getenv)
+	if err != nil {
+		setupLog.Error(err, "invalid default operand image")
+		os.Exit(1)
+	}
+	setupLog.Info("Default operand images", "devicePlugin", cpDefaulter.DPImage,
+		"dra", cpDefaulter.DRAImage, "xpuManager", cpDefaulter.XPUImage)
+	if err := intelcomv1alpha1.SetupClusterPolicyWebhookWithManager(mgr, cpDefaulter); err != nil {
 		setupLog.Error(err, "unable to create webhook", "webhook", "ClusterPolicy")
 		os.Exit(1)
 	}

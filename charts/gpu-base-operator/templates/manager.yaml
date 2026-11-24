@@ -91,6 +91,12 @@ spec:
                 fieldPath: metadata.namespace
           - name: MODULE_LOADER_SERVICE_ACCOUNT_NAME
             value: "{{ .Values.moduleLoader.serviceAccountName }}"
+          - name: RELATED_IMAGE_GPU_PLUGIN
+            value: "{{ .Values.operandImages.devicePlugin }}"
+          - name: RELATED_IMAGE_GPU_DRA
+            value: "{{ .Values.operandImages.dra }}"
+          - name: RELATED_IMAGE_XPUMANAGER
+            value: "{{ .Values.operandImages.xpuManager }}"
       {{- if .Values.privateRegistry.token }}
           - name: OPERATOR_SECRET
             value: "{{ .Release.Name }}-operator-private-registry"

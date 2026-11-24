@@ -110,7 +110,7 @@ var _ = BeforeSuite(func() {
 	err = SetupGPUFirmwareUpdateWebhookWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
-	err = SetupClusterPolicyWebhookWithManager(mgr)
+	err = SetupClusterPolicyWebhookWithManager(mgr, nil)
 	Expect(err).NotTo(HaveOccurred())
 
 	err = SetupGPURecoveryPlanWebhookWithManager(mgr)
