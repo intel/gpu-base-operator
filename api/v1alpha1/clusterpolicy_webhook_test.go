@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"strings"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -199,6 +201,57 @@ var _ = Describe("ClusterPolicy Defaulter Webhook", func() {
 				Expect(err).NotTo(HaveOccurred(), "default image %q is not a valid reference", img)
 			}
 		})
+
+		It("uses configured default images over the built-in ones", func() {
+			defaulter = ClusterPolicyCustomDefaulter{
+				DPImage:  "mirror.local/gpu-plugin:v1",
+				DRAImage: "mirror.local/gpu-dra:v1",
+				XPUImage: "mirror.local/xpumd:v1",
+			}
+			Expect(defaulter.Default(ctx, obj)).To(Succeed())
+			Expect(obj.Spec.DevicePluginSpec.PluginImage).To(Equal("mirror.local/gpu-plugin:v1"))
+			Expect(obj.Spec.DynamicResourceAllocationSpec.Image).To(Equal("mirror.local/gpu-dra:v1"))
+			Expect(obj.Spec.XpuManagerSpec.Image).To(Equal("mirror.local/xpumd:v1"))
+		})
+
+		It("does not overwrite images set in the CR with configured defaults", func() {
+			defaulter = ClusterPolicyCustomDefaulter{DPImage: "mirror.local/gpu-plugin:v1"}
+			obj.Spec.DevicePluginSpec.PluginImage = "my.registry/gpu-plugin:v2"
+			Expect(defaulter.Default(ctx, obj)).To(Succeed())
+			Expect(obj.Spec.DevicePluginSpec.PluginImage).To(Equal("my.registry/gpu-plugin:v2"))
+		})
+	})
+})
+
+var _ = Describe("NewClusterPolicyCustomDefaulterFromEnv", func() {
+	envOf := func(m map[string]string) func(string) string {
+		return func(k string) string { return m[k] }
+	}
+
+	It("falls back to built-in images when the env vars are unset", func() {
+		d, err := NewClusterPolicyCustomDefaulterFromEnv(envOf(nil))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(d.DPImage).To(Equal(DefaultDPImage))
+		Expect(d.DRAImage).To(Equal(DefaultDRAImage))
+		Expect(d.XPUImage).To(Equal(DefaultXPUImage))
+	})
+
+	It("reads images from the RELATED_IMAGE_* env vars", func() {
+		d, err := NewClusterPolicyCustomDefaulterFromEnv(envOf(map[string]string{
+			RelatedImageDPEnv:  "mirror.local/gpu-plugin@sha256:" + strings.Repeat("a", 64),
+			RelatedImageDRAEnv: "mirror.local/gpu-dra:v1",
+		}))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(d.DPImage).To(Equal("mirror.local/gpu-plugin@sha256:" + strings.Repeat("a", 64)))
+		Expect(d.DRAImage).To(Equal("mirror.local/gpu-dra:v1"))
+		Expect(d.XPUImage).To(Equal(DefaultXPUImage))
+	})
+
+	It("rejects an invalid image reference", func() {
+		_, err := NewClusterPolicyCustomDefaulterFromEnv(envOf(map[string]string{
+			RelatedImageXPUEnv: "INVALID IMAGE::",
+		}))
+		Expect(err).To(MatchError(ContainSubstring(RelatedImageXPUEnv)))
 	})
 })
 

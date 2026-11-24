@@ -33,18 +33,63 @@ import (
 	"github.com/distribution/reference"
 )
 
-// Default images used when no image is specified in the ClusterPolicy spec.
-// These match the pinned images shipped in the Helm chart values.
+// Fallback images used when no image is specified in the ClusterPolicy spec and the
+// matching RELATED_IMAGE_* env var is unset. Keep in sync with the env var values in
+// config/manager/manager.yaml and charts/gpu-base-operator/values.yaml.
 const (
 	DefaultDPImage  = "docker.io/intel/intel-gpu-plugin:0.37.0@sha256:7001200071db10587fc31184eedda4f5cf291efba737adf85a8c80539f7fa5e1"
 	DefaultDRAImage = "ghcr.io/intel/intel-gpu-resource-driver:v0.12.1@sha256:1479956240397c7207c3d38c0d296bd591cd66f26d432452f9a2d75336843776"
 	DefaultXPUImage = "ghcr.io/intel/xpumanager/xpumd:v2.3.0@sha256:539009b75c64159ca2202f52b94ae736ab3883c3497d30d65bd3d179357e1859"
 )
 
+// Env vars on the operator Deployment that override the default operand images. The
+// RELATED_IMAGE_ prefix makes operator-sdk list them in the CSV's spec.relatedImages,
+// which is what oc-mirror copies for disconnected installs.
+const (
+	RelatedImageDPEnv  = "RELATED_IMAGE_GPU_PLUGIN"
+	RelatedImageDRAEnv = "RELATED_IMAGE_GPU_DRA"
+	RelatedImageXPUEnv = "RELATED_IMAGE_XPUMANAGER"
+)
+
+// NewClusterPolicyCustomDefaulterFromEnv builds a defaulter whose default images come
+// from the RELATED_IMAGE_* env vars, read through getenv (normally os.Getenv). Unset
+// vars fall back to the Default*Image constants. An invalid image reference is an
+// error, so a misconfigured Deployment fails at startup rather than on first admission.
+func NewClusterPolicyCustomDefaulterFromEnv(getenv func(string) string) (*ClusterPolicyCustomDefaulter, error) {
+	d := &ClusterPolicyCustomDefaulter{
+		DPImage:  orDefault(getenv(RelatedImageDPEnv), DefaultDPImage),
+		DRAImage: orDefault(getenv(RelatedImageDRAEnv), DefaultDRAImage),
+		XPUImage: orDefault(getenv(RelatedImageXPUEnv), DefaultXPUImage),
+	}
+
+	var errs []error
+
+	for _, f := range []struct{ env, img string }{
+		{RelatedImageDPEnv, d.DPImage},
+		{RelatedImageDRAEnv, d.DRAImage},
+		{RelatedImageXPUEnv, d.XPUImage},
+	} {
+		if _, err := reference.ParseNormalizedNamed(f.img); err != nil {
+			errs = append(errs, fmt.Errorf("invalid image reference in %s: %q: %w", f.env, f.img, err))
+		}
+	}
+
+	if err := errors.Join(errs...); err != nil {
+		return nil, err
+	}
+
+	return d, nil
+}
+
 // SetupClusterPolicyWebhookWithManager registers the webhook for ClusterPolicy in the manager.
-func SetupClusterPolicyWebhookWithManager(mgr ctrl.Manager) error {
+// A nil defaulter uses the Default*Image constants.
+func SetupClusterPolicyWebhookWithManager(mgr ctrl.Manager, defaulter *ClusterPolicyCustomDefaulter) error {
+	if defaulter == nil {
+		defaulter = &ClusterPolicyCustomDefaulter{}
+	}
+
 	return ctrl.NewWebhookManagedBy(mgr, &ClusterPolicy{}).
-		WithDefaulter(&ClusterPolicyCustomDefaulter{}).
+		WithDefaulter(defaulter).
 		WithValidator(&ClusterPolicyCustomValidator{}).
 		Complete()
 }
@@ -52,25 +97,39 @@ func SetupClusterPolicyWebhookWithManager(mgr ctrl.Manager) error {
 // +kubebuilder:webhook:path=/mutate-intel-com-v1alpha1-clusterpolicy,mutating=true,failurePolicy=fail,sideEffects=None,groups=intel.com,resources=clusterpolicies,verbs=create;update,versions=v1alpha1,name=mclusterpolicy-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // ClusterPolicyCustomDefaulter sets default image values on ClusterPolicy resources.
-type ClusterPolicyCustomDefaulter struct{}
+// Empty image fields fall back to the Default*Image constants, so the zero value is usable.
+type ClusterPolicyCustomDefaulter struct {
+	DPImage  string
+	DRAImage string
+	XPUImage string
+}
 
 var _ admission.Defaulter[*ClusterPolicy] = &ClusterPolicyCustomDefaulter{}
 
+// Returns img if it is not empty, otherwise returns defaultValue.
+func orDefault(img, defaultValue string) string {
+	if img != "" {
+		return img
+	}
+
+	return defaultValue
+}
+
 // Default implements webhook.CustomDefaulter. It fills in missing image references
-// with the pinned known-good images shipped with this version of the operator.
+// with the operator's configured default images.
 func (d *ClusterPolicyCustomDefaulter) Default(_ context.Context, cp *ClusterPolicy) error {
 	spec := &cp.Spec
 
 	if spec.DevicePluginSpec.PluginImage == "" {
-		spec.DevicePluginSpec.PluginImage = DefaultDPImage
+		spec.DevicePluginSpec.PluginImage = orDefault(d.DPImage, DefaultDPImage)
 	}
 
 	if spec.DynamicResourceAllocationSpec.Image == "" {
-		spec.DynamicResourceAllocationSpec.Image = DefaultDRAImage
+		spec.DynamicResourceAllocationSpec.Image = orDefault(d.DRAImage, DefaultDRAImage)
 	}
 
 	if spec.XpuManagerSpec.Image == "" {
-		spec.XpuManagerSpec.Image = DefaultXPUImage
+		spec.XpuManagerSpec.Image = orDefault(d.XPUImage, DefaultXPUImage)
 	}
 
 	if spec.XpuManagerSpec.MonitoringResource == "" {

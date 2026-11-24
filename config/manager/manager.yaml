@@ -89,6 +89,15 @@ spec:
             # kustomize prepends the namePrefix (intel-gpu-base-operator-) to the
             # ServiceAccount, but not to this literal, so set the resolved name here.
             value: intel-gpu-base-operator-module-loader
+          # Default operand images. operator-sdk collects RELATED_IMAGE_* env vars into the
+          # CSV's spec.relatedImages. Keep digest-pinned and in sync with the Default*Image constants in
+          # api/v1alpha1/clusterpolicy_webhook.go and charts/gpu-base-operator/values.yaml.
+          - name: RELATED_IMAGE_GPU_PLUGIN
+            value: docker.io/intel/intel-gpu-plugin:0.37.0@sha256:7001200071db10587fc31184eedda4f5cf291efba737adf85a8c80539f7fa5e1
+          - name: RELATED_IMAGE_GPU_DRA
+            value: ghcr.io/intel/intel-gpu-resource-driver:v0.12.1@sha256:1479956240397c7207c3d38c0d296bd591cd66f26d432452f9a2d75336843776
+          - name: RELATED_IMAGE_XPUMANAGER
+            value: ghcr.io/intel/xpumanager/xpumd:v2.3.0@sha256:539009b75c64159ca2202f52b94ae736ab3883c3497d30d65bd3d179357e1859
         image: ghcr.io/intel/intel-gpu-base-operator:devel
         imagePullPolicy: IfNotPresent
         name: manager
