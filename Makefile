@@ -30,18 +30,14 @@ IMAGE_TAG_BASE ?= ghcr.io/intel/intel-gpu-base-operator
 
 # BUNDLE_IMG defines the image:tag used for the bundle.
 # You can use it as an arg. (E.g make bundle-build BUNDLE_IMG=<some-registry>/<project-name-bundle>:<tag>)
-BUNDLE_IMG ?= $(IMAGE_TAG_BASE)-bundle:v$(VERSION)
+BUNDLE_IMG ?= $(IMAGE_TAG_BASE)-bundle:$(VERSION)
 
 # BUNDLE_GEN_FLAGS are the flags passed to the operator-sdk generate bundle command
 BUNDLE_GEN_FLAGS ?= -q --overwrite --version $(VERSION) $(BUNDLE_METADATA_OPTS)
 
-# USE_IMAGE_DIGESTS defines if images are resolved via tags or digests
-# You can enable this value if you would like to use SHA Based Digests
-# To enable set flag to true
+# USE_IMAGE_DIGESTS=true makes `make bundle` pin the operator image (IMG) by digest and fail
+# unless every image in the CSV is digest-pinned.
 USE_IMAGE_DIGESTS ?= false
-ifeq ($(USE_IMAGE_DIGESTS), true)
-	BUNDLE_GEN_FLAGS += --use-image-digests
-endif
 
 # Set the Operator SDK version to use. By default, what is installed on the system is used.
 # This is useful for CI or a project to utilize a specific version of the operator-sdk toolkit.
@@ -52,6 +48,8 @@ TAG ?= devel
 
 # Image URL to use all building/pushing image targets
 IMG ?= ghcr.io/intel/intel-gpu-base-operator:$(TAG)
+# Must match image name in config/manager/manager.yaml.
+OPERATOR_IMAGE_NAME ?= ghcr.io/intel/intel-gpu-base-operator
 
 FWFILES_IMG ?= ghcr.io/intel/gpu-firmware-update-files:$(TAG)
 FWUPDATER_IMG ?= ghcr.io/intel/gpu-fwupdater:$(TAG)
@@ -281,7 +279,7 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
 	mkdir -p dist
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
+	cd config/manager && $(KUSTOMIZE) edit set image $(OPERATOR_IMAGE_NAME)=$(IMG)
 	$(KUSTOMIZE) build config/default > dist/install.yaml
 
 ##@ Deployment
@@ -300,7 +298,7 @@ uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified 
 
 .PHONY: deploy
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
+	cd config/manager && $(KUSTOMIZE) edit set image $(OPERATOR_IMAGE_NAME)=$(IMG)
 	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
 
 .PHONY: undeploy
@@ -322,6 +320,7 @@ KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+CRANE ?= $(LOCALBIN)/crane
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.6.0
@@ -334,6 +333,7 @@ GOLANGCI_LINT_VERSION ?= v2.1.0
 KIND_VERSION ?= v0.30.0
 KIND_K8S_VERSION ?= v1.35.0
 HELM_VERSION ?= v3.19.2
+CRANE_VERSION ?= $(shell go list -m -f "{{ .Version }}" github.com/google/go-containerregistry)
 
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
@@ -375,6 +375,11 @@ golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
 	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
 
+.PHONY: crane
+crane: $(CRANE) ## Download crane locally if necessary.
+$(CRANE): $(LOCALBIN)
+	$(call go-install-tool,$(CRANE),github.com/google/go-containerregistry/cmd/crane,$(CRANE_VERSION))
+
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary
 # $2 - package url which can be installed
@@ -409,11 +414,24 @@ endif
 endif
 
 .PHONY: bundle
-bundle: manifests kustomize operator-sdk ## Generate bundle manifests and metadata, then validate generated files.
+bundle: manifests kustomize operator-sdk $(if $(filter true,$(USE_IMAGE_DIGESTS)),crane) ## Generate bundle manifests and metadata, then validate generated files.
 	$(OPERATOR_SDK) generate kustomize manifests -q
-	cd config/manager && $(KUSTOMIZE) edit set image controller=$(IMG)
+	@img="$(IMG)"; \
+	if [ "$(USE_IMAGE_DIGESTS)" = true ] && ! echo "$$img" | grep -q '@sha256:'; then \
+		digest=$$($(CRANE) digest "$$img") || { \
+			echo "error: cannot resolve $$img to a digest; push it first or set USE_IMAGE_DIGESTS=false" >&2; \
+			exit 1; \
+		}; \
+		img="$$img@$$digest"; \
+	fi; \
+	echo "Operator image: $$img"; \
+	cd config/manager && $(KUSTOMIZE) edit set image $(OPERATOR_IMAGE_NAME)=$$img
 	$(KUSTOMIZE) build config/manifests | $(OPERATOR_SDK) generate bundle $(BUNDLE_GEN_FLAGS)
 	$(OPERATOR_SDK) bundle validate ./bundle
+	@scripts/check-bundle-digests.sh bundle/manifests/intel-gpu-base-operator.clusterserviceversion.yaml || { \
+		[ "$(USE_IMAGE_DIGESTS)" != true ] && \
+		echo "warning: bundle is not usable for disconnected installs; rebuild with USE_IMAGE_DIGESTS=true" >&2; \
+	}
 
 .PHONY: bundle-build
 bundle-build: ## Build the bundle image.

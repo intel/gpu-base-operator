@@ -3,6 +3,6 @@ resources:
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 images:
-- name: controller
+- name: ghcr.io/intel/intel-gpu-base-operator
   newName: ghcr.io/intel/intel-gpu-base-operator
   newTag: devel
