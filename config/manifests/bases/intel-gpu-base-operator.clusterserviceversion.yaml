@@ -1,0 +1,63 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  annotations:
+    alm-examples: '[]'
+    capabilities: Basic Install
+    features.operators.openshift.io/disconnected: "true"
+  name: intel-gpu-base-operator.0.0.0
+  namespace: placeholder
+spec:
+  apiservicedefinitions: {}
+  customresourcedefinitions:
+    owned:
+    - description: ClusterPolicy is the Schema for the clusterpolicies API.
+      displayName: Intel GPU Cluster Policy
+      kind: ClusterPolicy
+      name: clusterpolicies.intel.com
+      version: v1alpha1
+    - description: GPUFirmwareUpdate is the Schema for the gpufirmwareupdates API.
+      displayName: GPUFirmware Update
+      kind: GPUFirmwareUpdate
+      name: gpufirmwareupdates.intel.com
+      version: v1alpha1
+    - description: GPURecoveryPlan is the Schema for the gpurecoveryplans API.
+      displayName: GPURecovery Plan
+      kind: GPURecoveryPlan
+      name: gpurecoveryplans.intel.com
+      version: v1alpha1
+  description: Intel GPU Base Operator to help manage Intel GPUs in Kubernetes clusters.
+  displayName: intel-gpu-base-operator
+  icon:
+  - base64data: ""
+    mediatype: ""
+  install:
+    spec:
+      deployments: null
+    strategy: ""
+  installModes:
+  - supported: false
+    type: OwnNamespace
+  - supported: false
+    type: SingleNamespace
+  - supported: false
+    type: MultiNamespace
+  - supported: true
+    type: AllNamespaces
+  keywords:
+  - intel
+  - gpu
+  - ai
+  links:
+  - name: Intel Gpu Base Operator
+    url: https://github.com/intel/gpu-base-operator
+  maintainers:
+  - email: tuomas.katila@intel.com
+    name: Tuomas Katila
+  - email: patrik.flykt@intel.com
+    name: Patrik Flykt
+  maturity: alpha
+  minKubeVersion: 1.34.0
+  provider:
+    name: Intel
+  version: 0.0.0

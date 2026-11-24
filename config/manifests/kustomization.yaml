@@ -3,7 +3,9 @@
 resources:
 - bases/intel-gpu-base-operator.clusterserviceversion.yaml
 - ../default
-- ../samples
+- ../samples/dra
+- ../samples/fwupdate
+- ../samples/recoveryplan
 - ../scorecard
 
 # [WEBHOOK] To enable webhooks, uncomment all the sections with [WEBHOOK] prefix.
