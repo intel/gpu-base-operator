@@ -30,6 +30,7 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	"k8s.io/klog/v2"
 
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -272,6 +273,11 @@ func main() {
 		})
 	}
 
+	ns := os.Getenv("OPERATOR_NAMESPACE")
+	if ns == "" {
+		ns = defaultOperatorNamespace
+	}
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
@@ -282,15 +288,11 @@ func main() {
 		// Restrict the cache for namespace-scoped resources to the operator's own namespace.
 		// Cluster-scoped resources (nodes, CRDs, etc.) are always cached cluster-wide.
 		Cache: cache.Options{
-			DefaultNamespaces: map[string]cache.Config{
-				func() string {
-					if ns := os.Getenv("OPERATOR_NAMESPACE"); ns != "" {
-						return ns
-					}
-					return defaultOperatorNamespace
-				}(): {},
-			},
+			DefaultNamespaces: map[string]cache.Config{ns: {}},
 			ByObject: map[client.Object]cache.ByObject{
+				// Only the operator's own Namespace object is read (for the DRA admin-access
+				// label), so don't cache every namespace in the cluster.
+				&corev1.Namespace{}: {Field: fields.OneTermEqualSelector("metadata.name", ns)},
 				// Pods are watched cluster-wide for the firmware update controller
 				// which needs to list/delete Job pods in any namespace.
 				&corev1.Pod{}: {Namespaces: map[string]cache.Config{cache.AllNamespaces: {}}},
@@ -327,11 +329,6 @@ func main() {
 	}
 
 	setupLog.Info("Detected cluster features", "features", features)
-
-	ns := os.Getenv("OPERATOR_NAMESPACE")
-	if ns == "" {
-		ns = defaultOperatorNamespace
-	}
 
 	secret := os.Getenv("OPERATOR_SECRET")
 	if secret != "" {
