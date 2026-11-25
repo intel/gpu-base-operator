@@ -61,9 +61,30 @@ RUN go install github.com/google/go-licenses@v1.6.0 && \
 
 ARG BASE_IMAGE
 
-# Use distroless as minimal base image to package the manager binary
+# Use distroless (default) or UBI micro (make UBI=1) as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
 FROM ${BASE_IMAGE} AS runtime
+ARG VERSION=devel
+ARG RELEASE=1
+ARG GITINFO
+ARG BUILDDATE
+# Required by Red Hat certification (preflight). These also override the labels
+# inherited from a UBI base image, which would otherwise claim the image is Red Hat's.
+LABEL name="intel-gpu-base-operator" \
+      vendor="Intel®" \
+      maintainer="Intel®" \
+      version="${VERSION}" \
+      release="${RELEASE}" \
+      summary="Intel GPU Base Operator" \
+      description="Deploys and configures Intel GPU components (device plugin, DRA driver, XPU Manager) and drives GPU firmware updates." \
+      io.k8s.display-name="Intel GPU Base Operator" \
+      io.k8s.description="Deploys and configures Intel GPU components (device plugin, DRA driver, XPU Manager) and drives GPU firmware updates." \
+      url="https://github.com/intel/gpu-base-operator" \
+      com.redhat.component="intel-gpu-base-operator" \
+      build-date="${BUILDDATE}" \
+      vcs-ref="${GITINFO}" \
+      org.opencontainers.image.created="${BUILDDATE}" \
+      org.opencontainers.image.revision="${GITINFO}"
 WORKDIR /
 COPY --from=builder /workspace/manager .
 COPY --from=builder /workspace/licenses /licenses

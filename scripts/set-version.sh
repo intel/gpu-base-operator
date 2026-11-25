@@ -26,3 +26,6 @@ sed -i "s|intel/intel-gpu-base-operator:.*|intel/intel-gpu-base-operator:$VERSIO
 sed -i "s|intel/intel-gpu-base-operator:.*|intel/intel-gpu-base-operator:$VERSION|" $ROOT/config/manager/manager.yaml
 # The kustomize image override in config/manager takes precedence over manager.yaml.
 sed -i "s|^  newTag: .*|  newTag: $VERSION|" $ROOT/config/manager/kustomization.yaml
+
+# Operator image version label
+sed -i "s/^ARG VERSION=.*/ARG VERSION=$VERSION/" $ROOT/build/operator/Dockerfile
