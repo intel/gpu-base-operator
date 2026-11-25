@@ -66,6 +66,10 @@ const (
 
 	xpumResourcePart = "xpu-manager"
 
+	// draAdminAccessLabel must be "true" on a namespace for the API server to accept
+	// ResourceClaims and ResourceClaimTemplates in it that request admin access.
+	draAdminAccessLabel = "resource.kubernetes.io/admin-access"
+
 	otlpHTTPExporter       = "otlp_http"
 	otlpGRPCExporter       = "otlp_grpc"
 	otlpHeaderEnvPrefix    = "OTLP_HEADER_"
@@ -559,6 +563,26 @@ func (r *XpuManagerReconciler) createOrUpdateOTelConfigMap(ctx context.Context, 
 	return configHash, nil
 }
 
+// checkAdminAccessLabel returns an error if the operator namespace lacks the
+// draAdminAccessLabel. The monitoring ResourceClaimTemplate requests admin access to the
+// GPUs, which the API server only allows in namespaces with that label. Checking first gives
+// an error that names the fix instead of the API server's rejection of the template.
+func (r *XpuManagerReconciler) checkAdminAccessLabel(ctx context.Context) error {
+	ns := &core.Namespace{}
+
+	if err := r.Get(ctx, client.ObjectKey{Name: r.Opts.Namespace}, ns); err != nil {
+		return fmt.Errorf("unable to read operator namespace %s: %w", r.Opts.Namespace, err)
+	}
+
+	if ns.Labels[draAdminAccessLabel] != "true" {
+		return fmt.Errorf("namespace %s is missing the label %s=true that XPU Manager's DRA monitoring claim needs; "+
+			"add it with: kubectl label namespace %s %s=true",
+			r.Opts.Namespace, draAdminAccessLabel, r.Opts.Namespace, draAdminAccessLabel)
+	}
+
+	return nil
+}
+
 func (r *XpuManagerReconciler) createMonitoringResourceClaim(ctx context.Context, obj client.Object, claimName string) error {
 	// Create ResourceClaimTemplate for monitoring.
 	mct := deployments.DynamicResourceAllocationMonitorClaimTemplate()
@@ -777,6 +801,12 @@ func (r *XpuManagerReconciler) Reconcile(ctx context.Context, cp *v1alpha.Cluste
 
 	if useDra {
 		draClaim = cp.Name + "-monitor-claim"
+
+		if err := r.checkAdminAccessLabel(ctx); err != nil {
+			klog.Error(err)
+
+			return ctrl.Result{}, err
+		}
 
 		// Ensure the claim exists
 		if err := r.createMonitoringResourceClaim(ctx, cp, draClaim); err != nil {

@@ -331,7 +331,7 @@ var _ = Describe("draPodReadinessPredicate", func() {
 	})
 })
 
-var _ = Describe("draPodToClusterPolicy", func() {
+var _ = Describe("enqueueAllClusterPolicies", func() {
 	newScheme := func() *runtime.Scheme {
 		s := runtime.NewScheme()
 		Expect(v1alpha.AddToScheme(s)).To(Succeed())
@@ -346,7 +346,7 @@ var _ = Describe("draPodToClusterPolicy", func() {
 			Client: fake.NewClientBuilder().WithScheme(newScheme()).WithObjects(cp1, cp2).Build(),
 		}
 
-		reqs := r.draPodToClusterPolicy(context.Background(), nil)
+		reqs := r.enqueueAllClusterPolicies(context.Background(), nil)
 		Expect(reqs).To(HaveLen(2))
 
 		names := []string{reqs[0].Name, reqs[1].Name}
@@ -358,7 +358,7 @@ var _ = Describe("draPodToClusterPolicy", func() {
 			Client: fake.NewClientBuilder().WithScheme(newScheme()).Build(),
 		}
 
-		reqs := r.draPodToClusterPolicy(context.Background(), nil)
+		reqs := r.enqueueAllClusterPolicies(context.Background(), nil)
 		Expect(reqs).To(BeEmpty())
 	})
 
@@ -371,7 +371,7 @@ var _ = Describe("draPodToClusterPolicy", func() {
 			}).Build(),
 		}
 
-		reqs := r.draPodToClusterPolicy(context.Background(), nil)
+		reqs := r.enqueueAllClusterPolicies(context.Background(), nil)
 		Expect(reqs).To(BeNil())
 	})
 })

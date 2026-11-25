@@ -292,13 +292,13 @@ func (r *ClusterPolicyReconciler) retrieveCRDNameList(ctx context.Context) ([]st
 	return crdNames, nil
 }
 
-// draPodToClusterPolicy maps any DRA pod event to reconcile requests for all existing
-// ClusterPolicy objects. This avoids relying on r.Opts.ReqName (startup config) as a
-// source of truth — instead it queries the actual state of the cluster.
-func (r *ClusterPolicyReconciler) draPodToClusterPolicy(ctx context.Context, _ client.Object) []reconcile.Request {
+// enqueueAllClusterPolicies maps a watched event (DRA pod, operator namespace) to reconcile
+// requests for all existing ClusterPolicy objects. This avoids relying on r.Opts.ReqName
+// (startup config) as a source of truth — instead it queries the actual state of the cluster.
+func (r *ClusterPolicyReconciler) enqueueAllClusterPolicies(ctx context.Context, _ client.Object) []reconcile.Request {
 	cpList := &v1alpha.ClusterPolicyList{}
 	if err := r.List(ctx, cpList); err != nil {
-		klog.Error(err, "failed to list ClusterPolicies for DRA pod event")
+		klog.Error(err, "failed to list ClusterPolicies for watch event")
 		return nil
 	}
 
@@ -358,6 +358,17 @@ func draPodReadinessPredicate() predicate.Predicate {
 	}
 }
 
+// operatorNamespaceLabelsPredicate passes events for the operator namespace only, and for
+// updates only when its labels changed.
+func operatorNamespaceLabelsPredicate(namespace string) predicate.Predicate {
+	return predicate.And(
+		predicate.NewPredicateFuncs(func(obj client.Object) bool {
+			return obj.GetName() == namespace
+		}),
+		predicate.LabelChangedPredicate{},
+	)
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *ClusterPolicyReconciler) SetupWithManager(mgr ctrl.Manager, opts common.ControllerOpts) error {
 	r.Opts = opts
@@ -377,8 +388,15 @@ func (r *ClusterPolicyReconciler) SetupWithManager(mgr ctrl.Manager, opts common
 	if opts.DRAEnable {
 		b = b.Watches(
 			&core.Pod{},
-			handler.EnqueueRequestsFromMapFunc(r.draPodToClusterPolicy),
+			handler.EnqueueRequestsFromMapFunc(r.enqueueAllClusterPolicies),
 			builder.WithPredicates(draPodReadinessPredicate()),
+		).Watches(
+			// Re-run as soon as the admin-access label checked by
+			// XpuManagerReconciler.checkAdminAccessLabel is added, instead of waiting for
+			// the error backoff.
+			&core.Namespace{},
+			handler.EnqueueRequestsFromMapFunc(r.enqueueAllClusterPolicies),
+			builder.WithPredicates(operatorNamespaceLabelsPredicate(opts.Namespace)),
 		)
 	}
 
