@@ -448,6 +448,10 @@ kubectl apply -k config/samples/dra/
 
 The Intel GPU base operator supports updating the GPU firmware on the cluster nodes. The update is handled via a GPUFirmwareUpdate CRD. The update flow and details are explained in the [FW update documentation](FWUPDATE.md).
 
+## OpenShift
+
+Installing through OLM, the SecurityContextConstraints the operator creates, and disconnected installs on OpenShift are covered in [OPENSHIFT.md](OPENSHIFT.md).
+
 ## OoT Kernel driver
 
 The base operator has preliminary support to use out-of-tree Xe kernel mode driver to either add the driver where it is missing, or update the driver to a newer version.
