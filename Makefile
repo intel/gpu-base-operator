@@ -218,7 +218,15 @@ run: manifests generate fmt vet ## Run a controller from your host.
 PKG = github.com/intel/gpu-base-operator
 GIT_INFO = $(shell git describe --tags --always HEAD)
 BUILD_DATE = $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
+# UBI=1 builds the operator image on Red Hat UBI (needed for Red Hat certification /
+# preflight) instead of distroless.
+UBI ?=
+UBI_BASE_IMAGE ?= registry.access.redhat.com/ubi9/ubi-micro:latest
+ifeq ($(UBI),1)
+BASE_IMAGE ?= $(UBI_BASE_IMAGE)
+else
 BASE_IMAGE ?= gcr.io/distroless/static:nonroot
+endif
 
 DOCKER_BUILD_ARGS = --build-arg PKGNAME=${PKG} --build-arg GITINFO=${GIT_INFO} --build-arg=BUILDDATE=${BUILD_DATE} --build-arg BASE_IMAGE=${BASE_IMAGE}
 
