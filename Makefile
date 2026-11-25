@@ -33,7 +33,11 @@ IMAGE_TAG_BASE ?= ghcr.io/intel/intel-gpu-base-operator
 BUNDLE_IMG ?= $(IMAGE_TAG_BASE)-bundle:$(VERSION)
 
 # BUNDLE_GEN_FLAGS are the flags passed to the operator-sdk generate bundle command
-BUNDLE_GEN_FLAGS ?= -q --overwrite --version $(VERSION) $(BUNDLE_METADATA_OPTS)
+# --extra-service-accounts turns the module loader's privileged-SCC Role
+# (config/rbac/module_loader_scc_role.yaml) into a CSV permissions entry, which OLM creates
+# in the install namespace together with the ServiceAccount.
+BUNDLE_GEN_FLAGS ?= -q --overwrite --version $(VERSION) $(BUNDLE_METADATA_OPTS) \
+	--extra-service-accounts intel-gpu-base-operator-module-loader
 
 # USE_IMAGE_DIGESTS=true makes `make bundle` pin the operator image (IMG) by digest and fail
 # unless every image in the CSV is digest-pinned.

@@ -1,0 +1,25 @@
+# Lets KMM's module loader pods run under OpenShift's built-in privileged SCC, as the KMM
+# documentation prescribes for Modules outside KMM's own namespace. The operator's KMM
+# Module sets moduleLoader.serviceAccountName to the module-loader ServiceAccount, so KMM's
+# own privileged ServiceAccount is never used for it.
+#
+# The bundle build passes --extra-service-accounts for module-loader, which turns this Role
+# and its RoleBinding into a CSV spec.install.spec.permissions entry. On clusters without
+# OpenShift the rule refers to a resource that does not exist and has no effect.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app.kubernetes.io/name: intel-gpu-base-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: module-loader-scc-role
+  namespace: system
+rules:
+- apiGroups:
+  - security.openshift.io
+  resources:
+  - securitycontextconstraints
+  resourceNames:
+  - privileged
+  verbs:
+  - use
