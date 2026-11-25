@@ -5,6 +5,8 @@ metadata:
     alm-examples: '[]'
     capabilities: Basic Install
     features.operators.openshift.io/disconnected: "true"
+    operatorframework.io/suggested-namespace: intel-gpu-base-operator
+    operatorframework.io/suggested-namespace-template: '{"apiVersion":"v1","kind":"Namespace","metadata":{"name":"intel-gpu-base-operator","labels":{"resource.kubernetes.io/admin-access":"true"}}}'
   name: intel-gpu-base-operator.0.0.0
   namespace: placeholder
 spec:
